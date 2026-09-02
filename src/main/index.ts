@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import { registerIpcHandlers } from './ipc';
 import { resolveUserDataPaths } from './paths';
+import { loadPermissionPolicy } from './policy';
 import { loadSettings } from './settings';
 
 /**
@@ -100,11 +101,15 @@ app
 
     // Read-only: proves the real application-data path resolves and loads
     // (or safely falls back) before the window opens. Nothing is written —
-    // `loadSettings` never creates a file or directory, and no IPC channel
-    // exposes the result yet. Milestone 3 is storage only; a later
-    // milestone wires this into an onboarding flow and an IPC channel.
+    // neither loader creates a file or directory, and no IPC channel exposes
+    // either result yet. Milestone 5 registers no new privileged channel of
+    // its own — nothing yet has a real, safe side effect to gate — but
+    // `main/action-pipeline.ts`'s `handleActionProposal` is the function
+    // such a channel must call once one exists, and it is exercised
+    // end-to-end by this milestone's own tests, not by the running app.
     const userDataPaths = resolveUserDataPaths(app.getPath('appData'));
     await loadSettings(userDataPaths.settingsFile, new Date().toISOString());
+    await loadPermissionPolicy(userDataPaths.permissionPolicyFile);
 
     registerIpcHandlers(ipcMain);
     createWindow();

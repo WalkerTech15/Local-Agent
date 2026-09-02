@@ -3,9 +3,13 @@
 > **Current state.** Milestone 1 implemented the shared schema layer.
 > Milestone 2 added the hardened Electron shell. Milestone 3 added non-secret
 > settings storage. Milestone 4 added the append-only, redacting, daily
-> rotating audit log writer. Controls below are marked **[implemented]**,
-> **[enforced by schema]** or **[planned, milestone N]**. Nothing here is
-> claimed as working before it exists.
+> rotating audit log writer. Milestone 5 added the permission-policy runtime:
+> a pure decision engine, an executor gate, fail-safe policy loading, and the
+> assembled canonical request path — none of it reachable from the running
+> application yet, since no new IPC channel exists to reach it through.
+> Controls below are marked **[implemented]**, **[enforced by schema]** or
+> **[planned, milestone N]**. Nothing here is claimed as working before it
+> exists.
 
 ---
 
@@ -48,9 +52,11 @@ asserted by an end-to-end Playwright test against the built application, not
 only declared in source.
 
 A compromised renderer therefore gains only the narrow preload API. Today
-that API is one liveness check with no side effect; **[planned, M5]** every
-function added to it from Milestone 3 onward will be policy-gated and
-audited before it can perform a privileged action.
+that API is still one liveness check with no side effect — Milestone 5 built
+the permission engine every future privileged function must be gated and
+audited through (`main/action-pipeline.ts`'s `handleActionProposal`), but
+added no such function to the preload API itself, since none has a real,
+safe side effect yet.
 
 ### Permission model
 
@@ -77,19 +83,47 @@ neither `allow` nor `deny`. It is pinned to `confirm` — recovery from an
 engaged emergency stop stays possible, but only through the deliberate
 confirmation flow.
 
-**[planned, M5]** The permission engine must enforce the availability floor
-**independently of the policy file**, at decision time. Schema validation is
-the first line of defence, not the only one: a policy that reached the engine
-by some path that bypassed validation must still be unable to suppress these
-actions. This is defence in depth and is a required Milestone 5 deliverable,
-not an optional one.
+**[implemented]** `main/permissions.ts`'s `decidePermission` enforces both
+the confirmation floor and the emergency availability floor **independently
+of the policy file and independently of whether it ever passed
+`permissionPolicySchema`**. Schema validation is the first line of defence,
+not the only one: tests construct a `PermissionPolicy` object that violates
+a floor outright — something `permissionPolicySchema` would reject — and
+confirm the engine still corrects it, proving the engine does not merely
+trust that validation already ran. Ordering matters here: the emergency stop
+gate is evaluated _after_ both floors, so it can still override a
+floor-forced `allow` for a non-exempt action (`emergency.engage` while
+already engaged is denied, not floor-protected — the floor's real guarantee,
+inspecting via `audit.read` and recovering via `emergency.reset`, is
+unaffected, since both of those remain stop-exempt).
 
-**[planned, M5]** Every IPC channel routes through the pure permission engine
-before the executor. An integration test enumerates registered channels and
-asserts none bypasses it.
+**[implemented]** `execute` (`main/executor.ts`) is the only function
+permitted to run a privileged action's side effect, and requires a
+`PermissionVerdict` as an explicit argument. There is no code path in it
+that runs the side effect without one: `deny` never calls it, a `confirm`
+verdict requires an already-resolved, non-rejected confirmation answer
+first, and only `allow` or an approved `confirm` reaches it.
+`main/action-pipeline.ts`'s `handleActionProposal` assembles
+`decidePermission → [confirm] → execute → audit` into the one function a
+future IPC handler must call — Milestone 5 registers no new IPC channel of
+its own, since nothing yet has a real, safe side effect to offer one, so
+this is proven by integration tests calling the assembled path directly
+rather than by a live channel. The guarantee is structural, not a
+convention: `execute` cannot be made to run a side effect without an
+authorizing verdict, so whichever milestone registers the first privileged
+channel has no way to accidentally bypass the engine as long as it calls
+`handleActionProposal`.
 
-**[planned, M5]** Confirmation prompts are native dialogs owned by the main
-process, never HTML rendered by the renderer.
+**[not yet implemented]** Confirmation prompts as native, main-process-owned
+dialogs. Milestone 5 represents "confirmation required" and its resolution
+as explicit data (`PermissionVerdict.confirmationRequired`,
+`ConfirmationResult`) and an injected `requestConfirmation` callback, but
+does not wire that callback to Electron's `dialog.showMessageBox` or any
+other concrete UI — there is no confirmation-requiring action reachable from
+the running application yet for a dialog to serve. Whichever future
+milestone adds the first such action must implement it as a native dialog
+owned by the main process; an HTML dialog rendered by the renderer remains
+explicitly disallowed regardless of which milestone builds it.
 
 ### Secret handling
 
@@ -240,6 +274,15 @@ is append-only by API, not tamper-proof against a local user with the same
 account privileges, so an unset ACL narrows nothing that limitation doesn't
 already cover today. See known limitation 1.
 
+**[implemented, M5]** `main/action-pipeline.ts`'s `handleActionProposal`
+appends exactly one audit record per proposal — a denial, a rejected
+confirmation, a success and a failure are all recorded through the same
+`appendAuditRecord` call, so a blocked action leaves as clear a trace as a
+successful one. Tests prove a secret-named parameter is redacted before
+writing regardless of whether the action was allowed, denied, or its
+confirmation was rejected — the M4 writer's redaction runs unconditionally,
+not only on the success path.
+
 ### Shared-layer purity
 
 **[implemented]** `src/shared` is consumed by every process, including the
@@ -369,9 +412,17 @@ easy to conflate:
 | File exists, malformed or unreadable | **engaged**    | Previously written state that cannot be trusted fails safe.                    |
 | File exists, valid                   | as stored      | State persists across restart.                                                 |
 
-**[planned, M6]** The engaged state is evaluated before policy rules, blocks
-all non-exempt actions, and persists across restart. The exemptions —
-`settings.read`, `audit.read`, `emergency.reset`, `app.exit` — exist so an
+**[implemented, M5 — decision logic only]** `decidePermission` takes
+`emergencyState` as an explicit input and, when `engaged` is true, denies
+every action outside `EMERGENCY_STOP_EXEMPT_ACTION_TYPES`
+(`settings.read`, `audit.read`, `emergency.reset`, `app.exit`), evaluated
+after both permission floors so it can still override a floor-forced `allow`
+for a non-exempt floor action (`emergency.engage`). This is the pure
+decision half of the invariant only. **[planned, M6]** Persisting engaged
+state to `state/emergency.json`, loading it at startup via
+`resolveEmergencyState`, and any IPC path to engage or reset it are still
+unbuilt — Milestone 5 has no caller that constructs a real `EmergencyState`
+from disk; every test constructs one directly. The exemptions exist so an
 engaged stop is not an unrecoverable state.
 
 ### Input validation
@@ -407,29 +458,33 @@ address one. No generic pass-through channel exists.
 
 ## Threats and status
 
-| Threat                                              | Status                                                                                    |
-| --------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| Renderer compromise (XSS, malicious UI dependency)  | Addressed, M2 — process isolation and CSP; asserted by an end-to-end test                 |
-| Malicious or malformed IPC payload                  | Addressed, M2 — schema validation on the one registered channel; no other channel exists  |
-| Secret exfiltration through the interface           | Addressed — no channel returns a key; asserted by test                                    |
-| Secret leakage into logs or errors                  | Addressed, M4 — schema-level redaction contract plus writer-side redaction, both verified |
-| Credential persisted inside a settings _value_      | Addressed — `baseUrl` rejects embedded userinfo                                           |
-| Log injection via a crafted user name               | Addressed — control characters rejected                                                   |
-| Display spoofing via bidirectional overrides        | Addressed — bidi overrides and isolates rejected in display strings                       |
-| Forged audit record                                 | Addressed — biconditional cross-field integrity rules                                     |
-| Unbounded or non-serialisable audit payload         | Addressed — bounded JSON-safe parameter schema; writer-side scan bounds the whole record  |
-| Audit record overwritten or truncated by a write    | Addressed, M4 — append-only file handle; proven under concurrent writes by test           |
-| Prototype-pollution key bypassing schema validation | Addressed, M4 — explicit writer-side scan; schema-only reliance was verified insufficient |
-| Settings tampering or corruption                    | Addressed, M3 — strict validation, fail-safe loading to defaults, atomic writes           |
-| Policy tampering or corruption                      | Partly addressed — strict validation; fail-closed loading planned, M5                     |
-| Policy file removing the user's emergency controls  | Addressed at the schema layer — availability floor; engine-side check planned, M5         |
-| Corruption of a shared security default in memory   | Addressed — exported defaults deeply frozen; resolvers return fresh objects               |
-| `src/shared` reaching the OS, network or eval       | Addressed — lint boundary, verified by probe; not a runtime sandbox                       |
-| Privilege escalation via the executor               | Planned, M5 — decision required as an argument, lint boundary, channel test               |
-| Emergency-stop bypass                               | Partly addressed — resolution rules implemented; gating planned, M6                       |
-| Path traversal                                      | Not reachable — all paths derive from the app-data directory; none is user-supplied       |
-| Prompt injection, untrusted model or tool output    | Not reachable in Phase 1 — no model call exists. The proposal/executor split pre-empts it |
-| Supply-chain compromise via npm                     | Mitigated, not eliminated — see below                                                     |
+| Threat                                                        | Status                                                                                                                              |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Renderer compromise (XSS, malicious UI dependency)            | Addressed, M2 — process isolation and CSP; asserted by an end-to-end test                                                           |
+| Malicious or malformed IPC payload                            | Addressed, M2 — schema validation on the one registered channel; no other channel exists                                            |
+| Secret exfiltration through the interface                     | Addressed — no channel returns a key; asserted by test                                                                              |
+| Secret leakage into logs or errors                            | Addressed, M4 — schema-level redaction contract plus writer-side redaction, both verified                                           |
+| Credential persisted inside a settings _value_                | Addressed — `baseUrl` rejects embedded userinfo                                                                                     |
+| Log injection via a crafted user name                         | Addressed — control characters rejected                                                                                             |
+| Display spoofing via bidirectional overrides                  | Addressed — bidi overrides and isolates rejected in display strings                                                                 |
+| Forged audit record                                           | Addressed — biconditional cross-field integrity rules                                                                               |
+| Unbounded or non-serialisable audit payload                   | Addressed — bounded JSON-safe parameter schema; writer-side scan bounds the whole record                                            |
+| Audit record overwritten or truncated by a write              | Addressed, M4 — append-only file handle; proven under concurrent writes by test                                                     |
+| Prototype-pollution key bypassing schema validation           | Addressed, M4 — explicit writer-side scan; schema-only reliance was verified insufficient                                           |
+| Settings tampering or corruption                              | Addressed, M3 — strict validation, fail-safe loading to defaults, atomic writes                                                     |
+| Policy tampering or corruption                                | Addressed, M5 — fail-closed loading (`main/policy.ts`) plus engine-side floor enforcement independent of it                         |
+| Policy file removing the user's emergency controls            | Addressed, M5 — availability floor enforced at both the schema layer and, independently, by `decidePermission`                      |
+| Policy bypassing schema validation before reaching the engine | Addressed, M5 — floors re-verified by the engine regardless of validation history                                                   |
+| Corruption of a shared security default in memory             | Addressed — exported defaults deeply frozen; resolvers return fresh objects                                                         |
+| `src/shared` reaching the OS, network or eval                 | Addressed — lint boundary, verified by probe; not a runtime sandbox                                                                 |
+| Privilege escalation via the executor                         | Addressed, M5 — `execute` requires a verdict as an explicit argument; proven by tests that no denial or rejection reaches `perform` |
+| A side effect running without a permission decision           | Addressed, M5 — structural: no code path in `execute` calls `perform` without an authorizing verdict                                |
+| Model rationale/confidence used as authorization              | Addressed, M5 — `decidePermission` never reads `proposal.parameters`; proven by test                                                |
+| Emergency-stop bypass (decision logic)                        | Addressed, M5 — engine denies non-exempt actions when engaged, evaluated after both floors                                          |
+| Emergency-stop bypass (persistence, gating runtime)           | Not yet built — planned, M6                                                                                                         |
+| Path traversal                                                | Not reachable — all paths derive from the app-data directory; none is user-supplied                                                 |
+| Prompt injection, untrusted model or tool output              | Not reachable in Phase 1 — no model call exists. The proposal/executor split pre-empts it                                           |
+| Supply-chain compromise via npm                               | Mitigated, not eliminated — see below                                                                                               |
 
 ---
 
@@ -484,11 +539,14 @@ These are real and are stated plainly rather than described as solved.
    `src/main`, which is privileged by design. Runtime isolation of the
    renderer is a separate control, planned for Milestone 2.
 
-9. **The availability floor is currently enforced only at schema validation.**
-   Until the Milestone 5 engine adds its independent check, a policy object
-   that reached the engine without passing validation would not be caught.
-   This is why the engine-side check is a required Milestone 5 deliverable
-   rather than an optional hardening.
+9. **Resolved, M5.** Through Milestone 4, the availability floor was enforced
+   only at schema validation: a policy object that reached a future engine
+   without passing validation would not have been caught. Milestone 5's
+   `decidePermission` now re-enforces both floors independently at decision
+   time, verified by tests that construct a policy violating a floor outright
+   and confirm the engine still corrects it — see _Permission model_ above.
+   Kept as a numbered entry, rather than removed, so the two references to
+   later limitation numbers below do not shift.
 
 10. **The audit parameter limits are fixed constants, not adaptive.** A record
     legitimately exceeding them is rejected rather than truncated. Rejection is
@@ -519,9 +577,38 @@ These are real and are stated plainly rather than described as solved.
     invalid `settings.json` return identical fresh defaults from
     `loadSettings`, by design — there is deliberately no partial-trust path.
     The cost: nothing today tells the user their settings were reset because
-    the file was corrupt rather than absent. Surfacing that distinction
-    belongs to a future audit record (M4) or onboarding notice (M7); neither
-    exists yet.
+    the file was corrupt rather than absent. The audit format and writer
+    (M4) and the pipeline that would call them for a real action (M5) both
+    now exist, but `loadSettings` still is not called through either — it
+    runs once, read-only, directly from `main/index.ts` at startup, outside
+    the permission engine entirely, since Milestone 3 predates it and no
+    later milestone has revisited that wiring. Surfacing this distinction to
+    the user still belongs to a future onboarding notice (M7).
+
+14. **`decidePermission`'s defensive `REASON_UNKNOWN_ACTION_TYPE` denial
+    cannot itself be audited through `handleActionProposal`.** If a proposal
+    with an `actionType` outside `ACTION_TYPES` somehow reached the pipeline
+    — it should not, in practice, since IPC request validation rejects one
+    long before a proposal is constructed — the engine denies it correctly,
+    but `appendAuditRecord`'s own call to `auditRecordSchema` then rejects
+    the record, because `actionType` there is `z.enum(ACTION_TYPES)` and
+    cannot represent an unrecognised value. `handleActionProposal` lets that
+    validation error propagate rather than silently discarding it or writing
+    a mismatched record; a test in `action-pipeline.test.ts` documents this
+    exact interaction. The action is still denied and `perform` is still
+    never called — only the audit trail for that specific, expected-to-be-
+    unreachable case is incomplete.
+
+15. **No real IPC channel or native confirmation dialog exists yet.**
+    Milestone 5 built the permission engine, the executor gate, and the
+    assembled request path, but registered no new `ipcMain` channel and
+    wired no `dialog.showMessageBox` call, because nothing yet has a real,
+    safe side effect or a real confirmation-requiring action reachable from
+    the running application. Every guarantee above is verified by tests that
+    call `handleActionProposal` directly, not by driving the real app
+    end-to-end through IPC. This is consistent with Milestone 3's and
+    Milestone 4's own storage-only, not-yet-wired scope, not a shortcut
+    specific to this milestone.
 
 ---
 

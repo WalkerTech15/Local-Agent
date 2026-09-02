@@ -3,15 +3,16 @@
 A local-first, permission-controlled desktop assistant for Windows. The
 assistant is named **JARVIS** by default; the product is **Local Agent**.
 
-> **Status: Phase 1, Milestone 4.**
+> **Status: Phase 1, Milestone 5.**
 > The repository contains project scaffolding, shared schemas, a hardened
-> Electron desktop shell, non-secret settings storage, and an audit-log
-> foundation: an append-only, redaction-before-validation, UTC-daily-rotating
-> JSONL writer. Nothing calls it yet — there is no permission engine to
-> produce a decision worth recording. There is no permission engine, no
+> Electron desktop shell, non-secret settings storage, an audit-log
+> foundation, and the permission-policy runtime: a pure decision engine, an
+> executor that cannot run a side effect without a decision, fail-safe policy
+> loading, and the canonical request path assembled into one function. None
+> of it is reachable from the running application yet — no new IPC channel
+> was added, since nothing has a real, safe side effect to gate. There is no
 > emergency-stop runtime, no onboarding interface and no model integration
-> yet — nothing yet writes to `settings.json` from the running application,
-> either. Nothing in this repository makes a network request or performs an
+> yet. Nothing in this repository makes a network request or performs an
 > action on your machine — the renderer's Content-Security-Policy blocks
 > outbound network access outright, which the end-to-end test suite asserts.
 
@@ -57,11 +58,15 @@ postponed.
   invoke-any-channel function.
 - A strict Content-Security-Policy blocks remote script and network access
   outright; navigation, `window.open` and `<webview>` are all denied.
-- An action with no matching policy rule is **denied** — enforced today by the
-  schema layer; the runtime permission engine arrives in Milestone 5.
+- An action with no matching policy rule is **denied** — enforced both by the
+  schema layer and, independently, by the runtime permission engine
+  (`decidePermission`).
 - Destructive, irreversible, privacy-sensitive and security-sensitive actions
-  require explicit confirmation, enforced in code rather than by policy
-  defaults alone.
+  require explicit confirmation, enforced in code (the confirmation floor,
+  re-checked at decision time) rather than by policy defaults alone.
+- No side effect can run without a permission decision: `execute`, the one
+  module permitted to perform one, requires a verdict as an explicit
+  argument and has no code path that skips it.
 - **No credential is ever stored in this repository**, in `.env`, in
   `.env.example`, in a settings file, in a log, or in an error message.
 
@@ -72,9 +77,10 @@ Full detail, including known limitations, is in
 
 Application code lives in this repository. Everything else — settings,
 secrets, permission policy, audit logs and memory — lives outside it, under
-`%APPDATA%\Local-Agent\`, each in its own location. `settings.json` and the
-audit log writer are implemented so far, both as storage layers only: nothing
-in the running application calls either of them yet. See
+`%APPDATA%\Local-Agent\`, each in its own location. `settings.json`, the
+audit log writer and permission policy loading are implemented so far, all
+as storage layers only: nothing in the running application calls any of them
+through a real action yet. See
 [docs/data-locations.md](docs/data-locations.md).
 
 ## Requirements
@@ -119,10 +125,13 @@ src/shared/     Pure schemas, types and constants. No I/O, no Electron.
 src/main/       Privileged Electron main process. Owns the BrowserWindow,
                 the Content-Security-Policy, navigation/window-open/webview
                 hardening, the one registered IPC handler, non-secret
-                settings storage (path resolution, fail-safe loading, atomic
-                writes — see paths.ts and settings.ts) and the audit-log
-                writer (redaction, daily rotation, append-only — see
-                audit.ts). Neither writer is called by the application yet.
+                settings storage (paths.ts, settings.ts), the audit-log
+                writer (audit.ts), and the permission-policy runtime:
+                a pure decision engine (permissions.ts), the executor gate
+                (executor.ts), fail-safe policy loading (policy.ts) and the
+                assembled request path (action-pipeline.ts). None of the
+                storage or permission modules is called by the application
+                through a real IPC channel yet.
 src/preload/    The single contextBridge. Exposes a narrow, explicitly
                 enumerated, typed API — never ipcRenderer, never a generic
                 invoke-any-channel function. Bundled into one file: a

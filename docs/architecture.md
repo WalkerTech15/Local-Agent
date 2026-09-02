@@ -5,14 +5,18 @@
 > the window, the sandboxed renderer, the narrow preload bridge, and one
 > health-check IPC channel. Milestone 3 added `main/paths` and
 > `main/settings`: centralized user-data path resolution and non-secret
-> settings storage, loaded read-only at startup. Milestone 4 adds
-> `main/audit`: an append-only, redacting, daily-rotating JSONL writer. It is
-> not called from anywhere yet — nothing in the application has produced a
-> permission decision to record, since the engine that will produce one does
-> not exist until Milestone 5. `main/permissions`, `main/executor`,
-> `main/secrets` and `main/emergency` described below do not exist yet; they
-> are the approved design for Milestones 5-7. This document marks which parts
-> exist today.
+> settings storage, loaded read-only at startup. Milestone 4 added
+> `main/audit`: an append-only, redacting, daily-rotating JSONL writer.
+> Milestone 5 adds the permission-policy runtime: `main/permissions` (the pure
+> decision engine), `main/executor` (the side-effect gate), `main/policy`
+> (fail-safe policy loading, loaded read-only at startup) and
+> `main/action-pipeline` (the canonical request path, assembled into one
+> callable function). None of it is reachable from the running application
+> yet — no new IPC channel was registered, because nothing has a real, safe
+> side effect to offer one; every module is exercised directly by this
+> milestone's own tests instead. `main/secrets` and `main/emergency` described
+> below do not exist yet; they are the approved design for Milestones 6-7.
+> This document marks which parts exist today.
 
 ---
 
@@ -48,19 +52,21 @@ audited before it can perform a privileged action.
 
 ## Modules
 
-| Module                           | Responsibility                                                                                                                                                        | Must not                                                                                        |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `shared` **(exists)**            | Zod schemas, derived types, constants. Pure data and pure functions.                                                                                                  | Perform I/O; import Electron or Node built-ins; depend on `main`, `preload` or `renderer`.      |
-| `renderer` **(exists)**          | All interface. Renders state, collects input, sends requests over the bridge.                                                                                         | Touch Node APIs, the filesystem or `ipcRenderer`; read secrets; load remote content.            |
-| `preload` **(exists)**           | The single bridge. Exposes an explicitly enumerated, typed API via `contextBridge`.                                                                                   | Expose `ipcRenderer`; provide a generic "invoke any channel" function; expose a Node primitive. |
-| `main/ipc` **(exists, partial)** | Receives every request, validates its payload against a schema. Today: one health-check channel, no privileged action, so nothing to hand to a permission engine yet. | Execute anything itself; bypass the permission engine once one exists.                          |
-| `main/permissions`               | Pure decision function. `(action, policy, emergencyState) → decision + reason`.                                                                                       | Perform I/O, show dialogs, or log.                                                              |
-| `main/executor`                  | The **only** module that performs side effects. Requires a permission decision as an argument.                                                                        | Be called from `renderer` or `preload`; act without a decision; make its own policy judgements. |
-| `main/audit` **(exists)**        | Append-only event writer with redaction and daily rotation.                                                                                                           | Expose any update or delete function; write an unredacted secret.                               |
-| `main/settings` **(exists)**     | Loads, validates and atomically writes settings. Fails closed to safe defaults.                                                                                       | Store secrets; write without going through the executor once one exists.                        |
-| `main/secrets`                   | Encrypt and decrypt via the asynchronous `safeStorage` API.                                                                                                           | Return a plaintext secret across IPC; log a secret; write plaintext to disk.                    |
-| `main/emergency`                 | Owns and persists emergency-stop state; supplies it to the permission engine.                                                                                         | Be bypassable by the renderer or by the policy file.                                            |
-| `main/paths` **(exists)**        | Single source of truth for user-data locations.                                                                                                                       | Accept a user-supplied path.                                                                    |
+| Module                              | Responsibility                                                                                                                                                        | Must not                                                                                        |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `shared` **(exists)**               | Zod schemas, derived types, constants. Pure data and pure functions.                                                                                                  | Perform I/O; import Electron or Node built-ins; depend on `main`, `preload` or `renderer`.      |
+| `renderer` **(exists)**             | All interface. Renders state, collects input, sends requests over the bridge.                                                                                         | Touch Node APIs, the filesystem or `ipcRenderer`; read secrets; load remote content.            |
+| `preload` **(exists)**              | The single bridge. Exposes an explicitly enumerated, typed API via `contextBridge`.                                                                                   | Expose `ipcRenderer`; provide a generic "invoke any channel" function; expose a Node primitive. |
+| `main/ipc` **(exists, partial)**    | Receives every request, validates its payload against a schema. Today: one health-check channel, no privileged action, so nothing to hand to a permission engine yet. | Execute anything itself; bypass the permission engine once one exists.                          |
+| `main/permissions` **(exists)**     | Pure decision function. `(proposal, policy, emergencyState) → verdict`.                                                                                               | Perform I/O, show dialogs, or log.                                                              |
+| `main/executor` **(exists)**        | The **only** module that performs side effects. Requires a permission verdict as an argument.                                                                         | Be called from `renderer` or `preload`; act without a decision; make its own policy judgements. |
+| `main/action-pipeline` **(exists)** | Assembles `permissions → [confirm] → executor → audit` into one function every future IPC handler must call.                                                          | Be bypassed by a handler that wires the pieces together itself.                                 |
+| `main/audit` **(exists)**           | Append-only event writer with redaction and daily rotation.                                                                                                           | Expose any update or delete function; write an unredacted secret.                               |
+| `main/settings` **(exists)**        | Loads, validates and atomically writes settings. Fails closed to safe defaults.                                                                                       | Store secrets; write without going through the executor once one exists.                        |
+| `main/policy` **(exists)**          | Loads and validates the permission policy file. Fails closed to `createDefaultPermissionPolicy()`.                                                                    | Merge a partially-valid document; expose a write path.                                          |
+| `main/secrets`                      | Encrypt and decrypt via the asynchronous `safeStorage` API.                                                                                                           | Return a plaintext secret across IPC; log a secret; write plaintext to disk.                    |
+| `main/emergency`                    | Owns and persists emergency-stop state; supplies it to the permission engine.                                                                                         | Be bypassable by the renderer or by the policy file.                                            |
+| `main/paths` **(exists)**           | Single source of truth for user-data locations.                                                                                                                       | Accept a user-supplied path.                                                                    |
 
 ## Dependency direction
 
@@ -342,13 +348,107 @@ sent over IPC, and never reaches the renderer. Because appending never
 touches bytes already on disk, a failed write cannot corrupt or lose a record
 written by an earlier, successful call.
 
-**Not called from the running application.** `main/index.ts` is unchanged by
-this milestone. Nothing in Phase 1 has produced a real permission decision to
-record yet — the engine that will produce one does not exist until Milestone
-5 — so there is nothing genuine to wire `appendAuditRecord` to. Synthesising
-a fake call from `main/index.ts` merely to prove wiring exists would not be a
-real integration; this mirrors the Milestone 3 decision not to add an IPC
-channel for settings before an onboarding flow existed to call it.
+**Not called from the running application.** `main/index.ts` still does not
+call `appendAuditRecord` directly. Milestone 5 added the permission engine
+that decides what to record, but nothing in the running application proposes
+a real action yet — see the next section.
+
+## Permission engine (implemented)
+
+| File                          | Describes                                                                          |
+| ----------------------------- | ---------------------------------------------------------------------------------- |
+| `src/main/permissions.ts`     | `decidePermission` — the pure decision function                                    |
+| `src/main/executor.ts`        | `execute`, `ActionExecutionError`, `ExecutorInvariantError` — the side-effect gate |
+| `src/main/policy.ts`          | `loadPermissionPolicy` — fail-safe policy loading, loaded read-only at startup     |
+| `src/main/action-pipeline.ts` | `handleActionProposal` — the canonical request path, assembled                     |
+
+**`decidePermission` is pure.** No filesystem access, no dialogs, no logging,
+no network, no Electron import, no clock — every one of its inputs
+(`proposal`, `policy`, `emergencyState`) is supplied by the caller, and the
+same three inputs always produce the same `PermissionVerdict`. Its internal
+ordering matches the canonical request path exactly:
+
+1. A `proposal.actionType` outside `ACTION_TYPES` is denied
+   (`REASON_UNKNOWN_ACTION_TYPE`) before anything else runs — the engine does
+   not trust the type system alone for a value that may have reached it
+   through an untrusted boundary.
+2. The policy's rules are matched for that action type: highest `priority`
+   wins, a tie keeps the first matching rule, no match (or no policy at all)
+   is `deny`.
+3. **The confirmation floor** downgrades an effective `allow` to `confirm`
+   for `secrets.write`, `secrets.clear`, `emergency.reset` and `app.exit`. An
+   effective `deny` for one of these is left as `deny` — the floor only
+   forbids `allow`.
+4. **The emergency availability floor** replaces an effective `deny` for
+   `emergency.engage`, `emergency.reset` or `audit.read` with the same safe
+   value `createDefaultPermissionPolicy` already assigns it (`confirm` for
+   `emergency.reset`, `allow` for the other two) — regardless of whether that
+   `deny` came from an explicit rule, default-deny, or `policy` being `null`.
+5. **The emergency stop gate** runs last, so it can override even a
+   floor-forced `allow`: while `emergencyState.engaged` is true, any action
+   outside `EMERGENCY_STOP_EXEMPT_ACTION_TYPES` is denied
+   (`REASON_EMERGENCY_STOP`). `emergency.engage` is deliberately **not**
+   stop-exempt — engaging an already-engaged stop has nothing left to do, and
+   the floor's real guarantee (inspect via `audit.read`, recover via
+   `emergency.reset`) is unaffected, since both of those _are_ exempt.
+
+Both floors are enforced here **independently of `permissionPolicySchema`
+ever having run** — verified by tests that construct a `PermissionPolicy`
+object which violates a floor outright (something the schema would reject)
+and confirm the engine still corrects it. This is not redundant with the
+schema: it is the explicit backstop the schema's own documentation already
+calls for, in case a policy object reaches the engine by some path that
+bypassed validation.
+
+**`execute` is the only function that may run a side effect**, and only
+given a `PermissionVerdict` as an explicit argument. `deny` never calls
+`perform`. `confirm` requires an already-resolved `confirmationResult` —
+`execute` does not show a dialog or wait for one itself; a `'rejected'`
+result never calls `perform` either, and returns `aborted`. Only `'approved'`
+or an outright `allow` runs `perform`. `perform` is supplied by the caller,
+so this module makes no policy judgement of its own and needs no changes as
+new action types arrive. A thrown `ActionExecutionError(code)` reports a
+specific, stable `errorCode`; an ordinary thrown `Error` (or a rejected
+promise) reports the generic `EXECUTION_FAILED` instead — `execute` never
+inspects `Error.message`, so a caller that throws a raw error still fails
+safely rather than leaking it.
+
+**`loadPermissionPolicy` mirrors `loadSettings` exactly.** A missing file, an
+unreadable one, malformed JSON, a `__proto__`/`constructor`/`prototype` key
+anywhere in it, or a document `permissionPolicySchema` rejects for any
+reason — including one that omits or denies a floor action, or downgrades a
+confirmation-floor action to `allow` — all resolve to
+`createDefaultPermissionPolicy()`. No partial-trust path, never creates a
+file. Deliberately duplicates `main/settings.ts`'s small
+`containsForbiddenKey` check rather than importing it, so this milestone does
+not add a new runtime dependency on an already-reviewed module from an
+earlier one — the same choice Milestone 4 made for the equivalent check in
+`main/audit.ts`.
+
+**`handleActionProposal` is the canonical request path, assembled.**
+`decidePermission → [requestConfirmation] → execute → appendAuditRecord`, in
+that order, as one function, so no future IPC handler can wire the pieces
+together itself and risk skipping a step. `requestConfirmation` is called if,
+and only if, the verdict requires confirmation — never for an already-denied
+or already-allowed action. Exactly one audit record is appended per call,
+covering a denial, a rejected confirmation, a success or a failure alike,
+through the same `appendAuditRecord` call that redacts and validates it
+before anything reaches disk (see the audit log section above). If that
+write itself throws, the error propagates rather than returning a result
+that was never actually recorded.
+
+**Registers no new IPC channel.** Milestone 5 adds no privileged channel to
+`main/ipc.ts` — nothing yet has a real, safe side effect to offer one, and
+every real action type Phase 1 could plausibly wire up first (filesystem
+tools, shell execution, secret storage, provider calls) is explicitly out of
+scope until a later milestone. `handleActionProposal` is exercised directly
+by this milestone's own integration tests instead, which is what proves no
+bypass is possible: `execute` structurally cannot run `perform` without an
+authorizing verdict, so whichever milestone registers the first privileged
+channel has no way to accidentally skip the engine as long as it calls this
+function. `main/index.ts` calls `loadPermissionPolicy` read-only at startup,
+mirroring the Milestone 3 settings pattern, to prove the real policy path
+resolves and loads (or safely falls back) before the window opens.
 
 ## Timestamps and clocks
 

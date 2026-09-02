@@ -215,6 +215,29 @@ export const REASON_DEFAULT_DENY = 'default-deny';
 export const REASON_EMERGENCY_STOP = 'emergency-stop';
 /** Decision reason recorded when the permission policy failed to load. */
 export const REASON_POLICY_UNAVAILABLE = 'policy-unavailable';
+/**
+ * Decision reason recorded when the confirmation floor downgraded an
+ * `allow` to `confirm` for a {@link CONFIRMATION_REQUIRED_ACTION_TYPES}
+ * action — including when the policy that produced the `allow` bypassed
+ * `permissionPolicySchema` some other way, since the engine enforces this
+ * independently of validation.
+ */
+export const REASON_CONFIRMATION_FLOOR = 'confirmation-floor';
+/**
+ * Decision reason recorded when the emergency availability floor overrode a
+ * `deny` (explicit, default, or from an unavailable policy) for an
+ * {@link EMERGENCY_AVAILABILITY_FLOOR_ACTION_TYPES} action, so the user's own
+ * emergency controls could not be silently suppressed.
+ */
+export const REASON_EMERGENCY_AVAILABILITY_FLOOR = 'emergency-availability-floor';
+/**
+ * Decision reason recorded when a proposal's `actionType` is not a member of
+ * {@link ACTION_TYPES}. Never reached through the type system alone — this is
+ * the engine's own defence against a proposal that reached it through some
+ * path that bypassed that type, such as an untrusted payload cast rather
+ * than validated.
+ */
+export const REASON_UNKNOWN_ACTION_TYPE = 'unknown-action-type';
 
 // ---------------------------------------------------------------------------
 // Audit model

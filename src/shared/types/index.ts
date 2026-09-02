@@ -65,6 +65,13 @@ export interface PermissionVerdict {
   readonly reason: string;
   /** Set when the emergency stop, rather than a policy rule, was decisive. */
   readonly emergencyStopEngaged: boolean;
+  /**
+   * True exactly when `decision === 'confirm'`. Stated as its own field
+   * rather than left for every caller to infer from the decision enum, so a
+   * caller can check "does this need a prompt" without also having to know
+   * which enum member that maps to.
+   */
+  readonly confirmationRequired: boolean;
 }
 
 /** The outcome of handling a proposal, returned to the caller. */
