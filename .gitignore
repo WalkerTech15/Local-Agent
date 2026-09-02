@@ -1,0 +1,101 @@
+# ---------------------------------------------------------------------------
+# Secrets and credentials
+#
+# Key *files* stay unanchored: a stray `.key`, `.pem`, `.pfx` or `.p12` must be
+# ignored wherever it appears in the tree.
+#
+# The `secrets/` and `credentials/` *directories* are anchored to the
+# repository root. Unanchored, they would also match `src/main/secrets/` — a
+# documented module of the application (see docs/architecture.md) — and the
+# secret-handling implementation would be silently untracked.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+/secrets/
+/credentials/
+*.key
+*.pem
+*.pfx
+*.p12
+.npmrc
+
+# ---------------------------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------------------------
+node_modules/
+
+# ---------------------------------------------------------------------------
+# Build output and tool caches
+#
+# Anchored with a leading slash so they match only at the repository root. An
+# unanchored `build/` or `out/` would also ignore a legitimately named source
+# directory anywhere in the tree.
+# ---------------------------------------------------------------------------
+/dist/
+/build/
+/out/
+/coverage/
+.vite/
+.eslintcache
+*.tsbuildinfo
+.cache/
+
+# ---------------------------------------------------------------------------
+# Runtime user data
+#
+# Settings, secrets, permission policy, audit logs and memory belong under
+# %APPDATA%\Local-Agent\ and must never be written into the repository. See
+# docs/data-locations.md.
+#
+# Anchored for the same reason as above: `src/renderer/features/data/` and a
+# module named `logs` are legitimate source paths and must stay tracked.
+# ---------------------------------------------------------------------------
+/data/
+/user-data/
+/logs/
+/.local-agent/
+*.db
+*.sqlite
+*.sqlite3
+
+# ---------------------------------------------------------------------------
+# Rust / Tauri
+#
+# Retained from the initial scaffold. The chosen stack is Electron (see
+# docs/adr/0001-desktop-stack.md), so these should not match anything today.
+# ---------------------------------------------------------------------------
+/target/
+src-tauri/target/
+
+# ---------------------------------------------------------------------------
+# Python
+#
+# Retained from the initial scaffold; not part of the current stack.
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# ---------------------------------------------------------------------------
+# Editors and operating system
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------------------------------------------------------------------------
+# Temporary files
+#
+# `*.log` is anchored to the repository root, where a stray development log
+# lands. Unanchored, it would also ignore a legitimate fixture such as
+# tests/fixtures/example.log. Runtime audit logs live under
+# %APPDATA%\Local-Agent\ and are covered by the /logs/ rule above.
+# ---------------------------------------------------------------------------
+*.tmp
+/*.log
