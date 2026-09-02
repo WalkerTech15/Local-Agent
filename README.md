@@ -3,18 +3,19 @@
 A local-first, permission-controlled desktop assistant for Windows. The
 assistant is named **JARVIS** by default; the product is **Local Agent**.
 
-> **Status: Phase 1, Milestone 5.**
+> **Status: Phase 1, Milestone 6.**
 > The repository contains project scaffolding, shared schemas, a hardened
 > Electron desktop shell, non-secret settings storage, an audit-log
-> foundation, and the permission-policy runtime: a pure decision engine, an
-> executor that cannot run a side effect without a decision, fail-safe policy
-> loading, and the canonical request path assembled into one function. None
-> of it is reachable from the running application yet — no new IPC channel
-> was added, since nothing has a real, safe side effect to gate. There is no
-> emergency-stop runtime, no onboarding interface and no model integration
-> yet. Nothing in this repository makes a network request or performs an
-> action on your machine — the renderer's Content-Security-Policy blocks
-> outbound network access outright, which the end-to-end test suite asserts.
+> foundation, the permission-policy runtime, and persisted emergency-stop
+> state: fail-safe loading (a missing file means disengaged, a corrupt one
+> means engaged — never the reverse), atomic writes, and the engage/reset
+> operations, both gated by the same permission engine and executor as every
+> other action. None of it is reachable from the running application yet —
+> no new IPC channel was added, since nothing has a real, safe side effect to
+> gate. There is no onboarding interface and no model integration yet.
+> Nothing in this repository makes a network request or performs an action on
+> your machine — the renderer's Content-Security-Policy blocks outbound
+> network access outright, which the end-to-end test suite asserts.
 
 All rights reserved. No licence has been granted for this project.
 
@@ -67,6 +68,10 @@ postponed.
 - No side effect can run without a permission decision: `execute`, the one
   module permitted to perform one, requires a verdict as an explicit
   argument and has no code path that skips it.
+- The emergency stop, once engaged, denies every non-exempt action; a missing
+  state file starts disengaged, but a corrupt or unreadable one fails safe to
+  **engaged**, not the reverse. Releasing it always requires an explicit,
+  approved confirmation — never a model's say-so, never a policy rule alone.
 - **No credential is ever stored in this repository**, in `.env`, in
   `.env.example`, in a settings file, in a log, or in an error message.
 
@@ -76,12 +81,12 @@ Full detail, including known limitations, is in
 ## Where your data lives
 
 Application code lives in this repository. Everything else — settings,
-secrets, permission policy, audit logs and memory — lives outside it, under
-`%APPDATA%\Local-Agent\`, each in its own location. `settings.json`, the
-audit log writer and permission policy loading are implemented so far, all
-as storage layers only: nothing in the running application calls any of them
-through a real action yet. See
-[docs/data-locations.md](docs/data-locations.md).
+secrets, permission policy, audit logs, emergency-stop state and memory —
+lives outside it, under `%APPDATA%\Local-Agent\`, each in its own location.
+`settings.json`, the audit log writer, permission policy loading, and
+emergency-stop state are implemented so far, all as storage layers only:
+nothing in the running application calls any of them through a real action
+yet. See [docs/data-locations.md](docs/data-locations.md).
 
 ## Requirements
 
@@ -126,12 +131,13 @@ src/main/       Privileged Electron main process. Owns the BrowserWindow,
                 the Content-Security-Policy, navigation/window-open/webview
                 hardening, the one registered IPC handler, non-secret
                 settings storage (paths.ts, settings.ts), the audit-log
-                writer (audit.ts), and the permission-policy runtime:
+                writer (audit.ts), the permission-policy runtime:
                 a pure decision engine (permissions.ts), the executor gate
                 (executor.ts), fail-safe policy loading (policy.ts) and the
-                assembled request path (action-pipeline.ts). None of the
-                storage or permission modules is called by the application
-                through a real IPC channel yet.
+                assembled request path (action-pipeline.ts), and persisted
+                emergency-stop state with its engage/reset operations
+                (emergency.ts). None of the storage or permission modules is
+                called by the application through a real IPC channel yet.
 src/preload/    The single contextBridge. Exposes a narrow, explicitly
                 enumerated, typed API — never ipcRenderer, never a generic
                 invoke-any-channel function. Bundled into one file: a

@@ -139,7 +139,7 @@ Runtime user data never lives inside the repository. See
 | M3  | Settings storage                                                    | complete, pending review |
 | M4  | Audit-log foundation                                                | complete, pending review |
 | M5  | Permission-policy foundation                                        | complete, pending review |
-| M6  | Emergency-stop foundation                                           | not started              |
+| M6  | Emergency-stop foundation                                           | complete, pending review |
 | M7  | Onboarding interface and provider settings                          | not started              |
 | M8  | Documentation completion, test hardening, CI                        | not started              |
 

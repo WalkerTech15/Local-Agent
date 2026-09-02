@@ -7,16 +7,22 @@
 > `main/settings`: centralized user-data path resolution and non-secret
 > settings storage, loaded read-only at startup. Milestone 4 added
 > `main/audit`: an append-only, redacting, daily-rotating JSONL writer.
-> Milestone 5 adds the permission-policy runtime: `main/permissions` (the pure
-> decision engine), `main/executor` (the side-effect gate), `main/policy`
-> (fail-safe policy loading, loaded read-only at startup) and
-> `main/action-pipeline` (the canonical request path, assembled into one
-> callable function). None of it is reachable from the running application
-> yet — no new IPC channel was registered, because nothing has a real, safe
-> side effect to offer one; every module is exercised directly by this
-> milestone's own tests instead. `main/secrets` and `main/emergency` described
-> below do not exist yet; they are the approved design for Milestones 6-7.
-> This document marks which parts exist today.
+> Milestone 5 added the permission-policy runtime: `main/permissions` (the
+> pure decision engine), `main/executor` (the side-effect gate),
+> `main/policy` (fail-safe policy loading) and `main/action-pipeline` (the
+> canonical request path, assembled into one callable function). Milestone 6
+> added `main/emergency`: persisted emergency-stop state, following the same
+> fail-safe load pattern as settings and policy, plus the `engageEmergencyStop`
+> and `resetEmergencyStop` operations that plug into `handleActionProposal`
+> as its `perform` callback for the `emergency.engage` and `emergency.reset`
+> action types. `decidePermission` and `handleActionProposal` needed **no
+> code changes** for this — both already took `emergencyState` as an explicit
+> input since Milestone 5. Nothing here is reachable from the running
+> application yet beyond a read-only startup load — no new IPC channel was
+> registered, because nothing has a real, safe side effect to offer one
+> except through this milestone's own tests. `main/secrets` described below
+> does not exist yet; it is the approved design for Milestone 7. This
+> document marks which parts exist today.
 
 ---
 
@@ -65,7 +71,7 @@ audited before it can perform a privileged action.
 | `main/settings` **(exists)**        | Loads, validates and atomically writes settings. Fails closed to safe defaults.                                                                                       | Store secrets; write without going through the executor once one exists.                        |
 | `main/policy` **(exists)**          | Loads and validates the permission policy file. Fails closed to `createDefaultPermissionPolicy()`.                                                                    | Merge a partially-valid document; expose a write path.                                          |
 | `main/secrets`                      | Encrypt and decrypt via the asynchronous `safeStorage` API.                                                                                                           | Return a plaintext secret across IPC; log a secret; write plaintext to disk.                    |
-| `main/emergency`                    | Owns and persists emergency-stop state; supplies it to the permission engine.                                                                                         | Be bypassable by the renderer or by the policy file.                                            |
+| `main/emergency` **(exists)**       | Loads and atomically persists emergency-stop state; `engageEmergencyStop`/`resetEmergencyStop` are `perform` callbacks for the action pipeline.                       | Be bypassable by the renderer, a model, or the policy file; make its own permission decision.   |
 | `main/paths` **(exists)**           | Single source of truth for user-data locations.                                                                                                                       | Accept a user-supplied path.                                                                    |
 
 ## Dependency direction
@@ -450,6 +456,99 @@ function. `main/index.ts` calls `loadPermissionPolicy` read-only at startup,
 mirroring the Milestone 3 settings pattern, to prove the real policy path
 resolves and loads (or safely falls back) before the window opens.
 
+## Emergency stop (implemented)
+
+| File                    | Describes                                                                                |
+| ----------------------- | ---------------------------------------------------------------------------------------- |
+| `src/main/emergency.ts` | `loadEmergencyState`, `writeEmergencyState`, `engageEmergencyStop`, `resetEmergencyStop` |
+
+**No engine or pipeline code changed.** `decidePermission` and
+`handleActionProposal` both already took `emergencyState: EmergencyState` as
+an explicit, required input since Milestone 5, exactly anticipating this
+milestone — `main/permissions.ts` and `main/action-pipeline.ts` have zero
+diff for Milestone 6. This milestone is purely the I/O layer underneath that
+existing input: loading a real, persisted state from disk, and the two
+`perform` callbacks that change it.
+
+**`loadEmergencyState` distinguishes "missing" from "corrupt" — unlike every
+other loader in this codebase.** `loadSettings` and `loadPermissionPolicy`
+both collapse every read failure (missing, unreadable, malformed, invalid) to
+the same safe defaults, because for settings and policy that is always the
+correct outcome. Emergency state cannot do that: which failure happened
+changes the correct result. A missing file is a legitimate first launch and
+must resolve _disengaged_ (a clean install must never start permanently
+blocked); an existing file that is unreadable, malformed, or fails
+`emergencyStateSchema` must resolve _engaged_ (state that cannot be trusted
+fails safe, not open). `loadEmergencyState` classifies `ENOENT` as `'absent'`
+and every other read failure as `'unreadable'`, then hands off to the
+already-pure, already-tested `resolveEmergencyState`
+(`shared/schemas/emergency.schema.ts`, Milestone 1) to apply that rule — this
+milestone added no new resolution logic, only the I/O that feeds it real
+data. A `__proto__`/`constructor`/`prototype` key anywhere in the parsed
+document is rejected the same way `main/settings.ts` and `main/policy.ts`
+reject one, via a duplicated `containsForbiddenKey`, for the same reason
+those two don't import each other's copy.
+
+**`writeEmergencyState` is atomic**, following `main/settings.ts`'s exact
+mechanics: re-validate against `emergencyStateSchema` immediately before
+serialising, write to a uniquely named temporary file in the same directory,
+flush, then a single `rename` into place, retried on a transient Windows
+sharing violation. A reader only ever sees the previous complete state or the
+new complete one, never a partial or truncated file. One deliberate
+divergence from settings.ts's retry budget: `RENAME_MAX_ATTEMPTS` is 10 here
+(not 5) and the backoff starts at 20ms (not 15ms) — measured directly while
+developing this module's own 8-way concurrent-write test, which the original,
+smaller budget occasionally failed once the suite also ran `settings.test.ts`'s
+own concurrency test in the same run. A larger budget only ever risks a
+longer delay before giving up, never a partial write, so this is a pure
+robustness improvement local to this module.
+
+**`engageEmergencyStop` and `resetEmergencyStop` make no permission
+decision.** Both are plain `perform` callbacks: `engageEmergencyStop` writes
+`createEngagedEmergencyState(now, REASON_EMERGENCY_ENGAGED_BY_USER)` —
+`reason` is always this one fixed constant, never free text from a user or a
+model, since Phase 1 has no interface for either to supply one and accepting
+one would reopen the log-injection risk persisted display strings are
+elsewhere deliberately narrow to avoid. `resetEmergencyStop` writes
+`createInitialEmergencyState()`. Neither function decides whether it may run:
+`emergency.engage` is not in `CONFIRMATION_REQUIRED_ACTION_TYPES`, so a
+default policy allows it immediately — engaging must never be obstructed by a
+prompt. `emergency.reset` is in **both** `CONFIRMATION_REQUIRED_ACTION_TYPES`
+and `EMERGENCY_AVAILABILITY_FLOOR_ACTION_TYPES`, so `decidePermission` always
+resolves it to `confirm`, regardless of policy content, regardless of who or
+what proposed it, and regardless of whether the emergency stop is currently
+engaged (`emergency.reset` is stop-exempt) — verified by a test matrix
+covering every combination of `{null, empty, hostile-allow, hostile-deny,
+default}` policy × `{engaged, disengaged}` emergency state, all resolving to
+`confirm`. `execute` then refuses to call `resetEmergencyStop` at all unless
+that confirmation was approved; a rejected confirmation leaves the on-disk
+file byte-for-byte unchanged, since `resetEmergencyStop` — and therefore
+`writeEmergencyState` — is never invoked.
+
+**Still no native confirmation dialog.** Exactly as Milestone 5 left it:
+`requestConfirmation` remains an injected callback with no concrete
+`dialog.showMessageBox` wiring, since there is still no UI path that would
+trigger one. Whichever milestone adds a real "release the emergency stop"
+control must implement its confirmation as a native, main-process-owned
+dialog — never one rendered by the sandboxed renderer.
+
+**Read-only at startup, like the other two loaders.** `main/index.ts` calls
+`loadEmergencyState` once, read-only, alongside `loadSettings` and
+`loadPermissionPolicy`, to prove the real state path resolves and the
+fail-safe logic runs against the real environment before the window opens.
+Nothing writes to `state/emergency.json` from the running application yet —
+`engageEmergencyStop`/`resetEmergencyStop` are exercised end-to-end only by
+this milestone's own tests, for the same reason Milestone 5 registered no new
+IPC channel: nothing yet calls `handleActionProposal` for a real
+`emergency.engage` or `emergency.reset` proposal.
+
+**The emergency stop blocks subsequent actions; it does not cancel anything
+already running.** Phase 1 has no long-running or background work of any
+kind, so there is nothing for it to interrupt. Calling it a kill switch would
+overstate what it does: it is a gate a future proposal must pass through, not
+a task canceller, and this remains true after Milestone 6 exactly as it was
+documented before persistence existed.
+
 ## Timestamps and clocks
 
 `src/shared` contains no clock access. Functions that need a timestamp take it
@@ -461,7 +560,10 @@ the caller supplies `now`, so a test never depends on the wall clock either.
 `main/audit.ts`'s `appendAuditRecord` goes one step further and takes no
 clock parameter at all: the UTC calendar day used for rotation is read
 directly from the candidate's own required `timestamp` field, so the module
-has no time dependency whatsoever, injected or otherwise.
+has no time dependency whatsoever, injected or otherwise. `main/emergency.ts`
+follows the `loadSettings` convention exactly: `loadEmergencyState(stateFile,
+now)` and `engageEmergencyStop(stateFile, now)` both take `now` from the
+caller.
 
 All persisted timestamps are UTC ISO-8601 and reject a UTC offset, so records
 sort correctly and compare unambiguously.

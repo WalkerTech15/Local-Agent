@@ -41,6 +41,7 @@ export {
 export type { AuditParameters, JsonPrimitive, JsonValue } from './audit-parameters.schema';
 
 export {
+  createEngagedEmergencyState,
   createFailSafeEmergencyState,
   createInitialEmergencyState,
   emergencyStateSchema,

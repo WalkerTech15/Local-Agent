@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, session } from 'electron';
 import { join } from 'node:path';
 
+import { loadEmergencyState } from './emergency';
 import { registerIpcHandlers } from './ipc';
 import { resolveUserDataPaths } from './paths';
 import { loadPermissionPolicy } from './policy';
@@ -101,15 +102,18 @@ app
 
     // Read-only: proves the real application-data path resolves and loads
     // (or safely falls back) before the window opens. Nothing is written —
-    // neither loader creates a file or directory, and no IPC channel exposes
-    // either result yet. Milestone 5 registers no new privileged channel of
-    // its own — nothing yet has a real, safe side effect to gate — but
+    // none of the three loaders creates a file or directory, and no IPC
+    // channel exposes any result yet. No new privileged channel exists —
+    // nothing yet has a real, safe side effect to gate — but
     // `main/action-pipeline.ts`'s `handleActionProposal` is the function
     // such a channel must call once one exists, and it is exercised
-    // end-to-end by this milestone's own tests, not by the running app.
+    // end-to-end by this and the previous milestone's own tests, not by the
+    // running app.
     const userDataPaths = resolveUserDataPaths(app.getPath('appData'));
-    await loadSettings(userDataPaths.settingsFile, new Date().toISOString());
+    const startupNow = new Date().toISOString();
+    await loadSettings(userDataPaths.settingsFile, startupNow);
     await loadPermissionPolicy(userDataPaths.permissionPolicyFile);
+    await loadEmergencyState(userDataPaths.emergencyStateFile, startupNow);
 
     registerIpcHandlers(ipcMain);
     createWindow();

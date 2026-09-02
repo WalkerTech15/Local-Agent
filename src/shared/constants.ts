@@ -239,6 +239,16 @@ export const REASON_EMERGENCY_AVAILABILITY_FLOOR = 'emergency-availability-floor
  */
 export const REASON_UNKNOWN_ACTION_TYPE = 'unknown-action-type';
 
+/**
+ * `EmergencyState.reason` recorded on a deliberate, successful engage —
+ * distinct from the `REASON_*` constants above, which are `PermissionVerdict`
+ * decision reasons, not emergency-state reasons. Phase 1 has no interface for
+ * a user or a model to supply free text explaining why the stop was engaged,
+ * so `main/emergency.ts`'s `engageEmergencyStop` always uses this fixed
+ * constant rather than accepting one as input.
+ */
+export const REASON_EMERGENCY_ENGAGED_BY_USER = 'emergency-engaged-by-user';
+
 // ---------------------------------------------------------------------------
 // Audit model
 // ---------------------------------------------------------------------------

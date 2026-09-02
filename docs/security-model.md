@@ -5,11 +5,14 @@
 > settings storage. Milestone 4 added the append-only, redacting, daily
 > rotating audit log writer. Milestone 5 added the permission-policy runtime:
 > a pure decision engine, an executor gate, fail-safe policy loading, and the
-> assembled canonical request path — none of it reachable from the running
-> application yet, since no new IPC channel exists to reach it through.
-> Controls below are marked **[implemented]**, **[enforced by schema]** or
-> **[planned, milestone N]**. Nothing here is claimed as working before it
-> exists.
+> assembled canonical request path. Milestone 6 added persisted emergency-stop
+> state — fail-safe loading, atomic writes, and the engage/reset operations —
+> under an engine and pipeline that needed no code changes, since both already
+> took emergency state as an explicit input. None of it is reachable from the
+> running application yet, since no new IPC channel exists to reach it
+> through. Controls below are marked **[implemented]**, **[enforced by
+> schema]** or **[planned, milestone N]**. Nothing here is claimed as working
+> before it exists.
 
 ---
 
@@ -412,18 +415,58 @@ easy to conflate:
 | File exists, malformed or unreadable | **engaged**    | Previously written state that cannot be trusted fails safe.                    |
 | File exists, valid                   | as stored      | State persists across restart.                                                 |
 
-**[implemented, M5 — decision logic only]** `decidePermission` takes
-`emergencyState` as an explicit input and, when `engaged` is true, denies
-every action outside `EMERGENCY_STOP_EXEMPT_ACTION_TYPES`
-(`settings.read`, `audit.read`, `emergency.reset`, `app.exit`), evaluated
-after both permission floors so it can still override a floor-forced `allow`
-for a non-exempt floor action (`emergency.engage`). This is the pure
-decision half of the invariant only. **[planned, M6]** Persisting engaged
-state to `state/emergency.json`, loading it at startup via
-`resolveEmergencyState`, and any IPC path to engage or reset it are still
-unbuilt — Milestone 5 has no caller that constructs a real `EmergencyState`
-from disk; every test constructs one directly. The exemptions exist so an
-engaged stop is not an unrecoverable state.
+**[implemented]** `decidePermission` takes `emergencyState` as an explicit
+input and, when `engaged` is true, denies every action outside
+`EMERGENCY_STOP_EXEMPT_ACTION_TYPES` (`settings.read`, `audit.read`,
+`emergency.reset`, `app.exit`), evaluated after both permission floors so it
+can still override a floor-forced `allow` for a non-exempt floor action
+(`emergency.engage`). The exemptions exist so an engaged stop is not an
+unrecoverable state.
+
+**[implemented, M6]** `main/emergency.ts` persists state to
+`state/emergency.json`, applying the two-case table above against the real
+filesystem: `loadEmergencyState` classifies a missing file as `'absent'` and
+every other read failure (permission denial, a directory where the file
+should be, any I/O error), malformed JSON, or a
+`__proto__`/`constructor`/`prototype` key anywhere in the parsed document as
+`'unreadable'`, before handing off to the unchanged, already-tested
+`resolveEmergencyState` to apply the resolution rule. Neither branch's
+`reason` field ever contains the underlying error message or the file's
+path — the unreadable branch always uses the fixed
+`REASON_EMERGENCY_STATE_UNREADABLE` constant.
+
+**[implemented, M6]** `writeEmergencyState` is atomic, matching
+`main/settings.ts`'s mechanics exactly: write to a uniquely named temporary
+file in the same directory, flush, then replace the target with a single
+`rename`, retried on a transient Windows sharing violation. A failed write
+never truncates or partially overwrites a valid prior state, since nothing
+ever writes through the original path until the replacement is fully ready —
+proven under concurrent writes by a test that fires many writes at one file
+and confirms the result is always exactly one complete, valid document.
+
+**[implemented, M6]** `engageEmergencyStop` and `resetEmergencyStop` are
+`perform` callbacks for the Milestone 5 pipeline, not permission decisions
+of their own. `emergency.engage` is not confirmation-required, so it runs
+immediately once policy allows it — stopping the assistant must never be
+obstructed by a prompt. `emergency.reset` is both confirmation-required
+**and** an availability-floor action, so `decidePermission` always resolves
+it to `confirm`, independent of policy content, independent of the proposal's
+`actor` or `parameters` (a proposal claiming to be `actor: 'model'` with a
+"the model has determined it is safe to resume" rationale resolves
+identically to any other), and independent of whether the stop is currently
+engaged, since `emergency.reset` is itself stop-exempt. `execute` will not
+call `resetEmergencyStop` without an approved confirmation; a rejected one
+means the function — and therefore any write — never runs, leaving the
+persisted file byte-for-byte identical to before the proposal, verified by a
+test that compares the file's raw bytes before and after a rejected reset.
+
+**[not yet implemented]** An IPC path or UI control to engage or reset the
+stop. `engageEmergencyStop` and `resetEmergencyStop` are real, tested `perform`
+callbacks, but nothing in the running application calls
+`handleActionProposal` with a real `emergency.engage` or `emergency.reset`
+proposal yet — consistent with Milestone 5 registering no new IPC channel,
+and with the confirmation-dialog limitation already noted under
+_Permission model_ above.
 
 ### Input validation
 
@@ -481,7 +524,9 @@ address one. No generic pass-through channel exists.
 | A side effect running without a permission decision           | Addressed, M5 — structural: no code path in `execute` calls `perform` without an authorizing verdict                                |
 | Model rationale/confidence used as authorization              | Addressed, M5 — `decidePermission` never reads `proposal.parameters`; proven by test                                                |
 | Emergency-stop bypass (decision logic)                        | Addressed, M5 — engine denies non-exempt actions when engaged, evaluated after both floors                                          |
-| Emergency-stop bypass (persistence, gating runtime)           | Not yet built — planned, M6                                                                                                         |
+| Emergency-stop bypass (persistence)                           | Addressed, M6 — atomic writes, fail-safe loading; reset requires an approved confirmation the pipeline already enforces             |
+| Emergency-stop state corruption fails open instead of closed  | Addressed, M6 — malformed or unreadable state resolves engaged, not disengaged; proven by test                                      |
+| Emergency reset triggered by a model or a policy rule alone   | Addressed, M6 — always resolves to `confirm`; proven across a policy × emergency-state test matrix                                  |
 | Path traversal                                                | Not reachable — all paths derive from the app-data directory; none is user-supplied                                                 |
 | Prompt injection, untrusted model or tool output              | Not reachable in Phase 1 — no model call exists. The proposal/executor split pre-empts it                                           |
 | Supply-chain compromise via npm                               | Mitigated, not eliminated — see below                                                                                               |
@@ -604,11 +649,21 @@ These are real and are stated plainly rather than described as solved.
     assembled request path, but registered no new `ipcMain` channel and
     wired no `dialog.showMessageBox` call, because nothing yet has a real,
     safe side effect or a real confirmation-requiring action reachable from
-    the running application. Every guarantee above is verified by tests that
-    call `handleActionProposal` directly, not by driving the real app
-    end-to-end through IPC. This is consistent with Milestone 3's and
-    Milestone 4's own storage-only, not-yet-wired scope, not a shortcut
-    specific to this milestone.
+    the running application. Milestone 6 does not change this: `main/index.ts`
+    calls `loadEmergencyState` read-only at startup, but nothing calls
+    `engageEmergencyStop` or `resetEmergencyStop` from the running app.
+    Every guarantee above is verified by tests that call
+    `handleActionProposal` directly, not by driving the real app end-to-end
+    through IPC. This is consistent with Milestone 3's and Milestone 4's own
+    storage-only, not-yet-wired scope, not a shortcut specific to any one
+    milestone.
+
+16. **The emergency stop has no user-facing control at all yet.** There is no
+    button, menu item, keyboard shortcut or IPC channel a user could actually
+    reach to engage or reset it. `engageEmergencyStop` and
+    `resetEmergencyStop` are real and fully tested, but only as functions a
+    future caller passes to `handleActionProposal` — building that caller is
+    UI work belonging to a later milestone, not a Milestone 6 deliverable.
 
 ---
 

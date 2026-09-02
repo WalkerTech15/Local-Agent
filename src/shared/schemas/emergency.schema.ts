@@ -98,6 +98,29 @@ export function createFailSafeEmergencyState(engagedAt: string): EmergencyState 
 }
 
 /**
+ * The state written when the emergency stop is deliberately engaged —
+ * Milestone 6's `main/emergency.ts` calls this, distinct from
+ * {@link createFailSafeEmergencyState}, which is reserved for a state file
+ * that could not be trusted rather than a successful, intentional engage.
+ *
+ * `reason` is a caller-supplied constant, never free text typed by a user or
+ * produced by a model: Phase 1 has no interface for either to explain why the
+ * stop was engaged, and accepting one here would reopen exactly the
+ * log-injection and unbounded-content risks the rest of this codebase's
+ * persisted fields are deliberately narrow to avoid. `emergencyStateSchema`
+ * still bounds it (`max(200)`) as a backstop regardless of what a caller
+ * passes.
+ */
+export function createEngagedEmergencyState(engagedAt: string, reason: string): EmergencyState {
+  return {
+    schemaVersion: EMERGENCY_SCHEMA_VERSION,
+    engaged: true,
+    engagedAt,
+    reason,
+  };
+}
+
+/**
  * What the caller found on disk.
  *
  * The caller performs the file access and reports the outcome; this module
