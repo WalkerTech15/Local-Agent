@@ -3,15 +3,16 @@
 A local-first, permission-controlled desktop assistant for Windows. The
 assistant is named **JARVIS** by default; the product is **Local Agent**.
 
-> **Status: Phase 1, Milestone 2.**
-> The repository contains project scaffolding, shared schemas, and a hardened
-> Electron desktop shell: a sandboxed renderer, a narrow typed preload bridge,
-> and a main process that answers one health-check IPC channel. There is no
-> settings persistence, no permission engine, no audit log, no emergency-stop
-> runtime and no model integration yet. Nothing in this repository makes a
-> network request or performs an action on your machine — the renderer's
-> Content-Security-Policy blocks outbound network access outright, which the
-> end-to-end test suite asserts.
+> **Status: Phase 1, Milestone 3.**
+> The repository contains project scaffolding, shared schemas, a hardened
+> Electron desktop shell, and non-secret settings storage: path resolution,
+> fail-safe loading, and atomic writes, loaded read-only at startup. There is
+> no permission engine, no audit log, no emergency-stop runtime, no
+> onboarding interface and no model integration yet — nothing yet writes to
+> `settings.json` from the running application. Nothing in this repository
+> makes a network request or performs an action on your machine — the
+> renderer's Content-Security-Policy blocks outbound network access outright,
+> which the end-to-end test suite asserts.
 
 All rights reserved. No licence has been granted for this project.
 
@@ -70,7 +71,9 @@ Full detail, including known limitations, is in
 
 Application code lives in this repository. Everything else — settings,
 secrets, permission policy, audit logs and memory — lives outside it, under
-`%APPDATA%\Local-Agent\`, each in its own location. See
+`%APPDATA%\Local-Agent\`, each in its own location. Only `settings.json` is
+implemented so far, and only the storage layer: nothing in the running
+application writes to it yet. See
 [docs/data-locations.md](docs/data-locations.md).
 
 ## Requirements
@@ -114,7 +117,9 @@ src/shared/     Pure schemas, types and constants. No I/O, no Electron.
                 Safe to import from any process, including the renderer.
 src/main/       Privileged Electron main process. Owns the BrowserWindow,
                 the Content-Security-Policy, navigation/window-open/webview
-                hardening, and the one registered IPC handler.
+                hardening, the one registered IPC handler, and non-secret
+                settings storage (path resolution, fail-safe loading, atomic
+                writes — see paths.ts and settings.ts).
 src/preload/    The single contextBridge. Exposes a narrow, explicitly
                 enumerated, typed API — never ipcRenderer, never a generic
                 invoke-any-channel function. Bundled into one file: a

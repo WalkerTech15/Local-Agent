@@ -136,7 +136,7 @@ Runtime user data never lives inside the repository. See
 | --- | ------------------------------------------------------------------- | ------------------------ |
 | M1  | Scaffold, tooling, documentation, shared schemas                    | complete, pending review |
 | M2  | Desktop shell: hardened main process, preload bridge, renderer boot | complete, pending review |
-| M3  | Settings storage                                                    | not started              |
+| M3  | Settings storage                                                    | complete, pending review |
 | M4  | Audit-log foundation                                                | not started              |
 | M5  | Permission-policy foundation                                        | not started              |
 | M6  | Emergency-stop foundation                                           | not started              |

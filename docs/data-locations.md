@@ -3,8 +3,7 @@
 Application code lives in this repository. **Runtime user data never does.**
 
 Everything the application writes at runtime lives under the Windows per-user
-application-data directory, resolved by Electron as
-`app.getPath('userData')`:
+application-data directory:
 
 ```
 %APPDATA%\Local-Agent\
@@ -16,9 +15,20 @@ which on a typical machine is:
 C:\Users\<you>\AppData\Roaming\Local-Agent\
 ```
 
-> **Current state.** Milestone 1 defines this layout in
-> `src/shared/constants.ts` (`USER_DATA_PATHS`). No directory is created and
-> no file is written yet; that begins in Milestone 3.
+`src/main/paths.ts` (`resolveUserDataPaths`) resolves this as
+`join(app.getPath('appData'), APP_DATA_DIR_NAME)` — the platform's per-user
+application-data root, joined with the constant folder name — rather than
+Electron's `app.getPath('userData')`, whose folder name instead follows
+`app.name`. Deriving it explicitly means the folder is always exactly
+`Local-Agent`, regardless of how `app.name` resolves. Nothing here is ever a
+user-supplied or renderer-supplied path.
+
+> **Current state.** Milestone 3 implements `settings.json`: path resolution,
+> defaults on first launch, strict validation, fail-safe fallback on a
+> corrupt or unreadable file, and atomic writes. Nothing else in this layout
+> exists yet — `permissions\`, `secrets\`, `logs\` and `state\` remain
+> Milestones 4-7. No directory or file is created merely by reading; the
+> directory is created lazily, only on the first write.
 
 ---
 
@@ -39,14 +49,14 @@ C:\Users\<you>\AppData\Roaming\Local-Agent\
 └── memory\                          reserved, unused in Phase 1
 ```
 
-| Path                      | Contains                                                                  | Notes                                                                                                          |
-| ------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `settings.json`           | Assistant name, user name, language, provider selection, `hasApiKey` flag | **Never a credential.** Strict schema; unknown keys rejected.                                                  |
-| `permissions\policy.json` | Permission rules                                                          | Human-readable and human-editable. Cannot widen the model beyond the code-enforced floor.                      |
-| `secrets\secrets.enc`     | API keys                                                                  | Encrypted with the asynchronous `safeStorage` API (Windows DPAPI). Never leaves the main process in plaintext. |
-| `logs\audit\`             | One JSON object per line                                                  | Append-only. Records denials and rejected confirmations too.                                                   |
-| `state\emergency.json`    | Emergency-stop state                                                      | Missing file on first launch means _disengaged_. Malformed existing file means _engaged_.                      |
-| `memory\`                 | Reserved                                                                  | Nothing is written here in Phase 1.                                                                            |
+| Path                      | Contains                                                                  | Notes                                                                                                                            |
+| ------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `settings.json`           | Assistant name, user name, language, provider selection, `hasApiKey` flag | **[implemented, M3]** **Never a credential.** Strict schema; unknown keys rejected; written atomically.                          |
+| `permissions\policy.json` | Permission rules                                                          | **[planned, M5]** Human-readable and human-editable. Cannot widen the model beyond the code-enforced floor.                      |
+| `secrets\secrets.enc`     | API keys                                                                  | **[planned, M7]** Encrypted with the asynchronous `safeStorage` API (Windows DPAPI). Never leaves the main process in plaintext. |
+| `logs\audit\`             | One JSON object per line                                                  | **[planned, M4]** Append-only. Records denials and rejected confirmations too.                                                   |
+| `state\emergency.json`    | Emergency-stop state                                                      | **[planned, M6]** Missing file on first launch means _disengaged_. Malformed existing file means _engaged_.                      |
+| `memory\`                 | Reserved                                                                  | Nothing is written here in Phase 1.                                                                                              |
 
 ## Why they are separate
 

@@ -1,11 +1,13 @@
 # Architecture
 
-> **Current state.** Milestone 1 implemented `src/shared`. Milestone 2 adds
+> **Current state.** Milestone 1 implemented `src/shared`. Milestone 2 added
 > `src/main`, `src/preload` and `src/renderer` as a hardened desktop shell —
 > the window, the sandboxed renderer, the narrow preload bridge, and one
-> health-check IPC channel. `main/permissions`, `main/executor`, `main/audit`,
-> `main/settings`, `main/secrets` and `main/emergency` described below do not
-> exist yet; they are the approved design for Milestones 3–6. This document
+> health-check IPC channel. Milestone 3 adds `main/paths` and `main/settings`:
+> centralized user-data path resolution and non-secret settings storage,
+> loaded read-only at startup. `main/permissions`, `main/executor`,
+> `main/audit`, `main/secrets` and `main/emergency` described below do not
+> exist yet; they are the approved design for Milestones 4-7. This document
 > marks which parts exist today.
 
 ---
@@ -51,10 +53,10 @@ audited before it can perform a privileged action.
 | `main/permissions`               | Pure decision function. `(action, policy, emergencyState) → decision + reason`.                                                                                       | Perform I/O, show dialogs, or log.                                                              |
 | `main/executor`                  | The **only** module that performs side effects. Requires a permission decision as an argument.                                                                        | Be called from `renderer` or `preload`; act without a decision; make its own policy judgements. |
 | `main/audit`                     | Append-only event writer with redaction and daily rotation.                                                                                                           | Expose any update or delete function; write an unredacted secret.                               |
-| `main/settings`                  | Loads, validates and atomically writes settings. Fails closed to safe defaults.                                                                                       | Store secrets; write without going through the executor.                                        |
+| `main/settings` **(exists)**     | Loads, validates and atomically writes settings. Fails closed to safe defaults.                                                                                       | Store secrets; write without going through the executor once one exists.                        |
 | `main/secrets`                   | Encrypt and decrypt via the asynchronous `safeStorage` API.                                                                                                           | Return a plaintext secret across IPC; log a secret; write plaintext to disk.                    |
 | `main/emergency`                 | Owns and persists emergency-stop state; supplies it to the permission engine.                                                                                         | Be bypassable by the renderer or by the policy file.                                            |
-| `main/paths`                     | Single source of truth for user-data locations.                                                                                                                       | Accept a user-supplied path.                                                                    |
+| `main/paths` **(exists)**        | Single source of truth for user-data locations.                                                                                                                       | Accept a user-supplied path.                                                                    |
 
 ## Dependency direction
 
@@ -208,12 +210,66 @@ Build layout, and why it is not uniform across the three layers:
 `npm run build` runs all three: `tsc` for `main`, then Vite for `preload`,
 then Vite for `renderer`.
 
+## Settings storage (implemented)
+
+| File                   | Describes                                                               |
+| ---------------------- | ----------------------------------------------------------------------- |
+| `src/main/paths.ts`    | `resolveUserDataPaths(appDataDir)` — every user-data path from one root |
+| `src/main/settings.ts` | `loadSettings`, `writeSettings`, `containsForbiddenKey`                 |
+
+Both functions in `main/settings.ts` take a plain settings-file path rather
+than an `UserDataPaths` object or Electron's `app` module, so a test points
+at a file inside a temporary directory and configures nothing else — no test
+touches the real `%APPDATA%`. `main/index.ts` resolves the real path once,
+from `app.getPath('appData')`, and passes the single resulting string in.
+
+**Loading fails safe, unconditionally.** A missing file, an unreadable one
+(permissions, or a directory sitting where the file should be), malformed
+JSON, a `__proto__`/`constructor`/`prototype` key anywhere in the parsed
+document, or a document `settingsSchema` rejects for any reason — all five
+resolve exactly the same way: fresh defaults from `createDefaultSettings`.
+There is no partial-trust path: a loaded document either validates in full,
+as itself, and is returned as itself, or it is discarded in full and replaced
+with defaults. Nothing is ever merged into the defaults, which is what keeps
+a prototype-pollution key inert even before `containsForbiddenKey` rejects
+it explicitly — see the note in `main/settings.ts` for why the explicit
+check exists anyway rather than relying on that alone. `loadSettings` never
+creates a file or a directory; a first launch is indistinguishable, by
+design, from a corrupted one, and both return the same fresh defaults.
+
+**Writing is atomic.** The document is re-validated against `settingsSchema`
+immediately before serialising — a caller cannot persist a value that only
+_claims_ the `Settings` type at compile time. It is written to a uniquely
+named temporary file in the same directory as the target (required for the
+final rename to be atomic on the same volume), flushed to disk, then moved
+into place with a single `rename`. Any process observing `settingsFile`
+therefore only ever sees the previous complete document or the new complete
+one, never a partial write, regardless of when a crash or a concurrent write
+happens. A destination rename can transiently fail on Windows — `EPERM`,
+`EBUSY` or `EACCES` — when something else briefly holds the destination
+open, which two of this module's own writes racing for the same file is a
+real, tested example of; `renameWithRetry` retries a bounded number of times
+before giving up, without ever weakening atomicity, since each attempt is
+still one whole-file rename. On any failure after the temporary file is
+created, it is removed before the error propagates. The parent directory is
+created (`{ recursive: true }`) on write, never on read.
+
+**Not wired to IPC.** Milestone 3 is storage only. `main/index.ts` calls
+`loadSettings` once at startup, read-only, to prove the real path resolves
+and loads (or safely falls back) before the window opens — nothing exposes
+the result to the renderer yet, and `writeSettings` is not called from the
+running application at all. Both are ready for the onboarding flow (M7) to
+call through a future IPC channel, validated the same way `main/ipc.ts`
+already validates the health-check channel.
+
 ## Timestamps and clocks
 
 `src/shared` contains no clock access. Functions that need a timestamp take it
 as a parameter (`createDefaultSettings(updatedAt)`,
 `resolveEmergencyState(source, now)`). This keeps the shared layer pure and
-its tests deterministic.
+its tests deterministic. `main/settings.ts`'s `loadSettings(settingsFile, now)`
+follows the same convention one layer up, even though it does perform I/O:
+the caller supplies `now`, so a test never depends on the wall clock either.
 
 All persisted timestamps are UTC ISO-8601 and reject a UTC offset, so records
 sort correctly and compare unambiguously.

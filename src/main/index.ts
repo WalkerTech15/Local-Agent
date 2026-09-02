@@ -2,6 +2,8 @@ import { app, BrowserWindow, ipcMain, session } from 'electron';
 import { join } from 'node:path';
 
 import { registerIpcHandlers } from './ipc';
+import { resolveUserDataPaths } from './paths';
+import { loadSettings } from './settings';
 
 /**
  * Strict Content-Security-Policy for every response in the default session.
@@ -78,7 +80,7 @@ function hardenWebContents(): void {
 
 app
   .whenReady()
-  .then(() => {
+  .then(async () => {
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
       callback({
         responseHeaders: {
@@ -95,6 +97,14 @@ app
     session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => {
       callback(false);
     });
+
+    // Read-only: proves the real application-data path resolves and loads
+    // (or safely falls back) before the window opens. Nothing is written —
+    // `loadSettings` never creates a file or directory, and no IPC channel
+    // exposes the result yet. Milestone 3 is storage only; a later
+    // milestone wires this into an onboarding flow and an IPC channel.
+    const userDataPaths = resolveUserDataPaths(app.getPath('appData'));
+    await loadSettings(userDataPaths.settingsFile, new Date().toISOString());
 
     registerIpcHandlers(ipcMain);
     createWindow();

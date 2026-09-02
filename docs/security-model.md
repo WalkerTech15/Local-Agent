@@ -1,9 +1,10 @@
 # Security model
 
-> **Current state.** Milestone 1 implemented the shared schema layer only.
-> Controls below are marked **[implemented]**, **[enforced by schema]** or
-> **[planned, milestone N]**. Nothing here is claimed as working before it
-> exists.
+> **Current state.** Milestone 1 implemented the shared schema layer.
+> Milestone 2 added the hardened Electron shell. Milestone 3 added non-secret
+> settings storage. Controls below are marked **[implemented]**, **[enforced
+> by schema]** or **[planned, milestone N]**. Nothing here is claimed as
+> working before it exists.
 
 ---
 
@@ -119,14 +120,14 @@ benign.
 **[implemented]** The only secret-related value the settings file carries is
 the boolean `hasApiKey`.
 
-**[planned, M3/M7]** `hasApiKey` is **derived metadata and must never be
+**[planned, M7]** `hasApiKey` is **derived metadata and must never be
 treated as authoritative.** It is a cached answer to a question that only the
 encrypted secret store can actually answer, and the two can drift — a settings
 file restored from backup, an interrupted write, or a secret store cleared
 outside the application all leave the flag disagreeing with reality.
 
-The obligation this creates, to be discharged when the settings store (M3) and
-the secret store (M7) exist:
+The obligation this creates, to be discharged when the secret store (M7)
+exists — the settings store (M3) now does:
 
 - the settings loader reconciles `hasApiKey` against the secret store on load,
   and the writer refreshes it whenever a secret is written or cleared;
@@ -136,8 +137,9 @@ the secret store (M7) exist:
   alone. It exists so the interface can show key status without a key crossing
   the process boundary, and for nothing else.
 
-Nothing reconciles the two today, because neither store exists yet. See known
-limitation 12.
+Nothing reconciles the two today, because the secret store doesn't exist yet.
+The settings store persists whatever `hasApiKey` a caller last wrote, exactly
+as written, no more and no less. See known limitation 12.
 
 **[implemented]** No action type returns a secret value. `secrets.read` does
 not exist; the action list contains only `secrets.write`, `secrets.clear` and
@@ -276,9 +278,56 @@ either now throws. Callers needing a mutable copy use
 `resolveEmergencyState` returns a fresh object rather than a shared reference,
 so one caller cannot corrupt another's emergency state.
 
-**[planned, M3/M5]** Corrupt settings load safe defaults and surface an error.
-A corrupt policy file fails closed to deny-all and never regenerates a
+**[implemented]** Corrupt settings load safe defaults. **[planned, M5]** A
+corrupt policy file fails closed to deny-all and never regenerates a
 permissive default.
+
+### Settings storage
+
+**[implemented]** `main/settings.ts` loads and writes `settings.json`. Every
+failure mode collapses to the same fail-safe outcome — fresh defaults from
+`createDefaultSettings` — with no partial-trust path: a missing file, an
+unreadable one, malformed JSON, a `__proto__`/`constructor`/`prototype` key
+anywhere in the parsed document, and a document `settingsSchema` rejects for
+any reason are all indistinguishable to the caller. No raw parse error,
+filesystem path, or file content is ever returned; only a validated `Settings`
+value or the defaults. `loadSettings` never creates a file or a directory.
+
+**[implemented]** The loaded document is never merged into the defaults. It
+either validates in full, as itself, and is returned as itself, or it is
+discarded in full. This is what keeps a `__proto__`/`constructor`/`prototype`
+key inert even before the explicit `containsForbiddenKey` check runs: nothing
+downstream ever assigns through an untrusted key, because nothing downstream
+ever touches the untrusted object at all once it has been rejected — and even
+when it validates, `settingsSchema`'s strict objects at every level accept
+only their declared keys, so a document carrying `__proto__` alongside
+otherwise-valid fields is rejected as an unrecognised key on its own. The
+explicit walk is defence in depth, not the only thing standing between a
+hostile file and the running process.
+
+**[implemented]** Writes are atomic: a validated document is serialised to a
+uniquely named temporary file in the settings directory, flushed to disk,
+then moved into place with a single `rename`. A reader therefore only ever
+observes the previous complete document or the new complete one, never a
+partial write, regardless of when a crash or a concurrent write happens. A
+transient Windows sharing violation on the final rename (`EPERM`/`EBUSY`/
+`EACCES`) is retried a bounded number of times rather than surfaced as a
+failure; on any failure that persists, the temporary file is removed before
+the error propagates. Verified against a real filesystem, not a mock,
+including two writes racing for the same target file.
+
+**[implemented]** Path resolution never accepts a user-supplied or
+renderer-supplied path, and never hardcodes a username: `main/paths.ts`
+derives every path from `app.getPath('appData')`, joined with the reviewed
+constant `APP_DATA_DIR_NAME`, not from `app.getPath('userData')` — whose
+folder name instead follows Electron's `app.name`, which this project does
+not pin.
+
+**[planned, M7]** No IPC channel exposes settings yet — this is deliberate;
+the onboarding interface that will need one does not exist yet. `main/index.ts`
+calls `loadSettings` once at startup, read-only, to prove the path resolves
+and the load path executes against the real environment, and `writeSettings`
+is not called from the running application at all in Milestone 3.
 
 ### Emergency stop
 
@@ -340,7 +389,8 @@ address one. No generic pass-through channel exists.
 | Display spoofing via bidirectional overrides       | Addressed — bidi overrides and isolates rejected in display strings                       |
 | Forged audit record                                | Addressed — biconditional cross-field integrity rules                                     |
 | Unbounded or non-serialisable audit payload        | Addressed — bounded JSON-safe parameter schema                                            |
-| Settings or policy tampering                       | Partly addressed — strict validation; fail-closed loading planned, M3/M5                  |
+| Settings tampering or corruption                   | Addressed, M3 — strict validation, fail-safe loading to defaults, atomic writes           |
+| Policy tampering or corruption                     | Partly addressed — strict validation; fail-closed loading planned, M5                     |
 | Policy file removing the user's emergency controls | Addressed at the schema layer — availability floor; engine-side check planned, M5         |
 | Corruption of a shared security default in memory  | Addressed — exported defaults deeply frozen; resolvers return fresh objects               |
 | `src/shared` reaching the OS, network or eval      | Addressed — lint boundary, verified by probe; not a runtime sandbox                       |
@@ -416,10 +466,21 @@ These are real and are stated plainly rather than described as solved.
 
 12. **`hasApiKey` can drift from the secret store.** It is derived metadata
     with no reconciliation behind it yet, so nothing currently guarantees the
-    flag matches what the encrypted store actually holds. Reconciliation —
-    with the secret store as the source of truth — is a required Milestone 3 /
-    Milestone 7 deliverable. Until then the flag is a hint, not a fact, and no
-    security decision may rest on it.
+    flag matches what the encrypted store actually holds. The settings store
+    (M3) persists whatever value a caller last wrote, exactly as written;
+    reconciliation against the secret store as the source of truth is a
+    required Milestone 7 deliverable, since the secret store does not exist
+    until then. Until then the flag is a hint, not a fact, and no security
+    decision may rest on it.
+
+13. **Settings loading cannot distinguish "no file yet" from "file existed
+    but was rejected".** Both a genuine first launch and a corrupted or
+    invalid `settings.json` return identical fresh defaults from
+    `loadSettings`, by design — there is deliberately no partial-trust path.
+    The cost: nothing today tells the user their settings were reset because
+    the file was corrupt rather than absent. Surfacing that distinction
+    belongs to a future audit record (M4) or onboarding notice (M7); neither
+    exists yet.
 
 ---
 
