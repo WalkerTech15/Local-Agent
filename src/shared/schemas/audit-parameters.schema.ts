@@ -59,7 +59,7 @@ export type AuditParameters = Readonly<Record<string, JsonValue>>;
  * `Date`, `Map`, `Set`, `Error` and class instances out. Those either
  * serialise to something misleading or lose information entirely.
  */
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     return false;
   }

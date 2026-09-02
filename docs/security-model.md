@@ -2,9 +2,10 @@
 
 > **Current state.** Milestone 1 implemented the shared schema layer.
 > Milestone 2 added the hardened Electron shell. Milestone 3 added non-secret
-> settings storage. Controls below are marked **[implemented]**, **[enforced
-> by schema]** or **[planned, milestone N]**. Nothing here is claimed as
-> working before it exists.
+> settings storage. Milestone 4 added the append-only, redacting, daily
+> rotating audit log writer. Controls below are marked **[implemented]**,
+> **[enforced by schema]** or **[planned, milestone N]**. Nothing here is
+> claimed as working before it exists.
 
 ---
 
@@ -207,9 +208,37 @@ strings are rejected.
 **[enforced by schema]** Display strings reject control characters, so a user
 name cannot inject a forged newline-delimited log line.
 
-**[planned, M4]** Append-only writer with daily rotation, field-allowlist
-redaction before serialisation, restrictive file permissions, and no update or
-delete function anywhere in the module.
+**[implemented]** Append-only writer (`main/audit.ts`) with UTC daily
+rotation and field-name redaction before serialisation. `appendAuditRecord`
+is the module's only export capable of a side effect; there is no update,
+delete or truncate function anywhere in it. Every write opens the target file
+with the append flag, never a write-truncate flag, so a write can never
+overwrite or lose bytes already on disk, proven under concurrent writes by a
+test that fires many writes at one file and parses every resulting line back.
+Rotation reads the UTC calendar day directly from the record's own validated
+`timestamp`, so the writer has no clock dependency of its own.
+
+**[implemented]** A dedicated scan (`findCandidateSafetyIssue`) rejects a
+candidate containing a `__proto__`/`constructor`/`prototype` key at any
+depth, or a cyclic reference, before redaction or schema validation ever see
+it — neither is a safe backstop for this on its own. Verified empirically: a
+JSON-parsed document carrying a top-level `"__proto__"` key passes
+`auditRecordSchema.safeParse` **unrejected**, because Zod's `strictObject`
+decides whether an input key is "known" in a way that resolves a literal
+`"__proto__"` key through the inherited accessor on its shape object rather
+than as an explicit key lookup — even though `Object.keys` on that same
+input correctly lists the key. Settings loading (M3) has the equivalent
+`containsForbiddenKey` backstop for the same underlying reason; this is a
+second, independent instance of the same defence for the audit format.
+
+**[implemented — no OS-level file permissions applied]** The writer does not
+set restrictive Windows ACLs on the log file or directory beyond what the
+per-user `%APPDATA%` location already provides by default. This was
+considered and deliberately deferred rather than attempted without a
+specific, reviewed design: the audit log's own stated limitation is that it
+is append-only by API, not tamper-proof against a local user with the same
+account privileges, so an unset ACL narrows nothing that limitation doesn't
+already cover today. See known limitation 1.
 
 ### Shared-layer purity
 
@@ -378,27 +407,29 @@ address one. No generic pass-through channel exists.
 
 ## Threats and status
 
-| Threat                                             | Status                                                                                    |
-| -------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| Renderer compromise (XSS, malicious UI dependency) | Addressed, M2 — process isolation and CSP; asserted by an end-to-end test                 |
-| Malicious or malformed IPC payload                 | Addressed, M2 — schema validation on the one registered channel; no other channel exists  |
-| Secret exfiltration through the interface          | Addressed — no channel returns a key; asserted by test                                    |
-| Secret leakage into logs or errors                 | Addressed at the schema layer; writer-side redaction planned, M4                          |
-| Credential persisted inside a settings _value_     | Addressed — `baseUrl` rejects embedded userinfo                                           |
-| Log injection via a crafted user name              | Addressed — control characters rejected                                                   |
-| Display spoofing via bidirectional overrides       | Addressed — bidi overrides and isolates rejected in display strings                       |
-| Forged audit record                                | Addressed — biconditional cross-field integrity rules                                     |
-| Unbounded or non-serialisable audit payload        | Addressed — bounded JSON-safe parameter schema                                            |
-| Settings tampering or corruption                   | Addressed, M3 — strict validation, fail-safe loading to defaults, atomic writes           |
-| Policy tampering or corruption                     | Partly addressed — strict validation; fail-closed loading planned, M5                     |
-| Policy file removing the user's emergency controls | Addressed at the schema layer — availability floor; engine-side check planned, M5         |
-| Corruption of a shared security default in memory  | Addressed — exported defaults deeply frozen; resolvers return fresh objects               |
-| `src/shared` reaching the OS, network or eval      | Addressed — lint boundary, verified by probe; not a runtime sandbox                       |
-| Privilege escalation via the executor              | Planned, M5 — decision required as an argument, lint boundary, channel test               |
-| Emergency-stop bypass                              | Partly addressed — resolution rules implemented; gating planned, M6                       |
-| Path traversal                                     | Not reachable — all paths derive from the app-data directory; none is user-supplied       |
-| Prompt injection, untrusted model or tool output   | Not reachable in Phase 1 — no model call exists. The proposal/executor split pre-empts it |
-| Supply-chain compromise via npm                    | Mitigated, not eliminated — see below                                                     |
+| Threat                                              | Status                                                                                    |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Renderer compromise (XSS, malicious UI dependency)  | Addressed, M2 — process isolation and CSP; asserted by an end-to-end test                 |
+| Malicious or malformed IPC payload                  | Addressed, M2 — schema validation on the one registered channel; no other channel exists  |
+| Secret exfiltration through the interface           | Addressed — no channel returns a key; asserted by test                                    |
+| Secret leakage into logs or errors                  | Addressed, M4 — schema-level redaction contract plus writer-side redaction, both verified |
+| Credential persisted inside a settings _value_      | Addressed — `baseUrl` rejects embedded userinfo                                           |
+| Log injection via a crafted user name               | Addressed — control characters rejected                                                   |
+| Display spoofing via bidirectional overrides        | Addressed — bidi overrides and isolates rejected in display strings                       |
+| Forged audit record                                 | Addressed — biconditional cross-field integrity rules                                     |
+| Unbounded or non-serialisable audit payload         | Addressed — bounded JSON-safe parameter schema; writer-side scan bounds the whole record  |
+| Audit record overwritten or truncated by a write    | Addressed, M4 — append-only file handle; proven under concurrent writes by test           |
+| Prototype-pollution key bypassing schema validation | Addressed, M4 — explicit writer-side scan; schema-only reliance was verified insufficient |
+| Settings tampering or corruption                    | Addressed, M3 — strict validation, fail-safe loading to defaults, atomic writes           |
+| Policy tampering or corruption                      | Partly addressed — strict validation; fail-closed loading planned, M5                     |
+| Policy file removing the user's emergency controls  | Addressed at the schema layer — availability floor; engine-side check planned, M5         |
+| Corruption of a shared security default in memory   | Addressed — exported defaults deeply frozen; resolvers return fresh objects               |
+| `src/shared` reaching the OS, network or eval       | Addressed — lint boundary, verified by probe; not a runtime sandbox                       |
+| Privilege escalation via the executor               | Planned, M5 — decision required as an argument, lint boundary, channel test               |
+| Emergency-stop bypass                               | Partly addressed — resolution rules implemented; gating planned, M6                       |
+| Path traversal                                      | Not reachable — all paths derive from the app-data directory; none is user-supplied       |
+| Prompt injection, untrusted model or tool output    | Not reachable in Phase 1 — no model call exists. The proposal/executor split pre-empts it |
+| Supply-chain compromise via npm                     | Mitigated, not eliminated — see below                                                     |
 
 ---
 
@@ -408,7 +439,11 @@ These are real and are stated plainly rather than described as solved.
 
 1. **The audit log is append-only by API, not tamper-proof.** A local user
    with the same privileges can edit the file directly with a text editor.
-   Tamper-evidence (hash chaining or signing) is deferred beyond Phase 1.
+   Tamper-evidence (hash chaining or signing) is deferred beyond Phase 1. The
+   Milestone 4 writer does not apply a restrictive Windows ACL to the log
+   directory or file either; doing so would narrow who on the machine can
+   reach the file, but would not change this limitation, since the threat
+   here is the same user account, not a different one.
 
 2. **Windows DPAPI does not protect a secret from every application running
    under the same Windows user account.** `safeStorage` encrypts under the
@@ -457,9 +492,15 @@ These are real and are stated plainly rather than described as solved.
 
 10. **The audit parameter limits are fixed constants, not adaptive.** A record
     legitimately exceeding them is rejected rather than truncated. Rejection is
-    the safe direction — a truncated audit record is a misleading one — but it
-    means the Milestone 4 writer must handle rejection rather than assume every
-    record it builds will validate.
+    the safe direction — a truncated audit record is a misleading one — and the
+    Milestone 4 writer (`appendAuditRecord`) does exactly that: its safety scan
+    rejects a candidate that exceeds its own (deliberately looser) depth/size
+    budget before redaction runs, so nothing is ever written. The `[TRUNCATED]`
+    marker that `redactSecrets`'s internal walk can produce exists only as a
+    defensive fallback for that function used directly, independent of the
+    writer, or as a second layer should the scan's identical budget ever be
+    bypassed; through `appendAuditRecord` it is not expected to be reachable in
+    ordinary operation, because the scan already rejects first.
 
 11. **Windows 10 is unverified.** Development and verification target
     Windows 11.

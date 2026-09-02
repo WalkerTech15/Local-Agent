@@ -33,7 +33,11 @@ export type { PermissionPolicy, PermissionRule } from './permissions.schema';
 export { auditRecordSchema } from './audit.schema';
 export type { AuditRecord } from './audit.schema';
 
-export { auditParametersSchema, findAuditParameterIssues } from './audit-parameters.schema';
+export {
+  auditParametersSchema,
+  findAuditParameterIssues,
+  isPlainObject,
+} from './audit-parameters.schema';
 export type { AuditParameters, JsonPrimitive, JsonValue } from './audit-parameters.schema';
 
 export {

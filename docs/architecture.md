@@ -3,12 +3,16 @@
 > **Current state.** Milestone 1 implemented `src/shared`. Milestone 2 added
 > `src/main`, `src/preload` and `src/renderer` as a hardened desktop shell —
 > the window, the sandboxed renderer, the narrow preload bridge, and one
-> health-check IPC channel. Milestone 3 adds `main/paths` and `main/settings`:
-> centralized user-data path resolution and non-secret settings storage,
-> loaded read-only at startup. `main/permissions`, `main/executor`,
-> `main/audit`, `main/secrets` and `main/emergency` described below do not
-> exist yet; they are the approved design for Milestones 4-7. This document
-> marks which parts exist today.
+> health-check IPC channel. Milestone 3 added `main/paths` and
+> `main/settings`: centralized user-data path resolution and non-secret
+> settings storage, loaded read-only at startup. Milestone 4 adds
+> `main/audit`: an append-only, redacting, daily-rotating JSONL writer. It is
+> not called from anywhere yet — nothing in the application has produced a
+> permission decision to record, since the engine that will produce one does
+> not exist until Milestone 5. `main/permissions`, `main/executor`,
+> `main/secrets` and `main/emergency` described below do not exist yet; they
+> are the approved design for Milestones 5-7. This document marks which parts
+> exist today.
 
 ---
 
@@ -52,7 +56,7 @@ audited before it can perform a privileged action.
 | `main/ipc` **(exists, partial)** | Receives every request, validates its payload against a schema. Today: one health-check channel, no privileged action, so nothing to hand to a permission engine yet. | Execute anything itself; bypass the permission engine once one exists.                          |
 | `main/permissions`               | Pure decision function. `(action, policy, emergencyState) → decision + reason`.                                                                                       | Perform I/O, show dialogs, or log.                                                              |
 | `main/executor`                  | The **only** module that performs side effects. Requires a permission decision as an argument.                                                                        | Be called from `renderer` or `preload`; act without a decision; make its own policy judgements. |
-| `main/audit`                     | Append-only event writer with redaction and daily rotation.                                                                                                           | Expose any update or delete function; write an unredacted secret.                               |
+| `main/audit` **(exists)**        | Append-only event writer with redaction and daily rotation.                                                                                                           | Expose any update or delete function; write an unredacted secret.                               |
 | `main/settings` **(exists)**     | Loads, validates and atomically writes settings. Fails closed to safe defaults.                                                                                       | Store secrets; write without going through the executor once one exists.                        |
 | `main/secrets`                   | Encrypt and decrypt via the asynchronous `safeStorage` API.                                                                                                           | Return a plaintext secret across IPC; log a secret; write plaintext to disk.                    |
 | `main/emergency`                 | Owns and persists emergency-stop state; supplies it to the permission engine.                                                                                         | Be bypassable by the renderer or by the policy file.                                            |
@@ -262,6 +266,90 @@ running application at all. Both are ready for the onboarding flow (M7) to
 call through a future IPC channel, validated the same way `main/ipc.ts`
 already validates the health-check channel.
 
+## Audit log (implemented)
+
+| File                | Describes                                                                             |
+| ------------------- | ------------------------------------------------------------------------------------- |
+| `src/main/audit.ts` | `appendAuditRecord`, `redactSecrets`, `AuditRecordValidationError`, `AuditWriteError` |
+
+`appendAuditRecord(auditLogDir, candidate)` is the module's only exported
+capability. There is no read, update, delete or truncate function anywhere in
+it — appending is all it can do. `auditLogDir` is a plain directory path,
+exactly as `main/settings.ts` takes a plain file path, so a test points at a
+temporary directory and configures nothing else. `candidate` is untrusted
+structured input, never assumed to already be a valid `AuditRecord`.
+
+**Two independent defences run before anything reaches disk**, matching the
+instruction that schema validation alone must not be assumed to replace
+writer-side redaction:
+
+1. **Redaction** (`redactSecrets`) walks the whole candidate recursively and
+   replaces the entire value of any field whose _name_ matches
+   `SECRET_FIELD_NAMES` with `[REDACTED]`, at any depth, including inside
+   arrays. A caller that accidentally passes a real credential under a
+   secret-looking key is scrubbed rather than rejected outright.
+2. **Schema validation** (`auditRecordSchema`) is the backstop: if redaction
+   were ever bypassed, skipped or regressed, a secret-named field whose value
+   is not the placeholder still fails validation, and nothing is written.
+
+**A dedicated safety scan runs before either of those**, over the raw
+candidate: `findCandidateSafetyIssue` rejects a candidate containing a
+`__proto__`/`constructor`/`prototype` key at any depth, or a cyclic
+reference, before redaction or validation ever see it. This exists because
+neither downstream step reliably catches both on its own. Zod's
+`strictObject` decides whether an input key is "known" in a way that, for a
+literal own property named `"__proto__"`, resolves through the inherited
+accessor on its shape object rather than an explicit key list — verified
+empirically: a JSON-parsed document carrying a top-level `"__proto__"` key
+passes `auditRecordSchema.safeParse` unrejected, even though `Object.keys`
+on that same input correctly lists the key. And because redaction builds a
+_new_ object graph rather than mutating in place, a cycle left for the
+schema to discover only after redaction would be a cycle in a tree the
+original circular reference never actually reaches — the schema would never
+see it. The scan catches both while they are still visible, on the input as
+it actually arrived. Redaction keeps its own independent cycle-tracking and
+depth/node budget as a second layer regardless, rather than relying on the
+scan alone.
+
+Building redacted objects with `Object.create(null)` rather than `{}` matters
+for the same reason: `JSON.parse` creates a literal `"__proto__"` key as an
+ordinary _own_ property, not a prototype write, but assigning through
+_bracket notation_ on an ordinary `{}` (`result[key] = value` where
+`key === '__proto__'`) does trigger `Object.prototype`'s `__proto__` setter,
+because `{}` inherits it. A null-prototype target has no such accessor to
+inherit, so the same assignment creates a harmless own data property, just as
+`JSON.parse` did.
+
+**Rotation is by UTC calendar day, taken from the record itself.** The target
+file, `audit-<YYYY-MM-DD>.jsonl`, is derived from the first ten characters of
+the record's own already-validated `timestamp` field — no `Date` parsing, no
+timezone logic, and no clock dependency anywhere in this module. This is also
+what keeps every test deterministic without an injected clock: the caller's
+choice of `timestamp` fully determines which file a record lands in.
+
+**Writing is append-only, never a rewrite.** Every write opens the target
+file with the `'a'` flag, never `'w'`: the OS positions each write at
+end-of-file, so a write can never truncate or overwrite bytes already there,
+including when several callers race to append to the same file — proven, not
+assumed, by a test that fires many concurrent writes at one file and parses
+every resulting line back. A JSON object is serialised compactly (never
+pretty-printed, since a multi-line object would break the one-line-per-record
+JSONL contract) and a single `\n`-terminated line is appended per call. A
+filesystem failure after validation succeeds raises `AuditWriteError` with a
+fixed, generic message; the underlying error is attached as `Error.cause` for
+local, main-process-only debugging and never appears in `message`, is never
+sent over IPC, and never reaches the renderer. Because appending never
+touches bytes already on disk, a failed write cannot corrupt or lose a record
+written by an earlier, successful call.
+
+**Not called from the running application.** `main/index.ts` is unchanged by
+this milestone. Nothing in Phase 1 has produced a real permission decision to
+record yet — the engine that will produce one does not exist until Milestone
+5 — so there is nothing genuine to wire `appendAuditRecord` to. Synthesising
+a fake call from `main/index.ts` merely to prove wiring exists would not be a
+real integration; this mirrors the Milestone 3 decision not to add an IPC
+channel for settings before an onboarding flow existed to call it.
+
 ## Timestamps and clocks
 
 `src/shared` contains no clock access. Functions that need a timestamp take it
@@ -270,6 +358,10 @@ as a parameter (`createDefaultSettings(updatedAt)`,
 its tests deterministic. `main/settings.ts`'s `loadSettings(settingsFile, now)`
 follows the same convention one layer up, even though it does perform I/O:
 the caller supplies `now`, so a test never depends on the wall clock either.
+`main/audit.ts`'s `appendAuditRecord` goes one step further and takes no
+clock parameter at all: the UTC calendar day used for rotation is read
+directly from the candidate's own required `timestamp` field, so the module
+has no time dependency whatsoever, injected or otherwise.
 
 All persisted timestamps are UTC ISO-8601 and reject a UTC offset, so records
 sort correctly and compare unambiguously.
