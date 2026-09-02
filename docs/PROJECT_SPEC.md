@@ -35,14 +35,14 @@ This is to be enforced architecturally, not by convention. Each mechanism is
 marked with its current status, so that nothing here reads as built when it is
 not:
 
-| Mechanism                                                                                        | Status                                                     |
-| ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- |
-| The proposal type carries no capability, only data                                               | **implemented** (`ActionProposal`)                         |
-| `src/shared` cannot reach the OS, the network, or run code                                       | **implemented** (lint boundary)                            |
-| The executor requires a permission decision as an argument, with no path without one             | **planned, Milestone 5**                                   |
-| A lint boundary prevents modules other than the IPC layer from importing the executor            | **planned, Milestone 5** — the executor does not exist yet |
-| An integration test asserts every registered channel passes through the permission engine        | **planned, Milestone 5** — no IPC channel exists yet       |
-| The permission engine enforces the emergency availability floor independently of the policy file | **planned, Milestone 5**                                   |
+| Mechanism                                                                                        | Status                                                                                                                                                       |
+| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| The proposal type carries no capability, only data                                               | **implemented** (`ActionProposal`)                                                                                                                           |
+| `src/shared` cannot reach the OS, the network, or run code                                       | **implemented** (lint boundary)                                                                                                                              |
+| The executor requires a permission decision as an argument, with no path without one             | **planned, Milestone 5**                                                                                                                                     |
+| A lint boundary prevents modules other than the IPC layer from importing the executor            | **planned, Milestone 5** — the executor does not exist yet                                                                                                   |
+| An integration test asserts every registered channel passes through the permission engine        | **planned, Milestone 5** — one channel exists (`app:health`, a liveness check with no side effect); the assertion applies once a privileged channel is added |
+| The permission engine enforces the emergency availability floor independently of the policy file | **planned, Milestone 5**                                                                                                                                     |
 
 ## 3. Security principles
 
@@ -135,7 +135,7 @@ Runtime user data never lives inside the repository. See
 | #   | Milestone                                                           | Status                   |
 | --- | ------------------------------------------------------------------- | ------------------------ |
 | M1  | Scaffold, tooling, documentation, shared schemas                    | complete, pending review |
-| M2  | Desktop shell: hardened main process, preload bridge, renderer boot | not started              |
+| M2  | Desktop shell: hardened main process, preload bridge, renderer boot | complete, pending review |
 | M3  | Settings storage                                                    | not started              |
 | M4  | Audit-log foundation                                                | not started              |
 | M5  | Permission-policy foundation                                        | not started              |

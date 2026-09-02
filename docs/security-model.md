@@ -28,14 +28,27 @@
 
 ### Process isolation
 
-**[planned, M2]** The window is created with `sandbox: true`,
-`contextIsolation: true`, `nodeIntegration: false`, `webSecurity: true`, a
-strict Content-Security-Policy with no `unsafe-inline` and no `unsafe-eval`,
-navigation blocked via `will-navigate`, all window-open requests denied, and no
-`<webview>`. No remote content is loaded.
+**[implemented]** The window is created with `sandbox: true`,
+`contextIsolation: true`, `nodeIntegration: false`, `webSecurity: true`,
+`webviewTag: false` and `nodeIntegrationInSubFrames: false`. A strict
+Content-Security-Policy — `default-src 'self'`, no `unsafe-inline`, no
+`unsafe-eval`, `connect-src 'none'`, `object-src 'none'`,
+`frame-ancestors 'none'` — is applied to every response in the default
+session. Navigation away from the packaged bundle is blocked via
+`will-navigate`, every `window.open` request is denied via
+`setWindowOpenHandler`, and `will-attach-webview` is denied too, all
+registered globally via `app.on('web-contents-created', …)` rather than
+per-window, so nothing Electron creates can slip past them. No remote content
+is loaded; the renderer's own outbound network access is blocked by the CSP.
+Every OS permission request (camera, microphone, geolocation, notifications,
+…) is denied outright, since Phase 1 needs none of them. All of this is
+asserted by an end-to-end Playwright test against the built application, not
+only declared in source.
 
-A compromised renderer therefore gains only the narrow preload API — every
-function of which is policy-gated and audited.
+A compromised renderer therefore gains only the narrow preload API. Today
+that API is one liveness check with no side effect; **[planned, M5]** every
+function added to it from Milestone 3 onward will be policy-gated and
+audited before it can perform a privileged action.
 
 ### Permission model
 
@@ -305,8 +318,12 @@ text — including every combining character — is unaffected, and no
 general-purpose script is blocked. Tests assert that names such as
 `Nguyễn Thị Ánh Nguyệt` and `Éloïse Lefèvre-Gaütier` round-trip unchanged.
 
-**[planned, M2]** Every IPC payload is validated against a schema in the main
-process. Unknown channels are rejected. No generic pass-through channel exists.
+**[implemented]** Every IPC payload is validated against a schema in the main
+process: `main/ipc.ts` parses the health-check channel's arguments and its
+result against `healthCheckRequestSchema` / `healthCheckResponseSchema`
+before either crosses the process boundary. Unknown channels are rejected —
+`ipcMain` has no handler for anything else, and the preload exposes no way to
+address one. No generic pass-through channel exists.
 
 ---
 
@@ -314,8 +331,8 @@ process. Unknown channels are rejected. No generic pass-through channel exists.
 
 | Threat                                             | Status                                                                                    |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| Renderer compromise (XSS, malicious UI dependency) | Planned, M2 — process isolation and CSP                                                   |
-| Malicious or malformed IPC payload                 | Planned, M2 — schema validation, channel allowlist                                        |
+| Renderer compromise (XSS, malicious UI dependency) | Addressed, M2 — process isolation and CSP; asserted by an end-to-end test                 |
+| Malicious or malformed IPC payload                 | Addressed, M2 — schema validation on the one registered channel; no other channel exists  |
 | Secret exfiltration through the interface          | Addressed — no channel returns a key; asserted by test                                    |
 | Secret leakage into logs or errors                 | Addressed at the schema layer; writer-side redaction planned, M4                          |
 | Credential persisted inside a settings _value_     | Addressed — `baseUrl` rejects embedded userinfo                                           |

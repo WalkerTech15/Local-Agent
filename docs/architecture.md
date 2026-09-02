@@ -1,9 +1,12 @@
 # Architecture
 
-> **Current state.** Milestone 1 has implemented `src/shared` only. The
-> `src/main`, `src/preload` and `src/renderer` layers described below are the
-> approved design and arrive in Milestone 2 onward. This document marks which
-> parts exist today.
+> **Current state.** Milestone 1 implemented `src/shared`. Milestone 2 adds
+> `src/main`, `src/preload` and `src/renderer` as a hardened desktop shell —
+> the window, the sandboxed renderer, the narrow preload bridge, and one
+> health-check IPC channel. `main/permissions`, `main/executor`, `main/audit`,
+> `main/settings`, `main/secrets` and `main/emergency` described below do not
+> exist yet; they are the approved design for Milestones 3–6. This document
+> marks which parts exist today.
 
 ---
 
@@ -33,23 +36,25 @@ is the reason Electron was chosen; see
 The renderer cannot perform a privileged action. Not "should not" — it has no
 mechanism to. With `sandbox: true`, `contextIsolation: true` and
 `nodeIntegration: false`, a fully compromised renderer gains only the narrow
-preload API, every function of which is policy-gated and audited.
+preload API. Today that API is one liveness check with no side effect; every
+function added to it from Milestone 3 onward will be policy-gated and
+audited before it can perform a privileged action.
 
 ## Modules
 
-| Module                | Responsibility                                                                                                                    | Must not                                                                                        |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `shared` **(exists)** | Zod schemas, derived types, constants. Pure data and pure functions.                                                              | Perform I/O; import Electron or Node built-ins; depend on `main`, `preload` or `renderer`.      |
-| `renderer`            | All interface. Renders state, collects input, sends requests over the bridge.                                                     | Touch Node APIs, the filesystem or `ipcRenderer`; read secrets; load remote content.            |
-| `preload`             | The single bridge. Exposes an explicitly enumerated, typed API via `contextBridge`.                                               | Expose `ipcRenderer`; provide a generic "invoke any channel" function; expose a Node primitive. |
-| `main/ipc`            | Receives every request, validates its payload against a schema, resolves it to a typed action, hands it to the permission engine. | Execute anything itself; bypass the permission engine.                                          |
-| `main/permissions`    | Pure decision function. `(action, policy, emergencyState) → decision + reason`.                                                   | Perform I/O, show dialogs, or log.                                                              |
-| `main/executor`       | The **only** module that performs side effects. Requires a permission decision as an argument.                                    | Be called from `renderer` or `preload`; act without a decision; make its own policy judgements. |
-| `main/audit`          | Append-only event writer with redaction and daily rotation.                                                                       | Expose any update or delete function; write an unredacted secret.                               |
-| `main/settings`       | Loads, validates and atomically writes settings. Fails closed to safe defaults.                                                   | Store secrets; write without going through the executor.                                        |
-| `main/secrets`        | Encrypt and decrypt via the asynchronous `safeStorage` API.                                                                       | Return a plaintext secret across IPC; log a secret; write plaintext to disk.                    |
-| `main/emergency`      | Owns and persists emergency-stop state; supplies it to the permission engine.                                                     | Be bypassable by the renderer or by the policy file.                                            |
-| `main/paths`          | Single source of truth for user-data locations.                                                                                   | Accept a user-supplied path.                                                                    |
+| Module                           | Responsibility                                                                                                                                                        | Must not                                                                                        |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `shared` **(exists)**            | Zod schemas, derived types, constants. Pure data and pure functions.                                                                                                  | Perform I/O; import Electron or Node built-ins; depend on `main`, `preload` or `renderer`.      |
+| `renderer` **(exists)**          | All interface. Renders state, collects input, sends requests over the bridge.                                                                                         | Touch Node APIs, the filesystem or `ipcRenderer`; read secrets; load remote content.            |
+| `preload` **(exists)**           | The single bridge. Exposes an explicitly enumerated, typed API via `contextBridge`.                                                                                   | Expose `ipcRenderer`; provide a generic "invoke any channel" function; expose a Node primitive. |
+| `main/ipc` **(exists, partial)** | Receives every request, validates its payload against a schema. Today: one health-check channel, no privileged action, so nothing to hand to a permission engine yet. | Execute anything itself; bypass the permission engine once one exists.                          |
+| `main/permissions`               | Pure decision function. `(action, policy, emergencyState) → decision + reason`.                                                                                       | Perform I/O, show dialogs, or log.                                                              |
+| `main/executor`                  | The **only** module that performs side effects. Requires a permission decision as an argument.                                                                        | Be called from `renderer` or `preload`; act without a decision; make its own policy judgements. |
+| `main/audit`                     | Append-only event writer with redaction and daily rotation.                                                                                                           | Expose any update or delete function; write an unredacted secret.                               |
+| `main/settings`                  | Loads, validates and atomically writes settings. Fails closed to safe defaults.                                                                                       | Store secrets; write without going through the executor.                                        |
+| `main/secrets`                   | Encrypt and decrypt via the asynchronous `safeStorage` API.                                                                                                           | Return a plaintext secret across IPC; log a secret; write plaintext to disk.                    |
+| `main/emergency`                 | Owns and persists emergency-stop state; supplies it to the permission engine.                                                                                         | Be bypassable by the renderer or by the policy file.                                            |
+| `main/paths`                     | Single source of truth for user-data locations.                                                                                                                       | Accept a user-supplied path.                                                                    |
 
 ## Dependency direction
 
@@ -90,8 +95,11 @@ remains in the repository.
 This is a static boundary on this repository's own source. It is not a runtime
 sandbox — see the limitations note in the security model.
 
-The `renderer`-side and executor-side boundary rules are added in Milestone 2
-and Milestone 5, when those directories exist.
+`src/renderer` has no equivalent _static_ lint boundary yet — its purity is
+enforced today only by Electron's runtime sandbox (`sandbox: true`,
+`contextIsolation: true`, `nodeIntegration: false`), asserted by the
+Milestone 2 end-to-end test. A lint-level renderer boundary and the
+executor-side boundary rule remain open hardening for a later milestone.
 
 ## The canonical request path
 
@@ -160,6 +168,45 @@ create an unsafe state:
 
 Exported security defaults are additionally deeply frozen, so a valid state
 cannot be turned into an unsafe one in memory after loading.
+
+## Desktop shell (implemented)
+
+| File                               | Describes                                                                                            |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `src/main/index.ts`                | Window creation, CSP, permission-request denial, navigation/window-open/webview hardening, lifecycle |
+| `src/main/ipc.ts`                  | `ipcMain` handler registration; validates request and response against the shared schema             |
+| `src/preload/index.ts`             | The single `contextBridge` API: `localAgent.health()`                                                |
+| `src/renderer/`                    | React shell; reads `window.localAgent.health()` on mount                                             |
+| `src/shared/schemas/ipc.schema.ts` | `IPC_HEALTH_CHANNEL`, request/response schemas shared by `main` and `preload`                        |
+
+Build layout, and why it is not uniform across the three layers:
+
+- **`main` compiles to CommonJS** (`tsconfig.electron.json`, `tsc`).
+  `require('electron')` is Electron's original, stable mechanism for
+  reaching its API from the main process; this project's main process was
+  briefly ESM and that proved unreliable once the compile unit pulled in a
+  second real dependency (`zod`, via `src/shared`). See
+  [adr/0001-desktop-stack.md](adr/0001-desktop-stack.md) for the full account.
+  `scripts/write-electron-package-json.mjs` writes `out/package.json` with
+  `{"type": "commonjs"}` after every build, overriding the root
+  `package.json`'s `"type": "module"` for just that directory — Node
+  resolves module format from the nearest `package.json`, and without this
+  override the compiled CommonJS output would be loaded as ES modules and
+  every `require` in it would throw.
+- **`preload` is bundled by Vite** (`vite.preload.config.ts`) into one
+  self-contained CommonJS file, `electron` kept external. A sandboxed
+  preload script (`sandbox: true`) runs inside a restricted loader that
+  resolves only `electron` and a short built-in allowlist —
+  `require('../shared/schemas')` fails there with "module not found" even
+  though the identical code runs fine in the unsandboxed main process. `zod`
+  and everything the preload touches under `src/shared` must therefore be
+  inlined rather than left as a `require()` resolved at runtime.
+- **`renderer` is bundled by Vite** (`vite.config.ts`) as it was before this
+  milestone — ordinary browser-target ESM, unaffected by either constraint
+  above.
+
+`npm run build` runs all three: `tsc` for `main`, then Vite for `preload`,
+then Vite for `renderer`.
 
 ## Timestamps and clocks
 

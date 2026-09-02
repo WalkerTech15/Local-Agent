@@ -121,3 +121,17 @@ Recorded here because they are easy to erode later:
 
 These are restated in [../CLAUDE.md](../CLAUDE.md) and asserted by tests from
 Milestone 2.
+
+## Amendment — Milestone 2, main/preload build format
+
+The main process is **CommonJS**, compiled by `tsc`, not the ESM originally
+assumed above. `import ... from 'electron'` depends on newer, less mature
+Electron ESM support, and broke once the main process's compile unit grew to
+include a second real dependency (`zod`, transitively via `src/shared`) —
+`require('electron')` is the decade-stable mechanism and is unaffected. The
+preload script is bundled by Vite into one self-contained file, `electron`
+kept external, because a sandboxed preload (`sandbox: true`) cannot
+`require()` a local relative file at runtime at all — only `electron` and a
+short built-in allowlist resolve there. Neither constraint touches the
+renderer, which remains ordinary Vite-bundled ESM. Full detail is in
+[../architecture.md](../architecture.md#desktop-shell-implemented).

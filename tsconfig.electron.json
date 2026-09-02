@@ -1,0 +1,30 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    // CommonJS: `require('electron')` is Electron's original, decade-stable
+    // mechanism for reaching its API from the main process. `import ...
+    // from 'electron'` under ESM depends on newer, less mature support that
+    // proved unreliable while this project's main process was still ESM —
+    // see the ADR for the full account. `preload` is built separately, by
+    // Vite (`vite.preload.config.ts`), because a sandboxed preload script
+    // cannot `require()` local files at all — it must be a single bundled
+    // file — which this tsconfig does not attempt.
+    "module": "CommonJS",
+    "moduleResolution": "Node10",
+    // The root config's `verbatimModuleSyntax` forbids transforming ESM
+    // import/export syntax into CommonJS for a file TypeScript would
+    // otherwise treat as a genuine ES module (the nearest package.json says
+    // `"type": "module"`). That transform is exactly what this compile unit
+    // needs, so it is switched off here only.
+    "verbatimModuleSyntax": false,
+    // "Node10" is deprecated in TypeScript 6 in favour of "NodeNext"/"Node16",
+    // which resolve ESM only. This project needs classic CJS resolution
+    // specifically, which has no non-deprecated name yet. Revisit on the next
+    // TypeScript major.
+    "ignoreDeprecations": "6.0",
+    "outDir": "out",
+    "noEmit": false
+  },
+  "include": ["src/main/**/*.ts"]
+}

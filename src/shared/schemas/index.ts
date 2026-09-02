@@ -49,3 +49,10 @@ export type {
   EmergencyStateResolution,
   EmergencyStateSource,
 } from './emergency.schema';
+
+export {
+  healthCheckRequestSchema,
+  healthCheckResponseSchema,
+  IPC_HEALTH_CHANNEL,
+} from './ipc.schema';
+export type { HealthCheckResponse } from './ipc.schema';

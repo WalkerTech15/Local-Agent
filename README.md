@@ -3,11 +3,15 @@
 A local-first, permission-controlled desktop assistant for Windows. The
 assistant is named **JARVIS** by default; the product is **Local Agent**.
 
-> **Status: Phase 1, Milestone 1.**
-> The repository currently contains project scaffolding, shared schemas and
-> their tests. There is no application window, no user interface and no model
-> integration yet. Nothing in this repository makes a network request or
-> performs an action on your machine.
+> **Status: Phase 1, Milestone 2.**
+> The repository contains project scaffolding, shared schemas, and a hardened
+> Electron desktop shell: a sandboxed renderer, a narrow typed preload bridge,
+> and a main process that answers one health-check IPC channel. There is no
+> settings persistence, no permission engine, no audit log, no emergency-stop
+> runtime and no model integration yet. Nothing in this repository makes a
+> network request or performs an action on your machine — the renderer's
+> Content-Security-Policy blocks outbound network access outright, which the
+> end-to-end test suite asserts.
 
 All rights reserved. No licence has been granted for this project.
 
@@ -41,10 +45,18 @@ postponed.
 
 ## Security summary
 
-- The renderer process is sandboxed and unprivileged. It cannot reach the
-  filesystem, spawn a process, or import Node built-ins.
+- The renderer process is sandboxed (`sandbox: true`, `contextIsolation: true`,
+  `nodeIntegration: false`, `webSecurity: true`). It cannot reach the
+  filesystem, spawn a process, or import Node built-ins — asserted by an
+  end-to-end test, not just declared in the window's configuration.
 - The Electron main process is the only privileged boundary.
-- An action with no matching policy rule is **denied**.
+- The preload bridge exposes exactly one narrow, typed function
+  (`localAgent.health`), never `ipcRenderer` itself and never a generic
+  invoke-any-channel function.
+- A strict Content-Security-Policy blocks remote script and network access
+  outright; navigation, `window.open` and `<webview>` are all denied.
+- An action with no matching policy rule is **denied** — enforced today by the
+  schema layer; the runtime permission engine arrives in Milestone 5.
 - Destructive, irreversible, privacy-sensitive and security-sensitive actions
   require explicit confirmation, enforced in code rather than by policy
   defaults alone.
@@ -89,8 +101,10 @@ cp .env.example .env
 npm run typecheck    # tsc --noEmit
 npm run lint         # eslint .
 npm run format:check # prettier --check .
-npm test             # vitest run
-npm run verify       # all of the above, in order
+npm test             # vitest run — unit tests only, no build required
+npm run test:e2e     # build, then drive the real app with Playwright + Electron
+npm run build         # tsc (main) + Vite (preload, bundled) + Vite (renderer)
+npm run verify        # typecheck, lint, format:check and npm test, in order
 ```
 
 ## Repository layout
@@ -98,13 +112,24 @@ npm run verify       # all of the above, in order
 ```
 src/shared/     Pure schemas, types and constants. No I/O, no Electron.
                 Safe to import from any process, including the renderer.
-tests/unit/     Unit tests.
+src/main/       Privileged Electron main process. Owns the BrowserWindow,
+                the Content-Security-Policy, navigation/window-open/webview
+                hardening, and the one registered IPC handler.
+src/preload/    The single contextBridge. Exposes a narrow, explicitly
+                enumerated, typed API — never ipcRenderer, never a generic
+                invoke-any-channel function. Bundled into one file: a
+                sandboxed preload cannot require() local modules at runtime.
+src/renderer/   React interface. No Node, no Electron, no filesystem access —
+                only the bridge exposed at window.localAgent.
+tests/unit/     Unit tests. `npm test`.
+tests/e2e/      Playwright + Electron smoke test against the built app.
+                `npm run test:e2e`.
 docs/           Specification, architecture, security model, decisions.
 ```
 
-The `src/main`, `src/preload` and `src/renderer` directories arrive in
-Milestone 2. A lint rule already prevents `src/shared` from importing
-Electron, Node built-ins, or any process-specific module.
+A lint rule prevents `src/shared` from importing Electron, Node built-ins, or
+any process-specific module. `src/main` and `src/preload` are the only layers
+with OS or Electron access; `src/renderer` has neither.
 
 ## Working with AI agents
 
