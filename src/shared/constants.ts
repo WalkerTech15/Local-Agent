@@ -34,6 +34,7 @@ export const SETTINGS_SCHEMA_VERSION = 1;
 export const PERMISSION_POLICY_SCHEMA_VERSION = 1;
 export const AUDIT_SCHEMA_VERSION = 1;
 export const EMERGENCY_SCHEMA_VERSION = 1;
+export const SECRETS_SCHEMA_VERSION = 1;
 
 // ---------------------------------------------------------------------------
 // User-data layout (paths are relative to the application-data directory)
@@ -93,6 +94,17 @@ export const USER_DISPLAY_NAME_MIN_LENGTH = 1;
 export const USER_DISPLAY_NAME_MAX_LENGTH = 64;
 export const MODEL_ID_MAX_LENGTH = 128;
 export const BASE_URL_MAX_LENGTH = 2048;
+
+/**
+ * Bounds on a plaintext API key accepted from the renderer, before it is
+ * encrypted. Generous enough for any real provider token; tight enough that a
+ * hostile or accidental multi-megabyte payload cannot reach `safeStorage` or
+ * be written to disk. The key is never trimmed — unlike the display-string
+ * fields above, mutating a credential the user typed would silently change
+ * what gets stored.
+ */
+export const API_KEY_MIN_LENGTH = 1;
+export const API_KEY_MAX_LENGTH = 4096;
 
 /**
  * Rejects control characters, including newline, carriage return and NUL.

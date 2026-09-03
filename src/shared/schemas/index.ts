@@ -9,6 +9,7 @@ export {
   assistantSettingsSchema,
   createDefaultSettings,
   languageSettingsSchema,
+  modelProviderInputSchema,
   modelProviderSettingsSchema,
   settingsSchema,
   telemetrySettingsSchema,
@@ -59,5 +60,30 @@ export {
   healthCheckRequestSchema,
   healthCheckResponseSchema,
   IPC_HEALTH_CHANNEL,
+  IPC_SECRETS_CLEAR_CHANNEL,
+  IPC_SECRETS_STATUS_CHANNEL,
+  IPC_SECRETS_WRITE_CHANNEL,
+  IPC_SETTINGS_GET_CHANNEL,
+  IPC_SETTINGS_UPDATE_CHANNEL,
+  secretsClearRequestSchema,
+  secretsClearResponseSchema,
+  secretsStatusRequestSchema,
+  secretsStatusResponseSchema,
+  secretsWriteRequestSchema,
+  secretsWriteResponseSchema,
+  secretStatusResultSchema,
+  settingsGetRequestSchema,
+  settingsGetResponseSchema,
+  settingsUpdateRequestSchema,
+  settingsUpdateResponseSchema,
 } from './ipc.schema';
-export type { HealthCheckResponse } from './ipc.schema';
+export type {
+  HealthCheckResponse,
+  SecretsActionResponse,
+  SecretStatusResult,
+  SettingsActionResponse,
+  SettingsUpdateInput,
+} from './ipc.schema';
+
+export { createEmptySecretStoreFile, secretStoreFileSchema } from './secrets.schema';
+export type { SecretStoreFile } from './secrets.schema';

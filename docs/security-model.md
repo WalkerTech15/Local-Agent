@@ -8,11 +8,15 @@
 > assembled canonical request path. Milestone 6 added persisted emergency-stop
 > state — fail-safe loading, atomic writes, and the engage/reset operations —
 > under an engine and pipeline that needed no code changes, since both already
-> took emergency state as an explicit input. None of it is reachable from the
-> running application yet, since no new IPC channel exists to reach it
-> through. Controls below are marked **[implemented]**, **[enforced by
-> schema]** or **[planned, milestone N]**. Nothing here is claimed as working
-> before it exists.
+> took emergency state as an explicit input. Milestone 7 registers the first
+> five real, privileged IPC channels (`settings:get`, `settings:update`,
+> `secrets:status`, `secrets:write`, `secrets:clear`), the first real
+> native confirmation dialog, the encrypted secret store backed by Electron's
+> synchronous `safeStorage`, `hasApiKey` reconciliation, and the first-run
+> onboarding interface — again under a permission engine, executor and
+> pipeline that needed **zero code changes**. Controls below are marked
+> **[implemented]**, **[enforced by schema]** or **[planned, milestone N]**.
+> Nothing here is claimed as working before it exists.
 
 ---
 
@@ -54,12 +58,13 @@ Every OS permission request (camera, microphone, geolocation, notifications,
 asserted by an end-to-end Playwright test against the built application, not
 only declared in source.
 
-A compromised renderer therefore gains only the narrow preload API. Today
-that API is still one liveness check with no side effect — Milestone 5 built
-the permission engine every future privileged function must be gated and
-audited through (`main/action-pipeline.ts`'s `handleActionProposal`), but
-added no such function to the preload API itself, since none has a real,
-safe side effect yet.
+A compromised renderer therefore gains only the narrow preload API — as of
+Milestone 7, `health`, `settings.get`, `settings.update`, `secrets.status`,
+`secrets.write` and `secrets.clear`, and nothing else. Every one of those five
+privileged functions is gated and audited through
+`main/action-pipeline.ts`'s unmodified `handleActionProposal`
+(`main/ipc.ts` → `main/action-runtime.ts`'s `runAction` → `handleActionProposal`),
+and none of them can return a plaintext key.
 
 ### Permission model
 
@@ -117,16 +122,21 @@ authorizing verdict, so whichever milestone registers the first privileged
 channel has no way to accidentally bypass the engine as long as it calls
 `handleActionProposal`.
 
-**[not yet implemented]** Confirmation prompts as native, main-process-owned
-dialogs. Milestone 5 represents "confirmation required" and its resolution
+**[implemented, M7]** Confirmation prompts as native, main-process-owned
+dialogs. Milestone 5 represented "confirmation required" and its resolution
 as explicit data (`PermissionVerdict.confirmationRequired`,
-`ConfirmationResult`) and an injected `requestConfirmation` callback, but
-does not wire that callback to Electron's `dialog.showMessageBox` or any
-other concrete UI — there is no confirmation-requiring action reachable from
-the running application yet for a dialog to serve. Whichever future
-milestone adds the first such action must implement it as a native dialog
-owned by the main process; an HTML dialog rendered by the renderer remains
-explicitly disallowed regardless of which milestone builds it.
+`ConfirmationResult`) and an injected `requestConfirmation` callback, without
+wiring it to a concrete UI. Milestone 7 does: `main/confirm.ts`'s
+`showNativeConfirmation` calls the real `dialog.showMessageBox`, parented to
+the main window, and `main/index.ts` is the only place that builds the
+`requestConfirmation` closure `main/ipc.ts` receives — `main/ipc.ts` itself
+never imports `electron`'s `dialog`. `secrets.write` and `secrets.clear` are
+the first two action types to actually trigger one. The dialog text is built
+by the caller (`main/ipc.ts`) from safe, fixed strings naming only the
+provider — never the key itself — and `main/confirm.ts` does not inspect the
+action or its parameters, so it has no way to leak one either way. An HTML
+dialog rendered by the renderer remains explicitly disallowed and is not how
+this is implemented.
 
 ### Secret handling
 
@@ -158,36 +168,54 @@ benign.
 **[implemented]** The only secret-related value the settings file carries is
 the boolean `hasApiKey`.
 
-**[planned, M7]** `hasApiKey` is **derived metadata and must never be
+**[implemented, M7]** `hasApiKey` is **derived metadata and must never be
 treated as authoritative.** It is a cached answer to a question that only the
 encrypted secret store can actually answer, and the two can drift — a settings
 file restored from backup, an interrupted write, or a secret store cleared
 outside the application all leave the flag disagreeing with reality.
 
-The obligation this creates, to be discharged when the secret store (M7)
-exists — the settings store (M3) now does:
+`main/settings-service.ts` now discharges the obligation the schema's doc
+comment described since Milestone 3:
 
-- the settings loader reconciles `hasApiKey` against the secret store on load,
-  and the writer refreshes it whenever a secret is written or cleared;
+- `readReconciledSettings` and `writeOnboardingSettings` both recompute
+  `hasApiKey` from `main/secrets.ts`'s `hasStoredSecret`, for whichever
+  provider is selected, on every `settings.read` and every `settings.write` —
+  never from caller input, never from whatever was last written to disk;
+- after a successful `secrets.write` or `secrets.clear`,
+  `refreshHasApiKeyAfterSecretChange` re-reconciles it, called only once the
+  store operation itself has already succeeded, so a failed store write is
+  never reported as a present key;
 - **where the two disagree, the secret store is the source of truth.**
-  `hasApiKey` is corrected to match it, never the other way round;
+  `hasApiKey` is corrected to match it, never the other way round, and the
+  correction is persisted back to `settings.json`, not only returned;
+- additionally forced `false` for any provider outside
+  `PROVIDERS_REQUIRING_API_KEY` (`'none'` and `'ollama'`), a stricter
+  service-level choice on top of, not a weakening of, the schema's own floor
+  (which forbids `hasApiKey: true` only for `'none'`);
 - no code path may infer that a key exists, or is usable, from `hasApiKey`
-  alone. It exists so the interface can show key status without a key crossing
-  the process boundary, and for nothing else.
+  alone — it exists so the interface can show key status without a key
+  crossing the process boundary, and for nothing else.
 
-Nothing reconciles the two today, because the secret store doesn't exist yet.
-The settings store persists whatever `hasApiKey` a caller last wrote, exactly
-as written, no more and no less. See known limitation 12.
+See known limitation 12 for the one remaining gap: the settings-side
+correction persisted by an _unreconciled_ read that predates this milestone.
 
 **[implemented]** No action type returns a secret value. `secrets.read` does
 not exist; the action list contains only `secrets.write`, `secrets.clear` and
 `secrets.status`, the last of which returns a boolean. A unit test asserts
 this.
 
-**[planned, M7]** Keys are stored using Electron's **asynchronous**
-`safeStorage` API, which encrypts under Windows DPAPI for the current user
-account. Plaintext exists only inside the main process. There is no IPC
-channel that returns a key.
+**[implemented, M7]** Keys are stored using Electron's **synchronous**
+`safeStorage` API — `isEncryptionAvailable()`, `encryptString()` and
+`decryptString()` are all synchronous in the installed `electron@44.1.1`,
+verified against its typings rather than assumed from older documentation —
+which encrypts under Windows DPAPI for the current user account. Plaintext
+exists only inside the main process, only for the lifetime of one
+`secrets.write`/`readSecret` call, and is never logged, never placed in an
+error message, and never included in an audit parameter (it is never even
+placed in `proposal.parameters` in the first place, so redaction is a second,
+independent layer rather than the only thing standing between it and the
+audit log). There is no IPC channel that returns a key: `secrets.status`
+returns only `{present: boolean}`.
 
 **[implemented]** No secret appears in `.env`, `.env.example`, any settings
 file, any test fixture or any committed file. `.env` is git-ignored.
@@ -398,11 +426,16 @@ constant `APP_DATA_DIR_NAME`, not from `app.getPath('userData')` — whose
 folder name instead follows Electron's `app.name`, which this project does
 not pin.
 
-**[planned, M7]** No IPC channel exposes settings yet — this is deliberate;
-the onboarding interface that will need one does not exist yet. `main/index.ts`
-calls `loadSettings` once at startup, read-only, to prove the path resolves
-and the load path executes against the real environment, and `writeSettings`
-is not called from the running application at all in Milestone 3.
+**[implemented, M7]** `settings:get` and `settings:update` expose settings to
+the renderer, both routed through `main/settings-service.ts` and the
+unmodified permission pipeline. `main/index.ts` still calls `loadSettings`
+once at startup, read-only, to prove the path resolves before the window
+opens; `writeSettings` is now also called for real, from `settings:update`'s
+`perform` callback, gated by the same `settings.write` decision as every
+other action type. The `settings:update` request schema is built from
+`modelProviderInputSchema`, which has no `hasApiKey` field at all — a renderer
+cannot set it even by constructing a hostile payload, since `strictObject`
+rejects the extra key outright rather than silently dropping it.
 
 ### Emergency stop
 
@@ -464,9 +497,11 @@ test that compares the file's raw bytes before and after a rejected reset.
 stop. `engageEmergencyStop` and `resetEmergencyStop` are real, tested `perform`
 callbacks, but nothing in the running application calls
 `handleActionProposal` with a real `emergency.engage` or `emergency.reset`
-proposal yet — consistent with Milestone 5 registering no new IPC channel,
-and with the confirmation-dialog limitation already noted under
-_Permission model_ above.
+proposal yet. Milestone 7 does not change this: it registers channels for
+settings and secrets only, not for the emergency stop. The native
+confirmation dialog such a control would need already exists
+(`main/confirm.ts`, see _Permission model_ above) and would be reused, not
+rebuilt, whenever this control arrives.
 
 ### Input validation
 
@@ -491,45 +526,56 @@ general-purpose script is blocked. Tests assert that names such as
 `Nguyễn Thị Ánh Nguyệt` and `Éloïse Lefèvre-Gaütier` round-trip unchanged.
 
 **[implemented]** Every IPC payload is validated against a schema in the main
-process: `main/ipc.ts` parses the health-check channel's arguments and its
-result against `healthCheckRequestSchema` / `healthCheckResponseSchema`
-before either crosses the process boundary. Unknown channels are rejected —
-`ipcMain` has no handler for anything else, and the preload exposes no way to
-address one. No generic pass-through channel exists.
+process, for all five channels, not only the health check: `main/ipc.ts`
+parses each channel's arguments against its request schema
+(`settingsGetRequestSchema`, `settingsUpdateRequestSchema`,
+`secretsStatusRequestSchema`, `secretsWriteRequestSchema`,
+`secretsClearRequestSchema`) and its result against the matching response
+schema before either crosses the process boundary. An invalid request — an
+unapproved provider identifier, an `apiKey` outside its bounds, a payload
+carrying `hasApiKey` — throws before a proposal is even built, so no
+permission decision and no audit record exist for it. Unknown channels are
+rejected — `ipcMain` has no handler for anything else, and the preload
+exposes no way to address one. No generic pass-through channel exists.
 
 ---
 
 ## Threats and status
 
-| Threat                                                        | Status                                                                                                                              |
-| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| Renderer compromise (XSS, malicious UI dependency)            | Addressed, M2 — process isolation and CSP; asserted by an end-to-end test                                                           |
-| Malicious or malformed IPC payload                            | Addressed, M2 — schema validation on the one registered channel; no other channel exists                                            |
-| Secret exfiltration through the interface                     | Addressed — no channel returns a key; asserted by test                                                                              |
-| Secret leakage into logs or errors                            | Addressed, M4 — schema-level redaction contract plus writer-side redaction, both verified                                           |
-| Credential persisted inside a settings _value_                | Addressed — `baseUrl` rejects embedded userinfo                                                                                     |
-| Log injection via a crafted user name                         | Addressed — control characters rejected                                                                                             |
-| Display spoofing via bidirectional overrides                  | Addressed — bidi overrides and isolates rejected in display strings                                                                 |
-| Forged audit record                                           | Addressed — biconditional cross-field integrity rules                                                                               |
-| Unbounded or non-serialisable audit payload                   | Addressed — bounded JSON-safe parameter schema; writer-side scan bounds the whole record                                            |
-| Audit record overwritten or truncated by a write              | Addressed, M4 — append-only file handle; proven under concurrent writes by test                                                     |
-| Prototype-pollution key bypassing schema validation           | Addressed, M4 — explicit writer-side scan; schema-only reliance was verified insufficient                                           |
-| Settings tampering or corruption                              | Addressed, M3 — strict validation, fail-safe loading to defaults, atomic writes                                                     |
-| Policy tampering or corruption                                | Addressed, M5 — fail-closed loading (`main/policy.ts`) plus engine-side floor enforcement independent of it                         |
-| Policy file removing the user's emergency controls            | Addressed, M5 — availability floor enforced at both the schema layer and, independently, by `decidePermission`                      |
-| Policy bypassing schema validation before reaching the engine | Addressed, M5 — floors re-verified by the engine regardless of validation history                                                   |
-| Corruption of a shared security default in memory             | Addressed — exported defaults deeply frozen; resolvers return fresh objects                                                         |
-| `src/shared` reaching the OS, network or eval                 | Addressed — lint boundary, verified by probe; not a runtime sandbox                                                                 |
-| Privilege escalation via the executor                         | Addressed, M5 — `execute` requires a verdict as an explicit argument; proven by tests that no denial or rejection reaches `perform` |
-| A side effect running without a permission decision           | Addressed, M5 — structural: no code path in `execute` calls `perform` without an authorizing verdict                                |
-| Model rationale/confidence used as authorization              | Addressed, M5 — `decidePermission` never reads `proposal.parameters`; proven by test                                                |
-| Emergency-stop bypass (decision logic)                        | Addressed, M5 — engine denies non-exempt actions when engaged, evaluated after both floors                                          |
-| Emergency-stop bypass (persistence)                           | Addressed, M6 — atomic writes, fail-safe loading; reset requires an approved confirmation the pipeline already enforces             |
-| Emergency-stop state corruption fails open instead of closed  | Addressed, M6 — malformed or unreadable state resolves engaged, not disengaged; proven by test                                      |
-| Emergency reset triggered by a model or a policy rule alone   | Addressed, M6 — always resolves to `confirm`; proven across a policy × emergency-state test matrix                                  |
-| Path traversal                                                | Not reachable — all paths derive from the app-data directory; none is user-supplied                                                 |
-| Prompt injection, untrusted model or tool output              | Not reachable in Phase 1 — no model call exists. The proposal/executor split pre-empts it                                           |
-| Supply-chain compromise via npm                               | Mitigated, not eliminated — see below                                                                                               |
+| Threat                                                                                       | Status                                                                                                                                                          |
+| -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Renderer compromise (XSS, malicious UI dependency)                                           | Addressed, M2 — process isolation and CSP; asserted by an end-to-end test                                                                                       |
+| Malicious or malformed IPC payload                                                           | Addressed, M2 — schema validation on the one registered channel; no other channel exists                                                                        |
+| Secret exfiltration through the interface                                                    | Addressed — no channel returns a key; asserted by test                                                                                                          |
+| Secret leakage into logs or errors                                                           | Addressed, M4 — schema-level redaction contract plus writer-side redaction, both verified                                                                       |
+| Credential persisted inside a settings _value_                                               | Addressed — `baseUrl` rejects embedded userinfo                                                                                                                 |
+| Log injection via a crafted user name                                                        | Addressed — control characters rejected                                                                                                                         |
+| Display spoofing via bidirectional overrides                                                 | Addressed — bidi overrides and isolates rejected in display strings                                                                                             |
+| Forged audit record                                                                          | Addressed — biconditional cross-field integrity rules                                                                                                           |
+| Unbounded or non-serialisable audit payload                                                  | Addressed — bounded JSON-safe parameter schema; writer-side scan bounds the whole record                                                                        |
+| Audit record overwritten or truncated by a write                                             | Addressed, M4 — append-only file handle; proven under concurrent writes by test                                                                                 |
+| Prototype-pollution key bypassing schema validation                                          | Addressed, M4 — explicit writer-side scan; schema-only reliance was verified insufficient                                                                       |
+| Settings tampering or corruption                                                             | Addressed, M3 — strict validation, fail-safe loading to defaults, atomic writes                                                                                 |
+| Policy tampering or corruption                                                               | Addressed, M5 — fail-closed loading (`main/policy.ts`) plus engine-side floor enforcement independent of it                                                     |
+| Policy file removing the user's emergency controls                                           | Addressed, M5 — availability floor enforced at both the schema layer and, independently, by `decidePermission`                                                  |
+| Policy bypassing schema validation before reaching the engine                                | Addressed, M5 — floors re-verified by the engine regardless of validation history                                                                               |
+| Corruption of a shared security default in memory                                            | Addressed — exported defaults deeply frozen; resolvers return fresh objects                                                                                     |
+| `src/shared` reaching the OS, network or eval                                                | Addressed — lint boundary, verified by probe; not a runtime sandbox                                                                                             |
+| Privilege escalation via the executor                                                        | Addressed, M5 — `execute` requires a verdict as an explicit argument; proven by tests that no denial or rejection reaches `perform`                             |
+| A side effect running without a permission decision                                          | Addressed, M5 — structural: no code path in `execute` calls `perform` without an authorizing verdict                                                            |
+| Model rationale/confidence used as authorization                                             | Addressed, M5 — `decidePermission` never reads `proposal.parameters`; proven by test                                                                            |
+| Emergency-stop bypass (decision logic)                                                       | Addressed, M5 — engine denies non-exempt actions when engaged, evaluated after both floors                                                                      |
+| Emergency-stop bypass (persistence)                                                          | Addressed, M6 — atomic writes, fail-safe loading; reset requires an approved confirmation the pipeline already enforces                                         |
+| Emergency-stop state corruption fails open instead of closed                                 | Addressed, M6 — malformed or unreadable state resolves engaged, not disengaged; proven by test                                                                  |
+| Emergency reset triggered by a model or a policy rule alone                                  | Addressed, M6 — always resolves to `confirm`; proven across a policy × emergency-state test matrix                                                              |
+| Plaintext API key stored as a fallback when encryption is unavailable                        | Addressed, M7 — `writeSecret` throws `SecretStoreUnavailableError` before any disk write when `safeStorage.isEncryptionAvailable()` is `false`; proven by test  |
+| Plaintext API key reaching settings.json, an audit record, an error message, or the renderer | Addressed, M7 — `apiKey` never enters `proposal.parameters`; secrets IPC responses carry only `{present: boolean}`; proven by test                              |
+| `hasApiKey` reported as `true` for a provider that does not use a key (`none`, `ollama`)     | Addressed, M7 — forced `false` regardless of the secret store; proven by test                                                                                   |
+| A denied or rejected secret operation still mutating the store or `hasApiKey`                | Addressed, M7 — `perform` is structurally unreachable on `deny`/`reject`; `hasApiKey` is only refreshed after the store write already succeeded; proven by test |
+| Renderer-supplied `hasApiKey` reaching a persisted document                                  | Addressed, M7 — `settingsUpdateRequestSchema` has no such field; `strictObject` rejects the extra key outright                                                  |
+| Path traversal                                                                               | Not reachable — all paths derive from the app-data directory; none is user-supplied                                                                             |
+| Prompt injection, untrusted model or tool output                                             | Not reachable in Phase 1 — no model call exists. The proposal/executor split pre-empts it                                                                       |
+| Supply-chain compromise via npm                                                              | Mitigated, not eliminated — see below                                                                                                                           |
 
 ---
 
@@ -608,27 +654,31 @@ These are real and are stated plainly rather than described as solved.
 11. **Windows 10 is unverified.** Development and verification target
     Windows 11.
 
-12. **`hasApiKey` can drift from the secret store.** It is derived metadata
-    with no reconciliation behind it yet, so nothing currently guarantees the
-    flag matches what the encrypted store actually holds. The settings store
-    (M3) persists whatever value a caller last wrote, exactly as written;
-    reconciliation against the secret store as the source of truth is a
-    required Milestone 7 deliverable, since the secret store does not exist
-    until then. Until then the flag is a hint, not a fact, and no security
-    decision may rest on it.
+12. **Resolved, M7.** `hasApiKey` reconciliation now exists —
+    `main/settings-service.ts`, described under _Secret handling_ above. One
+    narrower gap remains: any `settings.json` written or last reconciled
+    _before_ this milestone, then never read again through
+    `readReconciledSettings`/`writeOnboardingSettings` (a raw external
+    read of the file, or a build that never calls either), still shows
+    whatever `hasApiKey` was last persisted, uncorrected, until the next real
+    read or write. No code path in this codebase performs such a raw read,
+    but a future migration or support script reading `settings.json` directly
+    should not treat `hasApiKey` as authoritative without also calling
+    `hasStoredSecret` itself. Kept as a numbered entry, rather than removed,
+    so the references to this limitation number elsewhere do not shift.
 
-13. **Settings loading cannot distinguish "no file yet" from "file existed
-    but was rejected".** Both a genuine first launch and a corrupted or
-    invalid `settings.json` return identical fresh defaults from
-    `loadSettings`, by design — there is deliberately no partial-trust path.
-    The cost: nothing today tells the user their settings were reset because
-    the file was corrupt rather than absent. The audit format and writer
-    (M4) and the pipeline that would call them for a real action (M5) both
-    now exist, but `loadSettings` still is not called through either — it
-    runs once, read-only, directly from `main/index.ts` at startup, outside
-    the permission engine entirely, since Milestone 3 predates it and no
-    later milestone has revisited that wiring. Surfacing this distinction to
-    the user still belongs to a future onboarding notice (M7).
+13. **Resolved, M7, for the case that mattered.** Settings loading itself
+    still cannot distinguish "no file yet" from "file existed but was
+    rejected" — both still return identical fresh defaults from
+    `loadSettings`, by design, and that has not changed. What Milestone 7
+    resolves is the practical consequence this limitation used to describe:
+    `settings:get` now routes through the full permission-and-audit pipeline,
+    so every settings read is now auditable, and `App.tsx` now shows
+    onboarding whenever `onboardingCompleted` is `false` — including a
+    corrupted file's fresh defaults — rather than silently trusting whatever
+    came back. There is still no explicit "your settings were reset because
+    the file was corrupt" notice distinguishing that case from a genuine
+    first launch; both simply present as onboarding.
 
 14. **`decidePermission`'s defensive `REASON_UNKNOWN_ACTION_TYPE` denial
     cannot itself be audited through `handleActionProposal`.** If a proposal
@@ -644,19 +694,18 @@ These are real and are stated plainly rather than described as solved.
     never called — only the audit trail for that specific, expected-to-be-
     unreachable case is incomplete.
 
-15. **No real IPC channel or native confirmation dialog exists yet.**
-    Milestone 5 built the permission engine, the executor gate, and the
-    assembled request path, but registered no new `ipcMain` channel and
-    wired no `dialog.showMessageBox` call, because nothing yet has a real,
-    safe side effect or a real confirmation-requiring action reachable from
-    the running application. Milestone 6 does not change this: `main/index.ts`
-    calls `loadEmergencyState` read-only at startup, but nothing calls
-    `engageEmergencyStop` or `resetEmergencyStop` from the running app.
-    Every guarantee above is verified by tests that call
-    `handleActionProposal` directly, not by driving the real app end-to-end
-    through IPC. This is consistent with Milestone 3's and Milestone 4's own
-    storage-only, not-yet-wired scope, not a shortcut specific to any one
-    milestone.
+15. **Resolved, M7, for settings and secrets; still open for the emergency
+    stop.** Milestones 3–6 built storage, audit, permission and emergency-stop
+    layers with no `ipcMain` channel and no `dialog.showMessageBox` call
+    reaching any of them from the running application — every guarantee was
+    verified only by tests calling `handleActionProposal` directly. Milestone
+    7 registers the first five real channels and the first real dialog, both
+    exercised end-to-end by `tests/unit/main/ipc.test.ts` and by the e2e
+    smoke suite's static bridge-shape assertions. `emergency.engage` and
+    `emergency.reset` remain exactly as before: real, tested `perform`
+    callbacks with no IPC channel calling them, verified only through
+    `handleActionProposal` directly — Milestone 7's scope was settings and
+    secrets, not the emergency-stop UI.
 
 16. **The emergency stop has no user-facing control at all yet.** There is no
     button, menu item, keyboard shortcut or IPC channel a user could actually
@@ -664,6 +713,46 @@ These are real and are stated plainly rather than described as solved.
     `resetEmergencyStop` are real and fully tested, but only as functions a
     future caller passes to `handleActionProposal` — building that caller is
     UI work belonging to a later milestone, not a Milestone 6 deliverable.
+
+17. **The encrypted secret store holds at most one key, not one per
+    provider.** Switching `modelProvider.provider` does not clear a
+    previously stored key: `secrets.write`/`secrets.clear` and `hasApiKey`
+    reconciliation all operate on a single slot in `secrets.enc`, associated
+    with whichever provider happens to be selected in `settings.json` at the
+    moment each is evaluated, not with the provider that was selected when the
+    key was written. This is deliberate for Phase 1's scope — nothing calls a
+    provider or decrypts a key for any real use yet, so no code path can
+    currently misapply a key meant for one provider to another — but it means
+    a future milestone that actually calls a provider must not assume a
+    present key was necessarily written for the _current_ provider selection
+    without additional design. A user switching from `glm` back to
+    `openai-compatible` will find their previous `openai-compatible` key (if
+    one was ever stored) still present; this is intentional (re-entering a
+    credential on every provider switch would be user-hostile) but is stated
+    here explicitly since it was not asked for and is not obvious from
+    `hasApiKey` alone.
+
+18. **No renderer component-level automated test.** `tests/unit/main/ipc.test.ts`
+    exercises the full IPC handler layer, including every path
+    `Onboarding.tsx` and `App.tsx` drive, and the e2e suite asserts the
+    bridge's exact static shape against the real built app — but no test
+    renders the React components themselves. React Testing Library / jsdom
+    are not part of this project's toolchain, and adding them for one
+    component-level smoke test was judged not worth a new dependency; the
+    business logic those components call is fully covered, but a rendering
+    regression in the UI itself (a broken form field, a missed click handler)
+    would not be caught by `npm test`.
+
+19. **The e2e suite does not drive `settings:get`, `settings:update`, or any
+    `secrets:*` channel against the real built app.** Unlike `health`, all
+    five have real side effects — an audit-log write at minimum — and the
+    e2e suite launches the real application with no override for
+    `app.getPath('appData')`, so exercising them there would write to the
+    developer's actual `%APPDATA%\Local-Agent\`. The e2e suite is limited to
+    structural assertions (the bridge's exact key list, no generic invoke
+    surface) that touch no side effect; full behavioural coverage of the five
+    channels is in `tests/unit/main/ipc.test.ts`, against temporary
+    directories, not the real application process.
 
 ---
 

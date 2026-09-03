@@ -152,6 +152,22 @@ export const languageSettingsSchema = z.strictObject({
   ui: z.enum(UI_LANGUAGES),
 });
 
+/**
+ * The provider fields a caller may set directly: never `hasApiKey`, which is
+ * server-computed metadata, not client input. `main/settings-service.ts`'s
+ * IPC request schema for `settings:update` is built from this alone, so a
+ * renderer-supplied `hasApiKey` cannot reach `writeSettings` even if a
+ * compromised or buggy caller tried to include one — see the note on
+ * {@link modelProviderSettingsSchema}'s `hasApiKey` field.
+ */
+export const modelProviderInputSchema = z.strictObject({
+  provider: z.enum(MODEL_PROVIDERS),
+  /** Free-form model identifier. Not validated against any provider in Phase 1. */
+  model: displayString(MODEL_ID_MAX_LENGTH),
+  /** Endpoint for self-hosted or OpenAI-compatible providers. */
+  baseUrl: optionalHttpUrl,
+});
+
 export const modelProviderSettingsSchema = z.strictObject({
   provider: z.enum(MODEL_PROVIDERS),
   /** Free-form model identifier. Not validated against any provider in Phase 1. */
@@ -165,10 +181,12 @@ export const modelProviderSettingsSchema = z.strictObject({
    * secret-related value the renderer is permitted to see.
    *
    * Because it is a cached answer, it can drift from the store it describes.
-   * Reconciling the two — with the secret store as the source of truth — is a
-   * Milestone 3 / Milestone 7 obligation; nothing reconciles them today. No
-   * code path may infer that a key exists, or is usable, from this flag alone.
-   * See `docs/security-model.md`, known limitation 12.
+   * Reconciling the two — with the secret store as the source of truth — is
+   * `main/settings-service.ts`'s job (Milestone 7): every settings read and
+   * every settings or secret write recomputes this field from
+   * `main/secrets.ts`'s presence check rather than trusting whatever value was
+   * last written. No code path may infer that a key exists, or is usable,
+   * from this flag alone.
    */
   hasApiKey: z.boolean(),
 });

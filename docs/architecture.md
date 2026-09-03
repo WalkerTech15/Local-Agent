@@ -17,12 +17,18 @@
 > as its `perform` callback for the `emergency.engage` and `emergency.reset`
 > action types. `decidePermission` and `handleActionProposal` needed **no
 > code changes** for this — both already took `emergencyState` as an explicit
-> input since Milestone 5. Nothing here is reachable from the running
-> application yet beyond a read-only startup load — no new IPC channel was
-> registered, because nothing has a real, safe side effect to offer one
-> except through this milestone's own tests. `main/secrets` described below
-> does not exist yet; it is the approved design for Milestone 7. This
-> document marks which parts exist today.
+> input since Milestone 5. Milestone 7 adds the first privileged IPC channels
+> ever registered — `settings:get`, `settings:update`, `secrets:status`,
+> `secrets:write`, `secrets:clear` — and, with them, the first real native
+> confirmation dialog (`main/confirm.ts`), the encrypted secret store
+> (`main/secrets.ts`, backed by Electron's **synchronous** `safeStorage`),
+> settings/secret-store reconciliation (`main/settings-service.ts`), a small
+> glue module that loads policy and emergency state fresh for every request
+> (`main/action-runtime.ts`), and the first-run onboarding interface
+> (`src/renderer/Onboarding.tsx`). `main/permissions.ts`,
+> `main/action-pipeline.ts` and `main/executor.ts` again needed **zero code
+> changes** — every new channel is routed through the unmodified
+> `handleActionProposal`. This document marks which parts exist today.
 
 ---
 
@@ -52,27 +58,31 @@ is the reason Electron was chosen; see
 The renderer cannot perform a privileged action. Not "should not" — it has no
 mechanism to. With `sandbox: true`, `contextIsolation: true` and
 `nodeIntegration: false`, a fully compromised renderer gains only the narrow
-preload API. Today that API is one liveness check with no side effect; every
-function added to it from Milestone 3 onward will be policy-gated and
-audited before it can perform a privileged action.
+preload API: `health`, `settings.get`/`settings.update`, and
+`secrets.status`/`secrets.write`/`secrets.clear` as of Milestone 7 — every one
+of them policy-gated and audited before it can perform a privileged action,
+and none of them able to return a plaintext key.
 
 ## Modules
 
-| Module                              | Responsibility                                                                                                                                                        | Must not                                                                                        |
-| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `shared` **(exists)**               | Zod schemas, derived types, constants. Pure data and pure functions.                                                                                                  | Perform I/O; import Electron or Node built-ins; depend on `main`, `preload` or `renderer`.      |
-| `renderer` **(exists)**             | All interface. Renders state, collects input, sends requests over the bridge.                                                                                         | Touch Node APIs, the filesystem or `ipcRenderer`; read secrets; load remote content.            |
-| `preload` **(exists)**              | The single bridge. Exposes an explicitly enumerated, typed API via `contextBridge`.                                                                                   | Expose `ipcRenderer`; provide a generic "invoke any channel" function; expose a Node primitive. |
-| `main/ipc` **(exists, partial)**    | Receives every request, validates its payload against a schema. Today: one health-check channel, no privileged action, so nothing to hand to a permission engine yet. | Execute anything itself; bypass the permission engine once one exists.                          |
-| `main/permissions` **(exists)**     | Pure decision function. `(proposal, policy, emergencyState) → verdict`.                                                                                               | Perform I/O, show dialogs, or log.                                                              |
-| `main/executor` **(exists)**        | The **only** module that performs side effects. Requires a permission verdict as an argument.                                                                         | Be called from `renderer` or `preload`; act without a decision; make its own policy judgements. |
-| `main/action-pipeline` **(exists)** | Assembles `permissions → [confirm] → executor → audit` into one function every future IPC handler must call.                                                          | Be bypassed by a handler that wires the pieces together itself.                                 |
-| `main/audit` **(exists)**           | Append-only event writer with redaction and daily rotation.                                                                                                           | Expose any update or delete function; write an unredacted secret.                               |
-| `main/settings` **(exists)**        | Loads, validates and atomically writes settings. Fails closed to safe defaults.                                                                                       | Store secrets; write without going through the executor once one exists.                        |
-| `main/policy` **(exists)**          | Loads and validates the permission policy file. Fails closed to `createDefaultPermissionPolicy()`.                                                                    | Merge a partially-valid document; expose a write path.                                          |
-| `main/secrets`                      | Encrypt and decrypt via the asynchronous `safeStorage` API.                                                                                                           | Return a plaintext secret across IPC; log a secret; write plaintext to disk.                    |
-| `main/emergency` **(exists)**       | Loads and atomically persists emergency-stop state; `engageEmergencyStop`/`resetEmergencyStop` are `perform` callbacks for the action pipeline.                       | Be bypassable by the renderer, a model, or the policy file; make its own permission decision.   |
-| `main/paths` **(exists)**           | Single source of truth for user-data locations.                                                                                                                       | Accept a user-supplied path.                                                                    |
+| Module                               | Responsibility                                                                                                                                    | Must not                                                                                                |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `shared` **(exists)**                | Zod schemas, derived types, constants. Pure data and pure functions.                                                                              | Perform I/O; import Electron or Node built-ins; depend on `main`, `preload` or `renderer`.              |
+| `renderer` **(exists)**              | All interface, including first-run onboarding. Renders state, collects input, sends requests over the bridge.                                     | Touch Node APIs, the filesystem or `ipcRenderer`; read secrets; load remote content.                    |
+| `preload` **(exists)**               | The single bridge. Exposes an explicitly enumerated, typed API via `contextBridge`.                                                               | Expose `ipcRenderer`; provide a generic "invoke any channel" function; expose a Node primitive.         |
+| `main/ipc` **(exists)**              | Receives every request, validates its payload and its response against a schema, and routes it through `main/action-runtime.ts`.                  | Execute anything itself; call `execute` or `main/secrets.ts` directly, bypassing the permission engine. |
+| `main/action-runtime` **(exists)**   | Loads the current policy and emergency state fresh per request and calls `handleActionProposal`.                                                  | Add a decision step of its own; cache policy or emergency state across requests.                        |
+| `main/confirm` **(exists)**          | `showNativeConfirmation` — the real `dialog.showMessageBox`, parented to the main window.                                                         | Be called from the renderer; be rendered as HTML; describe a secret in the dialog text.                 |
+| `main/permissions` **(exists)**      | Pure decision function. `(proposal, policy, emergencyState) → verdict`.                                                                           | Perform I/O, show dialogs, or log.                                                                      |
+| `main/executor` **(exists)**         | The **only** module that performs side effects. Requires a permission verdict as an argument.                                                     | Be called from `renderer` or `preload`; act without a decision; make its own policy judgements.         |
+| `main/action-pipeline` **(exists)**  | Assembles `permissions → [confirm] → executor → audit` into one function every IPC handler calls.                                                 | Be bypassed by a handler that wires the pieces together itself.                                         |
+| `main/audit` **(exists)**            | Append-only event writer with redaction and daily rotation.                                                                                       | Expose any update or delete function; write an unredacted secret.                                       |
+| `main/settings` **(exists)**         | Loads, validates and atomically writes settings. Fails closed to safe defaults.                                                                   | Store secrets; write without going through the executor.                                                |
+| `main/settings-service` **(exists)** | Reconciles `hasApiKey` against the secret store on every read and write; assembles onboarding/provider settings writes.                           | Accept `hasApiKey` as caller input; skip re-validating the full document before persisting.             |
+| `main/secrets` **(exists)**          | Encrypts and decrypts via the **synchronous** `safeStorage` API (Windows DPAPI). Presence is answered from the file's shape, never by decrypting. | Return a plaintext secret across IPC; log a secret; fall back to storing plaintext.                     |
+| `main/policy` **(exists)**           | Loads and validates the permission policy file. Fails closed to `createDefaultPermissionPolicy()`.                                                | Merge a partially-valid document; expose a write path.                                                  |
+| `main/emergency` **(exists)**        | Loads and atomically persists emergency-stop state; `engageEmergencyStop`/`resetEmergencyStop` are `perform` callbacks for the action pipeline.   | Be bypassable by the renderer, a model, or the policy file; make its own permission decision.           |
+| `main/paths` **(exists)**            | Single source of truth for user-data locations.                                                                                                   | Accept a user-supplied path.                                                                            |
 
 ## Dependency direction
 
@@ -189,13 +199,13 @@ cannot be turned into an unsafe one in memory after loading.
 
 ## Desktop shell (implemented)
 
-| File                               | Describes                                                                                            |
-| ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `src/main/index.ts`                | Window creation, CSP, permission-request denial, navigation/window-open/webview hardening, lifecycle |
-| `src/main/ipc.ts`                  | `ipcMain` handler registration; validates request and response against the shared schema             |
-| `src/preload/index.ts`             | The single `contextBridge` API: `localAgent.health()`                                                |
-| `src/renderer/`                    | React shell; reads `window.localAgent.health()` on mount                                             |
-| `src/shared/schemas/ipc.schema.ts` | `IPC_HEALTH_CHANNEL`, request/response schemas shared by `main` and `preload`                        |
+| File                               | Describes                                                                                                                                |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/main/index.ts`                | Window creation, CSP, permission-request denial, navigation/window-open/webview hardening, lifecycle, IPC-runtime composition            |
+| `src/main/ipc.ts`                  | `ipcMain` handler registration for all five channels; validates request and response against the shared schema for each                  |
+| `src/preload/index.ts`             | The single `contextBridge` API: `localAgent.health()`, `localAgent.settings.{get,update}()`, `localAgent.secrets.{status,write,clear}()` |
+| `src/renderer/`                    | React shell: `App.tsx` gates on `onboardingCompleted`, `Onboarding.tsx` is the first-run form                                            |
+| `src/shared/schemas/ipc.schema.ts` | Every `IPC_*_CHANNEL` constant and its request/response schema, shared by `main` and `preload`                                           |
 
 Build layout, and why it is not uniform across the three layers:
 
@@ -270,13 +280,14 @@ still one whole-file rename. On any failure after the temporary file is
 created, it is removed before the error propagates. The parent directory is
 created (`{ recursive: true }`) on write, never on read.
 
-**Not wired to IPC.** Milestone 3 is storage only. `main/index.ts` calls
-`loadSettings` once at startup, read-only, to prove the real path resolves
-and loads (or safely falls back) before the window opens — nothing exposes
-the result to the renderer yet, and `writeSettings` is not called from the
-running application at all. Both are ready for the onboarding flow (M7) to
-call through a future IPC channel, validated the same way `main/ipc.ts`
-already validates the health-check channel.
+**Wired to IPC since Milestone 7.** `main/index.ts` still calls `loadSettings`
+once at startup, read-only, to prove the real path resolves before the window
+opens, but `writeSettings` is now also reachable from the running
+application: `settings:get` (`settings.read`) and `settings:update`
+(`settings.write`) both go through `main/settings-service.ts`'s
+`readReconciledSettings`/`writeOnboardingSettings`, which call `loadSettings`
+and `writeSettings` exactly as this module already exposed them — neither
+function itself changed for Milestone 7.
 
 ## Audit log (implemented)
 
@@ -443,18 +454,18 @@ before anything reaches disk (see the audit log section above). If that
 write itself throws, the error propagates rather than returning a result
 that was never actually recorded.
 
-**Registers no new IPC channel.** Milestone 5 adds no privileged channel to
-`main/ipc.ts` — nothing yet has a real, safe side effect to offer one, and
-every real action type Phase 1 could plausibly wire up first (filesystem
-tools, shell execution, secret storage, provider calls) is explicitly out of
-scope until a later milestone. `handleActionProposal` is exercised directly
-by this milestone's own integration tests instead, which is what proves no
-bypass is possible: `execute` structurally cannot run `perform` without an
-authorizing verdict, so whichever milestone registers the first privileged
-channel has no way to accidentally skip the engine as long as it calls this
-function. `main/index.ts` calls `loadPermissionPolicy` read-only at startup,
-mirroring the Milestone 3 settings pattern, to prove the real policy path
-resolves and loads (or safely falls back) before the window opens.
+**Milestone 5 registered no IPC channel; Milestone 7 registers the first
+five, and none of them bypass this engine.** `execute` structurally cannot
+run `perform` without an authorizing verdict, so `main/ipc.ts`'s five
+handlers — `settings:get`, `settings:update`, `secrets:status`,
+`secrets:write`, `secrets:clear` — each build an `ActionProposal` and hand it
+to `main/action-runtime.ts`'s `runAction`, which calls this unmodified
+`handleActionProposal`. There is no code path in `main/ipc.ts` that calls
+`execute`, `main/secrets.ts`, or `writeSettings` directly. `main/index.ts`
+still calls `loadPermissionPolicy` read-only at startup to prove the real
+policy path resolves before the window opens, but every real IPC call now
+re-reads policy and emergency state fresh from disk (`runAction`, described
+below) rather than trusting that startup snapshot.
 
 ## Emergency stop (implemented)
 
@@ -525,22 +536,30 @@ that confirmation was approved; a rejected confirmation leaves the on-disk
 file byte-for-byte unchanged, since `resetEmergencyStop` — and therefore
 `writeEmergencyState` — is never invoked.
 
-**Still no native confirmation dialog.** Exactly as Milestone 5 left it:
-`requestConfirmation` remains an injected callback with no concrete
-`dialog.showMessageBox` wiring, since there is still no UI path that would
-trigger one. Whichever milestone adds a real "release the emergency stop"
-control must implement its confirmation as a native, main-process-owned
-dialog — never one rendered by the sandboxed renderer.
+**The native confirmation dialog now exists, first used by `secrets.write`
+and `secrets.clear`.** `main/confirm.ts`'s `showNativeConfirmation` is a real
+`dialog.showMessageBox`, parented to the main window, added in Milestone 7 for
+the encrypted secret store (see "Secrets and onboarding" below) — the first
+two action types that actually reach a running instance of
+`requestConfirmation` with a live UI behind it. `emergency.reset` itself still
+has no IPC channel calling it in Phase 1, so it still has nothing to trigger a
+prompt with, but whichever later milestone adds a "release the emergency
+stop" control reuses this same module rather than inventing a second one; an
+HTML dialog rendered by the renderer remains categorically ruled out.
 
-**Read-only at startup, like the other two loaders.** `main/index.ts` calls
-`loadEmergencyState` once, read-only, alongside `loadSettings` and
-`loadPermissionPolicy`, to prove the real state path resolves and the
-fail-safe logic runs against the real environment before the window opens.
-Nothing writes to `state/emergency.json` from the running application yet —
-`engageEmergencyStop`/`resetEmergencyStop` are exercised end-to-end only by
-this milestone's own tests, for the same reason Milestone 5 registered no new
-IPC channel: nothing yet calls `handleActionProposal` for a real
-`emergency.engage` or `emergency.reset` proposal.
+**Read-only at startup, like the other two loaders — still true.**
+`main/index.ts` calls `loadEmergencyState` once, read-only, alongside
+`loadSettings` and `loadPermissionPolicy`, to prove the real state path
+resolves and the fail-safe logic runs against the real environment before the
+window opens. Milestone 7's real IPC handlers (`settings:get`,
+`settings:update`, `secrets:status`, `secrets:write`, `secrets:clear`) each
+re-read emergency state fresh via `main/action-runtime.ts`'s `runAction`
+before deciding, so an engaged stop takes effect on the very next call — but
+none of them ever calls `engageEmergencyStop` or `resetEmergencyStop`.
+Nothing still writes to `state/emergency.json` from the running application:
+those two functions remain exercised end-to-end only by `main/emergency.ts`'s
+own tests, because Phase 1 still registers no `emergency.engage` /
+`emergency.reset` channel.
 
 **The emergency stop blocks subsequent actions; it does not cancel anything
 already running.** Phase 1 has no long-running or background work of any
@@ -548,6 +567,111 @@ kind, so there is nothing for it to interrupt. Calling it a kill switch would
 overstate what it does: it is a gate a future proposal must pass through, not
 a task canceller, and this remains true after Milestone 6 exactly as it was
 documented before persistence existed.
+
+## Secrets and onboarding (implemented)
+
+| File                                   | Describes                                                                                             |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `src/main/secrets.ts`                  | `loadSecretStoreState`, `hasStoredSecret`, `writeSecret`, `clearSecret`, `readSecret` (internal only) |
+| `src/main/settings-service.ts`         | `readReconciledSettings`, `writeOnboardingSettings`, `refreshHasApiKeyAfterSecretChange`              |
+| `src/main/action-runtime.ts`           | `runAction` — loads policy and emergency state fresh, then calls `handleActionProposal`               |
+| `src/main/confirm.ts`                  | `showNativeConfirmation` — the real `dialog.showMessageBox`                                           |
+| `src/main/ipc.ts`                      | The five channel handlers, each: validate → build proposal → `runAction` → validate response          |
+| `src/renderer/Onboarding.tsx`          | First-run form: assistant name, user name, language, provider, model, base URL, optional API key      |
+| `src/renderer/App.tsx`                 | Calls `settings:get` on mount; renders `Onboarding` while `onboardingCompleted` is `false`            |
+| `src/shared/schemas/secrets.schema.ts` | `secretStoreFileSchema` — the on-disk shape of `secrets.enc`, never a plaintext field                 |
+
+**`safeStorage` is synchronous, verified against the installed
+`electron@44.1.1` typings rather than assumed from memory or older
+documentation.** `isEncryptionAvailable()` returns `boolean` directly;
+`encryptString(plainText)` returns a `Buffer` directly and throws on failure;
+`decryptString(encrypted)` returns a `string` directly and throws on failure.
+(Electron also exposes a separate, newer asynchronous trio —
+`isAsyncEncryptionAvailable`/`encryptStringAsync`/`decryptStringAsync` — which
+`main/secrets.ts` deliberately does not use, to avoid a store where a value
+encrypted by one encryptor might not decrypt cleanly under the other.) On
+Windows this is backed by DPAPI, scoped to the current OS user account — see
+`security-model.md` for what that guarantees and what it does not.
+
+**Presence is answered from the file's shape, never by decrypting.**
+`loadSecretStoreState` reads `secrets.enc`, and — mirroring
+`main/emergency.ts`'s ENOENT-vs-anything-else split, not `main/settings.ts`'s
+collapse-everything-to-one-outcome split — returns `'absent'` only for a
+genuinely missing file or a valid document whose `ciphertext` is `null`,
+`'corrupt'` for every other read, parse, prototype-pollution or schema
+failure, and `'present'` with the stored ciphertext otherwise. `hasStoredSecret`
+and therefore `secrets.status` and `hasApiKey` reconciliation are computed
+from this alone — `'absent'` and `'corrupt'` are functionally identical to
+every caller (`false`), so a corrupt store never guesses a key is present
+just because _something_ is on disk. Never creates a file merely by reading.
+
+**`writeSecret` never falls back to plaintext.** If
+`safeStorage.isEncryptionAvailable()` is `false`, `writeSecret` throws
+`SecretStoreUnavailableError` before touching the disk at all — there is no
+code path in this module that writes an unencrypted value. When available, the
+plaintext is passed to `encryptString` and the returned `Buffer` is persisted
+as base64 inside the same atomic-write shape `main/settings.ts` and
+`main/emergency.ts` use (temp file in the same directory → flush → single
+retried `rename`). `clearSecret` persists `{schemaVersion, ciphertext: null}`
+— never deletes the file — through the identical atomic path.
+
+**`readSecret` is internal only; no IPC channel calls it.** It exists for this
+module's own tests and for a future milestone that actually calls a provider.
+Every failure path — nothing stored, a corrupt file, `safeStorage`
+unavailable, `decryptString` itself throwing — returns `null` rather than
+raising, so nothing this function can do ever puts ciphertext, a storage path,
+or a raw error into a thrown message.
+
+**`main/settings-service.ts` is the one place settings and secrets meet.**
+`readReconciledSettings` and `writeOnboardingSettings` both compute
+`hasApiKey` from `hasStoredSecret`, never from caller input or from whatever
+was last written to `settings.json` — and additionally force it `false` for
+any provider outside `PROVIDERS_REQUIRING_API_KEY` (`'none'` and `'ollama'` in
+Phase 1), a stricter _service-level_ choice layered on top of, not a
+weakening of, `settingsSchema`'s own floor (which only forbids `hasApiKey:
+true` for `'none'`). When the on-disk value disagrees, the correction is
+persisted, not just returned, so a later raw read sees the same truth. After a
+successful `secrets.write` or `secrets.clear`, `main/ipc.ts`'s handlers call
+`refreshHasApiKeyAfterSecretChange` **only once the store operation itself has
+already succeeded** — so a failed store write can never be reported as a
+present key, and a store operation that succeeds but whose settings-side
+bookkeeping then fails self-heals on the very next read.
+
+**`main/action-runtime.ts`'s `runAction` re-reads policy and emergency state
+on every single call**, rather than trusting `main/index.ts`'s startup
+snapshot — this is what makes a hand-edited policy file or a just-engaged
+emergency stop take effect on the very next action without a restart. One
+fixed timestamp is captured per IPC call (`main/ipc.ts`'s `nowFn()`, called
+once) and threaded through the permission decision, the audit record and
+whatever the action itself persists, so nothing inside one request reads the
+clock twice and risks a mismatch.
+
+**Every IPC handler follows the same five steps**: validate the request tuple
+against its schema, build an `ActionProposal` with safe, non-secret
+`parameters` (`provider`, `keyPresent`, `onboardingCompleted` — never
+`apiKey`), call `runAction` with a confirmation message when the action type
+requires one, and validate the response against its schema before it crosses
+back to the renderer. `secrets.write`'s plaintext `apiKey` reaches only the
+`perform` closure — it is never placed in `proposal.parameters`, so it can
+never reach an audit record even if `main/audit.ts`'s redaction were somehow
+bypassed; this is a second, independent layer on top of that redaction, not a
+replacement for it.
+
+**Onboarding is `settings:update` with `onboardingCompleted: true`, nothing
+more.** There is no separate "complete onboarding" action type or IPC channel.
+`writeOnboardingSettings` assembles the full `Settings` document and calls the
+same `writeSettings` that already re-validates against `settingsSchema` —
+which is what actually enforces "a non-empty display name once onboarding is
+complete" and "`baseUrl` is required for `openai-compatible`"; onboarding adds
+no validation of its own beyond assembling the candidate. `src/renderer/Onboarding.tsx`
+performs the same two checks client-side only so a user sees an error before
+submitting, never as the real boundary. If the user provides an API key, the
+renderer calls `secrets.write` as a second, separate request only after
+`settings:update` has already persisted the provider selection — `apiKey`
+never appears in the `settings:update` payload's schema at all
+(`settingsUpdateRequestSchema` is built from `modelProviderInputSchema`,
+which has no such field), so there is no way to route a key through the
+settings channel even by mistake.
 
 ## Timestamps and clocks
 
@@ -563,7 +687,13 @@ directly from the candidate's own required `timestamp` field, so the module
 has no time dependency whatsoever, injected or otherwise. `main/emergency.ts`
 follows the `loadSettings` convention exactly: `loadEmergencyState(stateFile,
 now)` and `engageEmergencyStop(stateFile, now)` both take `now` from the
-caller.
+caller. `main/ipc.ts` continues the pattern one layer up: `IpcHandlerRuntime.nowFn`
+is the only place any Milestone 7 code reads the real clock, called exactly
+once per request; the resulting `now` string is then passed explicitly into
+`main/action-runtime.ts`'s `runAction` and into every `perform` closure, so a
+test can supply a fixed `nowFn` and every timestamp within one simulated
+request — the permission decision, the audit record, `updatedAt` on a written
+`Settings` document — is guaranteed identical, not read from the clock twice.
 
 All persisted timestamps are UTC ISO-8601 and reject a UTC offset, so records
 sort correctly and compare unambiguously.

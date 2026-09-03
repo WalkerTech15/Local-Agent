@@ -35,14 +35,14 @@ This is to be enforced architecturally, not by convention. Each mechanism is
 marked with its current status, so that nothing here reads as built when it is
 not:
 
-| Mechanism                                                                                        | Status                                                                                                                                                       |
-| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| The proposal type carries no capability, only data                                               | **implemented** (`ActionProposal`)                                                                                                                           |
-| `src/shared` cannot reach the OS, the network, or run code                                       | **implemented** (lint boundary)                                                                                                                              |
-| The executor requires a permission decision as an argument, with no path without one             | **planned, Milestone 5**                                                                                                                                     |
-| A lint boundary prevents modules other than the IPC layer from importing the executor            | **planned, Milestone 5** — the executor does not exist yet                                                                                                   |
-| An integration test asserts every registered channel passes through the permission engine        | **planned, Milestone 5** — one channel exists (`app:health`, a liveness check with no side effect); the assertion applies once a privileged channel is added |
-| The permission engine enforces the emergency availability floor independently of the policy file | **planned, Milestone 5**                                                                                                                                     |
+| Mechanism                                                                                        | Status                                                                                                                                                         |
+| ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The proposal type carries no capability, only data                                               | **implemented** (`ActionProposal`)                                                                                                                             |
+| `src/shared` cannot reach the OS, the network, or run code                                       | **implemented** (lint boundary)                                                                                                                                |
+| The executor requires a permission decision as an argument, with no path without one             | **implemented, M5** (`execute`, `main/executor.ts`)                                                                                                            |
+| A lint boundary prevents modules other than the IPC layer from importing the executor            | **not yet implemented** — `main/executor.ts` is only ever called from `main/action-pipeline.ts` in practice, but no static rule enforces that yet              |
+| An integration test asserts every registered channel passes through the permission engine        | **implemented, M7** — `tests/unit/main/ipc.test.ts` exercises all five registered channels end to end through `decidePermission`/`execute`/`appendAuditRecord` |
+| The permission engine enforces the emergency availability floor independently of the policy file | **implemented, M5** (`decidePermission`, `main/permissions.ts`)                                                                                                |
 
 ## 3. Security principles
 
@@ -140,7 +140,7 @@ Runtime user data never lives inside the repository. See
 | M4  | Audit-log foundation                                                | complete, pending review |
 | M5  | Permission-policy foundation                                        | complete, pending review |
 | M6  | Emergency-stop foundation                                           | complete, pending review |
-| M7  | Onboarding interface and provider settings                          | not started              |
+| M7  | Onboarding interface and provider settings                          | complete, pending review |
 | M8  | Documentation completion, test hardening, CI                        | not started              |
 
 The security foundation (M3–M6) is built before the onboarding interface so

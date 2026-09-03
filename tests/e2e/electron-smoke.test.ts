@@ -29,6 +29,19 @@ interface ExposedLocalAgentBridge {
   health: () => Promise<{ status: string }>;
 }
 
+/**
+ * The complete, narrow bridge surface as of Milestone 7. Asserted by exact
+ * key list rather than "at least these" so that a future channel added
+ * without updating this test fails loudly here — the same reason the
+ * Milestone 2 version of this test asserted `['health']` exactly. `settings`
+ * and `secrets` were added in Milestone 7 for onboarding, provider settings,
+ * and the encrypted secret store; both stay two narrow, explicitly named
+ * sub-objects, never a generic invoke surface.
+ */
+const EXPECTED_BRIDGE_KEYS = ['health', 'secrets', 'settings'] as const;
+const EXPECTED_SETTINGS_KEYS = ['get', 'update'] as const;
+const EXPECTED_SECRETS_KEYS = ['clear', 'status', 'write'] as const;
+
 function launchEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -100,28 +113,55 @@ describe('Electron desktop shell — security and health-check smoke test', () =
     expect(hasIpcRenderer).toBe(false);
   });
 
-  it('exposes exactly one bridge object with exactly one narrow, named function', async () => {
+  it('exposes exactly one bridge object with exactly the narrow, named functions of Milestone 7', async () => {
     const bridgeShape = await page.evaluate(() => {
-      const w = window as unknown as { localAgent?: Record<string, unknown> };
+      const w = window as unknown as {
+        localAgent?: { settings?: object; secrets?: object } & Record<string, unknown>;
+      };
+      const localAgent = w.localAgent;
       return {
-        hasBridge: typeof w.localAgent === 'object',
-        keys: w.localAgent ? Object.keys(w.localAgent).sort() : [],
+        hasBridge: typeof localAgent === 'object',
+        keys: localAgent ? Object.keys(localAgent).sort() : [],
+        settingsKeys: localAgent?.settings ? Object.keys(localAgent.settings).sort() : [],
+        secretsKeys: localAgent?.secrets ? Object.keys(localAgent.secrets).sort() : [],
       };
     });
-    expect(bridgeShape).toEqual({ hasBridge: true, keys: ['health'] });
+    expect(bridgeShape).toEqual({
+      hasBridge: true,
+      keys: [...EXPECTED_BRIDGE_KEYS],
+      settingsKeys: [...EXPECTED_SETTINGS_KEYS],
+      secretsKeys: [...EXPECTED_SECRETS_KEYS],
+    });
   });
 
-  it('has no generic invoke-any-channel function anywhere on window', async () => {
+  it('has no generic invoke-any-channel function anywhere on window, including its sub-objects', async () => {
     const hasGenericInvoke = await page.evaluate(() => {
       const w = window as unknown as Record<string, unknown>;
       const candidates = ['electron', 'ipc', 'invoke'];
-      const localAgent = w.localAgent as Record<string, unknown> | undefined;
+      const localAgent = w.localAgent as
+        | (Record<string, unknown> & {
+            settings?: Record<string, unknown>;
+            secrets?: Record<string, unknown>;
+          })
+        | undefined;
+      const nested = [localAgent?.settings, localAgent?.secrets].filter(
+        (value): value is Record<string, unknown> => value !== undefined,
+      );
       return (
-        candidates.some((key) => key in w) || (localAgent !== undefined && 'invoke' in localAgent)
+        candidates.some((key) => key in w) ||
+        (localAgent !== undefined && 'invoke' in localAgent) ||
+        nested.some((value) => 'invoke' in value)
       );
     });
     expect(hasGenericInvoke).toBe(false);
   });
+
+  // Deliberately no test here calls `settings.*` or `secrets.*` against the
+  // real running app: unlike `health`, both have real side effects (an audit
+  // write, a settings read/write) against the *real* `%APPDATA%\Local-Agent\`
+  // — this suite never overrides that path, so exercising them belongs to
+  // `tests/unit/main/ipc.test.ts`, which does so against a temporary
+  // directory. This suite only inspects the bridge's static shape.
 
   it('answers the named, schema-validated health-check channel', async () => {
     const result = await page.evaluate(async () => {

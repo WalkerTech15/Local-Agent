@@ -3,19 +3,21 @@
 A local-first, permission-controlled desktop assistant for Windows. The
 assistant is named **JARVIS** by default; the product is **Local Agent**.
 
-> **Status: Phase 1, Milestone 6.**
+> **Status: Phase 1, Milestone 7.**
 > The repository contains project scaffolding, shared schemas, a hardened
 > Electron desktop shell, non-secret settings storage, an audit-log
-> foundation, the permission-policy runtime, and persisted emergency-stop
-> state: fail-safe loading (a missing file means disengaged, a corrupt one
-> means engaged — never the reverse), atomic writes, and the engage/reset
-> operations, both gated by the same permission engine and executor as every
-> other action. None of it is reachable from the running application yet —
-> no new IPC channel was added, since nothing has a real, safe side effect to
-> gate. There is no onboarding interface and no model integration yet.
+> foundation, the permission-policy runtime, persisted emergency-stop state,
+> and — new in Milestone 7 — the first-run onboarding interface, a
+> provider-settings foundation, and an encrypted secret store for API keys.
+> The application now registers its first real, privileged IPC channels
+> (settings and secrets), each gated by the same permission engine, executor
+> and audit log every action type uses, and confirmed through a real native
+> dialog for the sensitive ones. There is still no model integration: no
+> provider is ever called, and no key is ever validated over the network.
 > Nothing in this repository makes a network request or performs an action on
-> your machine — the renderer's Content-Security-Policy blocks outbound
-> network access outright, which the end-to-end test suite asserts.
+> your machine beyond writing your own settings and encrypted key locally —
+> the renderer's Content-Security-Policy blocks outbound network access
+> outright, which the end-to-end test suite asserts.
 
 All rights reserved. No licence has been granted for this project.
 
@@ -54,9 +56,11 @@ postponed.
   filesystem, spawn a process, or import Node built-ins — asserted by an
   end-to-end test, not just declared in the window's configuration.
 - The Electron main process is the only privileged boundary.
-- The preload bridge exposes exactly one narrow, typed function
-  (`localAgent.health`), never `ipcRenderer` itself and never a generic
-  invoke-any-channel function.
+- The preload bridge exposes only narrow, explicitly named, typed functions —
+  `localAgent.health`, `localAgent.settings.{get,update}`,
+  `localAgent.secrets.{status,write,clear}` — never `ipcRenderer` itself and
+  never a generic invoke-any-channel function. None of them can return a
+  plaintext API key.
 - A strict Content-Security-Policy blocks remote script and network access
   outright; navigation, `window.open` and `<webview>` are all denied.
 - An action with no matching policy rule is **denied** — enforced both by the
@@ -74,6 +78,13 @@ postponed.
   approved confirmation — never a model's say-so, never a policy rule alone.
 - **No credential is ever stored in this repository**, in `.env`, in
   `.env.example`, in a settings file, in a log, or in an error message.
+- API keys are encrypted with Electron's `safeStorage` (Windows DPAPI) before
+  ever touching disk; writing or clearing one requires the same explicit,
+  approved confirmation as any other sensitive action, and no code path falls
+  back to plaintext if encryption is unavailable.
+- `hasApiKey`, the only secret-related value the interface ever sees, is
+  reconciled against the encrypted store on every read and write — the store
+  is the source of truth, never the cached flag.
 
 Full detail, including known limitations, is in
 [docs/security-model.md](docs/security-model.md).
@@ -83,10 +94,11 @@ Full detail, including known limitations, is in
 Application code lives in this repository. Everything else — settings,
 secrets, permission policy, audit logs, emergency-stop state and memory —
 lives outside it, under `%APPDATA%\Local-Agent\`, each in its own location.
-`settings.json`, the audit log writer, permission policy loading, and
-emergency-stop state are implemented so far, all as storage layers only:
-nothing in the running application calls any of them through a real action
-yet. See [docs/data-locations.md](docs/data-locations.md).
+`settings.json` and the encrypted `secrets\secrets.enc` are now reachable
+from the running application through real, permission-gated IPC channels;
+permission policy and emergency-stop state are still loaded read-only at
+startup, with no channel of their own yet. See
+[docs/data-locations.md](docs/data-locations.md).
 
 ## Requirements
 
@@ -129,21 +141,24 @@ src/shared/     Pure schemas, types and constants. No I/O, no Electron.
                 Safe to import from any process, including the renderer.
 src/main/       Privileged Electron main process. Owns the BrowserWindow,
                 the Content-Security-Policy, navigation/window-open/webview
-                hardening, the one registered IPC handler, non-secret
-                settings storage (paths.ts, settings.ts), the audit-log
-                writer (audit.ts), the permission-policy runtime:
-                a pure decision engine (permissions.ts), the executor gate
-                (executor.ts), fail-safe policy loading (policy.ts) and the
-                assembled request path (action-pipeline.ts), and persisted
-                emergency-stop state with its engage/reset operations
-                (emergency.ts). None of the storage or permission modules is
-                called by the application through a real IPC channel yet.
+                hardening, non-secret settings storage (paths.ts,
+                settings.ts), the audit-log writer (audit.ts), the
+                permission-policy runtime: a pure decision engine
+                (permissions.ts), the executor gate (executor.ts), fail-safe
+                policy loading (policy.ts) and the assembled request path
+                (action-pipeline.ts), persisted emergency-stop state with its
+                engage/reset operations (emergency.ts), the encrypted secret
+                store (secrets.ts), settings/secret reconciliation
+                (settings-service.ts), the per-request policy/emergency-state
+                loader (action-runtime.ts), the native confirmation dialog
+                (confirm.ts), and the five registered IPC channels (ipc.ts).
 src/preload/    The single contextBridge. Exposes a narrow, explicitly
                 enumerated, typed API — never ipcRenderer, never a generic
                 invoke-any-channel function. Bundled into one file: a
                 sandboxed preload cannot require() local modules at runtime.
-src/renderer/   React interface. No Node, no Electron, no filesystem access —
-                only the bridge exposed at window.localAgent.
+src/renderer/   React interface: App.tsx gates on onboardingCompleted,
+                Onboarding.tsx is the first-run form. No Node, no Electron,
+                no filesystem access — only the bridge at window.localAgent.
 tests/unit/     Unit tests. `npm test`.
 tests/e2e/      Playwright + Electron smoke test against the built app.
                 `npm run test:e2e`.

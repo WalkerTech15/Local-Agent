@@ -1,6 +1,7 @@
-import { app, BrowserWindow, ipcMain, session } from 'electron';
+import { app, BrowserWindow, ipcMain, safeStorage, session } from 'electron';
 import { join } from 'node:path';
 
+import { showNativeConfirmation } from './confirm';
 import { loadEmergencyState } from './emergency';
 import { registerIpcHandlers } from './ipc';
 import { resolveUserDataPaths } from './paths';
@@ -100,23 +101,29 @@ app
       callback(false);
     });
 
-    // Read-only: proves the real application-data path resolves and loads
-    // (or safely falls back) before the window opens. Nothing is written —
-    // none of the three loaders creates a file or directory, and no IPC
-    // channel exposes any result yet. No new privileged channel exists —
-    // nothing yet has a real, safe side effect to gate — but
-    // `main/action-pipeline.ts`'s `handleActionProposal` is the function
-    // such a channel must call once one exists, and it is exercised
-    // end-to-end by this and the previous milestone's own tests, not by the
-    // running app.
+    // Read-only at this point: proves the real application-data path
+    // resolves and loads (or safely falls back) before the window opens,
+    // failing fast rather than only on the first IPC call. Nothing is
+    // written here — every one of Milestone 7's real IPC handlers
+    // (`main/ipc.ts`) re-reads the policy and emergency state fresh on every
+    // call instead of trusting this startup snapshot, so a hand-edited
+    // policy file or a just-engaged emergency stop take effect on the very
+    // next action without a restart.
     const userDataPaths = resolveUserDataPaths(app.getPath('appData'));
     const startupNow = new Date().toISOString();
     await loadSettings(userDataPaths.settingsFile, startupNow);
     await loadPermissionPolicy(userDataPaths.permissionPolicyFile);
     await loadEmergencyState(userDataPaths.emergencyStateFile, startupNow);
 
-    registerIpcHandlers(ipcMain);
-    createWindow();
+    const window = createWindow();
+
+    registerIpcHandlers(ipcMain, {
+      userDataPaths,
+      safeStorage,
+      requestConfirmation: (message) =>
+        showNativeConfirmation(window.isDestroyed() ? null : window, message),
+      nowFn: () => new Date().toISOString(),
+    });
   })
   .catch((error: unknown) => {
     console.error('Failed to start Local Agent:', error);
