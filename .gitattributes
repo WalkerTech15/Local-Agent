@@ -1,0 +1,19 @@
+# ---------------------------------------------------------------------------
+# Line endings
+#
+# Every tracked file in this repository is text today (there is no binary
+# asset yet). Without this file, a checkout's line endings depend on the
+# checking-out machine's `core.autocrlf`: a Windows machine or CI runner with
+# `core.autocrlf=true` (a common default, including this project's own
+# development machine and GitHub's windows-latest runner) converts every
+# blob's LF endings to CRLF on checkout. Prettier is configured for `lf`
+# (`.prettierrc.json`, `.editorconfig`) and does not follow `core.autocrlf`,
+# so a CRLF checkout makes `npm run format:check` fail on every text file —
+# not because any file's content actually changed, but because the checkout
+# step silently rewrote every line ending before Prettier ever looked at it.
+#
+# `text=auto` lets Git decide per file whether it is text; `eol=lf` fixes the
+# checked-out line ending to LF regardless of the checking-out platform's
+# `core.autocrlf`, so every clone and every CI runner sees the same bytes
+# Prettier already expects.
+* text=auto eol=lf
