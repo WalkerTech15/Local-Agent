@@ -46,8 +46,8 @@ const MAX_SETTINGS_JSON_DEPTH = 64;
  * operation is unsafe to retry: each attempt is still one whole-file
  * rename, so retrying never risks a partial write, only a delayed one.
  */
-const RENAME_MAX_ATTEMPTS = 5;
-const RENAME_RETRY_DELAY_MS = 15;
+const RENAME_MAX_ATTEMPTS = 10;
+const RENAME_RETRY_DELAY_MS = 20;
 
 function isTransientRenameError(error: unknown): boolean {
   if (typeof error !== 'object' || error === null || !('code' in error)) return false;
