@@ -1,0 +1,19 @@
+/**
+ * Barrel for the chat provider layer (Phase 2, Milestone 1).
+ *
+ * Everything exported here is pure, has no Electron or Node dependency, and
+ * makes no network request — see `provider.ts` and `mock-provider.ts` for
+ * why that is enforced structurally, not only by convention.
+ */
+
+export { CHAT_PROVIDER_ERROR_CODES, ChatProviderError } from './provider';
+export type {
+  ChatProvider,
+  ChatProviderErrorCode,
+  ChatProviderRequest,
+  ChatProviderRequestOptions,
+  ChatProviderResult,
+} from './provider';
+
+export { createMockChatProvider, MOCK_CHAT_PROVIDER_DEFAULT_DELAY_MS } from './mock-provider';
+export type { CreateMockChatProviderOptions } from './mock-provider';

@@ -3,27 +3,25 @@
 A local-first, permission-controlled desktop assistant for Windows. The
 assistant is named **JARVIS** by default; the product is **Local Agent**.
 
-> **Status: Phase 1, Milestone 8 (final Phase 1 milestone).**
-> The repository contains project scaffolding, shared schemas, a hardened
-> Electron desktop shell, non-secret settings storage, an audit-log
-> foundation, the permission-policy runtime, persisted emergency-stop state,
-> the first-run onboarding interface, a provider-settings foundation, and an
-> encrypted secret store for API keys. The application registers its first
-> real, privileged IPC channels (settings and secrets), each gated by the
-> same permission engine, executor and audit log every action type uses, and
-> confirmed through a real native dialog for the sensitive ones. Milestone 8
-> adds a GitHub Actions CI workflow that runs the full verification pipeline
-> — type-check, lint, format check, unit tests, build, the Playwright/Electron
-> end-to-end smoke suite and `npm audit` — on `windows-latest`, and closes a
-> handful of documentation inaccuracies found during a full review (a stale
-> "asynchronous safeStorage" claim in `.env.example` and the ADR, and a stale
-> "audit log not yet called from the running application" claim that Milestone
-> 7 had already made untrue). There is still no model integration: no
-> provider is ever called, and no key is ever validated over the network.
-> Nothing in this repository makes a network request or performs an action on
-> your machine beyond writing your own settings and encrypted key locally —
-> the renderer's Content-Security-Policy blocks outbound network access
-> outright, which the end-to-end test suite asserts.
+> **Status: Phase 1 complete. Phase 2, Milestone 1 (chat foundation) in progress.**
+> Phase 1 delivered the hardened desktop shell, non-secret settings storage,
+> an audit-log foundation, the permission-policy runtime, persisted
+> emergency-stop state, first-run onboarding, an encrypted secret store, and
+> CI. Phase 2 Milestone 1 adds a **mock-only chat foundation**: a validated
+> chat message and conversation model, a provider-independent
+> `ChatProvider` interface, a deterministic mock provider, and a chat surface
+> in the renderer with empty, loading, error and retry states. **No real
+> model provider is called. No network request is made anywhere in this
+> milestone** — the mock provider lives entirely inside `src/shared`, where
+> the same lint boundary that blocks Electron and Node access also blocks
+> `fetch`, `XMLHttpRequest`, `WebSocket` and `EventSource` as globals. Chat
+> requires **no new IPC channel**: it never calls `window.localAgent`, so
+> nothing a chat message contains can reach a privileged API, a file, or the
+> permission engine. See
+> [docs/phase-2-chat-architecture.md](docs/phase-2-chat-architecture.md) for
+> the full design and for what remains explicitly deferred (real providers,
+> tool/action execution from model output, memory, and everything else Phase
+> 2 has not reached yet).
 
 All rights reserved. No licence has been granted for this project.
 
@@ -91,9 +89,17 @@ postponed.
 - `hasApiKey`, the only secret-related value the interface ever sees, is
   reconciled against the encrypted store on every read and write — the store
   is the source of truth, never the cached flag.
+- Chat (Phase 2, Milestone 1) makes no network request and adds no IPC
+  channel. The mock provider lives under `src/shared/chat`, where the same
+  lint boundary that keeps `src/shared` free of Electron and Node access also
+  blocks `fetch`, `XMLHttpRequest`, `WebSocket` and `EventSource` as globals.
+  Assistant text is rendered as plain JSX text, never as HTML, and is never
+  treated as authorization for anything — there is no action for it to
+  authorize, since chat never calls `window.localAgent`.
 
 Full detail, including known limitations, is in
-[docs/security-model.md](docs/security-model.md).
+[docs/security-model.md](docs/security-model.md); the chat-specific design is
+in [docs/phase-2-chat-architecture.md](docs/phase-2-chat-architecture.md).
 
 ## Where your data lives
 
@@ -158,8 +164,11 @@ platform this project does not ship on.
 ## Repository layout
 
 ```
-src/shared/     Pure schemas, types and constants. No I/O, no Electron.
-                Safe to import from any process, including the renderer.
+src/shared/     Pure schemas, types and constants, plus chat/ (the
+                provider-independent ChatProvider interface and the
+                deterministic mock provider). No I/O, no Electron, no
+                network — safe to import from any process, including the
+                renderer.
 src/main/       Privileged Electron main process. Owns the BrowserWindow,
                 the Content-Security-Policy, navigation/window-open/webview
                 hardening, non-secret settings storage (paths.ts,
@@ -178,8 +187,11 @@ src/preload/    The single contextBridge. Exposes a narrow, explicitly
                 invoke-any-channel function. Bundled into one file: a
                 sandboxed preload cannot require() local modules at runtime.
 src/renderer/   React interface: App.tsx gates on onboardingCompleted,
-                Onboarding.tsx is the first-run form. No Node, no Electron,
-                no filesystem access — only the bridge at window.localAgent.
+                Onboarding.tsx is the first-run form, chat/ is the Phase 2
+                chat surface (Chat.tsx, useConversation.ts and the
+                framework-independent conversation-controller.ts). No Node,
+                no Electron, no filesystem access — only the bridge at
+                window.localAgent, which chat never calls.
 tests/unit/     Unit tests. `npm test`.
 tests/e2e/      Playwright + Electron smoke test against the built app.
                 `npm run test:e2e`.
