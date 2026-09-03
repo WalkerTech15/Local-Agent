@@ -141,7 +141,7 @@ Runtime user data never lives inside the repository. See
 | M5  | Permission-policy foundation                                        | complete, pending review |
 | M6  | Emergency-stop foundation                                           | complete, pending review |
 | M7  | Onboarding interface and provider settings                          | complete, pending review |
-| M8  | Documentation completion, test hardening, CI                        | not started              |
+| M8  | Documentation completion, test hardening, CI                        | complete, pending review |
 
 The security foundation (M3–M6) is built before the onboarding interface so
 that the first real user data written to disk already passes through settings

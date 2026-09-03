@@ -1,0 +1,77 @@
+name: CI
+
+# Local Agent targets Windows 11 only in Phase 1 (see docs/PROJECT_SPEC.md
+# and docs/phase-1-scope.md — macOS and Linux support is explicitly deferred,
+# and the encrypted secret store is backed by Windows DPAPI via Electron's
+# safeStorage). CI therefore runs on windows-latest exclusively: that is the
+# only platform the application is designed for and verified against, and it
+# is also the only runner that can launch the real Electron app for the
+# end-to-end suite without extra scaffolding — a Linux runner would need
+# xvfb-run (or an equivalent virtual display) purely to work around a
+# platform this project does not ship on, which would verify a configuration
+# no user ever runs.
+#
+# No secret of any kind is used by this workflow. Nothing here needs one:
+# there is no deployment step, no package publish, and no external service
+# call — every job runs entirely against the checked-out repository and the
+# npm registry.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify (Node ${{ matrix.node-version }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20.x is the floor declared in package.json's "engines" field — CI
+        # must prove that floor actually works, not only the newer version
+        # development happens to run locally. 24.x matches the version this
+        # project is developed against (see README "Requirements").
+        node-version: ['20.x', '24.x']
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies from the lockfile
+        run: npm ci
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Verify formatting
+        run: npm run format:check
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: End-to-end smoke test (Playwright + Electron)
+        run: npm run test:e2e
+
+      - name: Dependency audit
+        run: npm audit --audit-level=low

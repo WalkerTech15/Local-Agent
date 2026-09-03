@@ -80,7 +80,9 @@ Supporting choices:
 - Validation: **Zod**, one library for settings, policy, audit records and —
   from Milestone 2 — every IPC payload, with TypeScript types derived from the
   schemas so validation and types cannot drift.
-- Secret storage: Electron's **asynchronous** `safeStorage` API.
+- Secret storage: Electron's **synchronous** `safeStorage` API (verified
+  against the installed version's typings in Milestone 7; an older,
+  since-superseded assumption of an asynchronous API was corrected there).
 - Tests: **Vitest** for unit and integration; **Playwright** for end-to-end,
   approved from Milestone 2.
 - Styling: plain CSS initially. Deferred until ChatGPT's mockups arrive; if

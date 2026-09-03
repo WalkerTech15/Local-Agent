@@ -365,10 +365,15 @@ sent over IPC, and never reaches the renderer. Because appending never
 touches bytes already on disk, a failed write cannot corrupt or lose a record
 written by an earlier, successful call.
 
-**Not called from the running application.** `main/index.ts` still does not
-call `appendAuditRecord` directly. Milestone 5 added the permission engine
-that decides what to record, but nothing in the running application proposes
-a real action yet — see the next section.
+**Called for real since Milestone 7.** `main/index.ts` never calls
+`appendAuditRecord` directly — nothing does, by design, since it is reached
+only through `handleActionProposal`. Milestone 5 added the permission engine
+that decides what to record, but until Milestone 7 nothing in the running
+application proposed a real action, so every write was exercised only by
+tests calling `handleActionProposal` directly. Milestone 7's five registered
+IPC channels now reach it from the real running application on every
+`settings:get`, `settings:update`, `secrets:status`, `secrets:write` and
+`secrets:clear` call — see the next section.
 
 ## Permission engine (implemented)
 

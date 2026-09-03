@@ -3,16 +3,22 @@
 A local-first, permission-controlled desktop assistant for Windows. The
 assistant is named **JARVIS** by default; the product is **Local Agent**.
 
-> **Status: Phase 1, Milestone 7.**
+> **Status: Phase 1, Milestone 8 (final Phase 1 milestone).**
 > The repository contains project scaffolding, shared schemas, a hardened
 > Electron desktop shell, non-secret settings storage, an audit-log
 > foundation, the permission-policy runtime, persisted emergency-stop state,
-> and — new in Milestone 7 — the first-run onboarding interface, a
-> provider-settings foundation, and an encrypted secret store for API keys.
-> The application now registers its first real, privileged IPC channels
-> (settings and secrets), each gated by the same permission engine, executor
-> and audit log every action type uses, and confirmed through a real native
-> dialog for the sensitive ones. There is still no model integration: no
+> the first-run onboarding interface, a provider-settings foundation, and an
+> encrypted secret store for API keys. The application registers its first
+> real, privileged IPC channels (settings and secrets), each gated by the
+> same permission engine, executor and audit log every action type uses, and
+> confirmed through a real native dialog for the sensitive ones. Milestone 8
+> adds a GitHub Actions CI workflow that runs the full verification pipeline
+> — type-check, lint, format check, unit tests, build, the Playwright/Electron
+> end-to-end smoke suite and `npm audit` — on `windows-latest`, and closes a
+> handful of documentation inaccuracies found during a full review (a stale
+> "asynchronous safeStorage" claim in `.env.example` and the ADR, and a stale
+> "audit log not yet called from the running application" claim that Milestone
+> 7 had already made untrue). There is still no model integration: no
 > provider is ever called, and no key is ever validated over the network.
 > Nothing in this repository makes a network request or performs an action on
 > your machine beyond writing your own settings and encrypted key locally —
@@ -133,6 +139,21 @@ npm run test:e2e     # build, then drive the real app with Playwright + Electron
 npm run build         # tsc (main) + Vite (preload, bundled) + Vite (renderer)
 npm run verify        # typecheck, lint, format:check and npm test, in order
 ```
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs the same checks — type-check, lint, format
+check, unit tests, build, the Playwright/Electron end-to-end smoke suite, and
+`npm audit` — on every push to `main` and every pull request, on
+`windows-latest` against both the minimum supported Node version (20.x) and
+the version this project is developed against (24.x). It installs from
+`package-lock.json` (`npm ci`) and uses no secret of any kind: there is no
+deployment or publish step. `windows-latest` was chosen deliberately, not for
+convenience — Phase 1 targets Windows 11 only (see
+[docs/phase-1-scope.md](docs/phase-1-scope.md)), and it is also the only
+runner that launches the real Electron application for the end-to-end suite
+without extra scaffolding a Linux runner would need to work around a
+platform this project does not ship on.
 
 ## Repository layout
 
