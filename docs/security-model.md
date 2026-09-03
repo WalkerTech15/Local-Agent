@@ -14,9 +14,14 @@
 > native confirmation dialog, the encrypted secret store backed by Electron's
 > synchronous `safeStorage`, `hasApiKey` reconciliation, and the first-run
 > onboarding interface — again under a permission engine, executor and
-> pipeline that needed **zero code changes**. Controls below are marked
-> **[implemented]**, **[enforced by schema]** or **[planned, milestone N]**.
-> Nothing here is claimed as working before it exists.
+> pipeline that needed **zero code changes**. Phase 2, Milestone 3 registers
+> the first two channels since Phase 1 (`chat.send`, `chat.cancel`) and the
+> first action type with real network egress, `chat.send` — routed through
+> the same unmodified permission engine, executor and pipeline once again,
+> and the first caller of `main/secrets.ts`'s `readSecret` outside that
+> module's own tests. Controls below are marked **[implemented]**,
+> **[enforced by schema]** or **[planned, milestone N]**. Nothing here is
+> claimed as working before it exists.
 
 ---
 
@@ -59,12 +64,17 @@ asserted by an end-to-end Playwright test against the built application, not
 only declared in source.
 
 A compromised renderer therefore gains only the narrow preload API — as of
-Milestone 7, `health`, `settings.get`, `settings.update`, `secrets.status`,
-`secrets.write` and `secrets.clear`, and nothing else. Every one of those five
-privileged functions is gated and audited through
+Phase 2 Milestone 3, `health`, `settings.get`, `settings.update`,
+`secrets.status`, `secrets.write`, `secrets.clear`, `chat.send` and
+`chat.cancel`, and nothing else. Every one of those seven privileged
+functions except `chat.cancel` is gated and audited through
 `main/action-pipeline.ts`'s unmodified `handleActionProposal`
 (`main/ipc.ts` → `main/action-runtime.ts`'s `runAction` → `handleActionProposal`),
-and none of them can return a plaintext key.
+and none of them can return a plaintext key. `chat.cancel` has no privileged
+side effect of its own to gate — it can only ask an already-authorized
+`chat.send` call already in flight to abort early; see
+`docs/phase-2-real-provider-architecture.md`'s Cancellation section for why
+that is safe without a permission decision of its own.
 
 ### Permission model
 
@@ -137,6 +147,41 @@ provider — never the key itself — and `main/confirm.ts` does not inspect the
 action or its parameters, so it has no way to leak one either way. An HTML
 dialog rendered by the renderer remains explicitly disallowed and is not how
 this is implemented.
+
+### Network egress
+
+**[implemented, Phase 2 Milestone 3]** The only network-capable code in this
+codebase is `src/main/openai-compatible-provider.ts`, called only through
+`main/chat-provider-registry.ts`'s `resolveMainChatProvider`, called only
+from `chat.send`'s `perform` callback in `main/ipc.ts`. Three independent
+facts hold this to the main process alone:
+
+- `src/shared`'s lint-enforced purity boundary (see _Shared-layer purity_
+  below) blocks `fetch`/`XMLHttpRequest`/`WebSocket`/`EventSource` as
+  globals, so no file under `src/shared`, including every other
+  `ChatProvider` in this codebase, can ever place a real request.
+- The renderer's Content-Security-Policy sets `connect-src 'none'`
+  (`main/index.ts`, unchanged since Milestone 2), independently blocking a
+  network request initiated from the renderer's own script context —
+  asserted by an end-to-end test.
+- `src/renderer/chat/ipc-chat-provider.ts` — the only renderer file that
+  reaches the real adapter at all — calls only the narrow, typed
+  `chat.send`/`chat.cancel` preload functions, never a network API directly;
+  a source-scan test asserts no file under `src/renderer/chat` references a
+  network-capable global either.
+
+`chat.send` is a genuine privileged action, not a bypass of the model above:
+it is gated by the same, unmodified `decidePermission` → `execute` →
+`appendAuditRecord` pipeline every other action type uses, denied outright
+while the emergency stop is engaged (it is not on the exemption list), and
+recorded in the audit trail with only `{provider, messageCount}` — never
+message content, never a response, never a credential. See
+`docs/phase-2-real-provider-architecture.md` for the full design, including
+the one deliberate policy choice this milestone made: `chat.send` is `allow`
+by default rather than `confirm`, since the send itself is already a
+direct, per-message user action, unlike the rare, one-time changes the
+confirmation floor (`secrets.write`, `secrets.clear`, `emergency.reset`,
+`app.exit`) protects.
 
 ### Secret handling
 
@@ -542,40 +587,44 @@ exposes no way to address one. No generic pass-through channel exists.
 
 ## Threats and status
 
-| Threat                                                                                       | Status                                                                                                                                                                                                       |
-| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Renderer compromise (XSS, malicious UI dependency)                                           | Addressed, M2 — process isolation and CSP; asserted by an end-to-end test                                                                                                                                    |
-| Malicious or malformed IPC payload                                                           | Addressed, M2–M7 — schema validation on every registered channel (`health`, `settings:get`, `settings:update`, `secrets:status`, `secrets:write`, `secrets:clear`); no unvalidated or generic channel exists |
-| Secret exfiltration through the interface                                                    | Addressed — no channel returns a key; asserted by test                                                                                                                                                       |
-| Secret leakage into logs or errors                                                           | Addressed, M4 — schema-level redaction contract plus writer-side redaction, both verified                                                                                                                    |
-| Credential persisted inside a settings _value_                                               | Addressed — `baseUrl` rejects embedded userinfo                                                                                                                                                              |
-| Log injection via a crafted user name                                                        | Addressed — control characters rejected                                                                                                                                                                      |
-| Display spoofing via bidirectional overrides                                                 | Addressed — bidi overrides and isolates rejected in display strings                                                                                                                                          |
-| Forged audit record                                                                          | Addressed — biconditional cross-field integrity rules                                                                                                                                                        |
-| Unbounded or non-serialisable audit payload                                                  | Addressed — bounded JSON-safe parameter schema; writer-side scan bounds the whole record                                                                                                                     |
-| Audit record overwritten or truncated by a write                                             | Addressed, M4 — append-only file handle; proven under concurrent writes by test                                                                                                                              |
-| Prototype-pollution key bypassing schema validation                                          | Addressed, M4 — explicit writer-side scan; schema-only reliance was verified insufficient                                                                                                                    |
-| Settings tampering or corruption                                                             | Addressed, M3 — strict validation, fail-safe loading to defaults, atomic writes                                                                                                                              |
-| Policy tampering or corruption                                                               | Addressed, M5 — fail-closed loading (`main/policy.ts`) plus engine-side floor enforcement independent of it                                                                                                  |
-| Policy file removing the user's emergency controls                                           | Addressed, M5 — availability floor enforced at both the schema layer and, independently, by `decidePermission`                                                                                               |
-| Policy bypassing schema validation before reaching the engine                                | Addressed, M5 — floors re-verified by the engine regardless of validation history                                                                                                                            |
-| Corruption of a shared security default in memory                                            | Addressed — exported defaults deeply frozen; resolvers return fresh objects                                                                                                                                  |
-| `src/shared` reaching the OS, network or eval                                                | Addressed — lint boundary, verified by probe; not a runtime sandbox                                                                                                                                          |
-| Privilege escalation via the executor                                                        | Addressed, M5 — `execute` requires a verdict as an explicit argument; proven by tests that no denial or rejection reaches `perform`                                                                          |
-| A side effect running without a permission decision                                          | Addressed, M5 — structural: no code path in `execute` calls `perform` without an authorizing verdict                                                                                                         |
-| Model rationale/confidence used as authorization                                             | Addressed, M5 — `decidePermission` never reads `proposal.parameters`; proven by test                                                                                                                         |
-| Emergency-stop bypass (decision logic)                                                       | Addressed, M5 — engine denies non-exempt actions when engaged, evaluated after both floors                                                                                                                   |
-| Emergency-stop bypass (persistence)                                                          | Addressed, M6 — atomic writes, fail-safe loading; reset requires an approved confirmation the pipeline already enforces                                                                                      |
-| Emergency-stop state corruption fails open instead of closed                                 | Addressed, M6 — malformed or unreadable state resolves engaged, not disengaged; proven by test                                                                                                               |
-| Emergency reset triggered by a model or a policy rule alone                                  | Addressed, M6 — always resolves to `confirm`; proven across a policy × emergency-state test matrix                                                                                                           |
-| Plaintext API key stored as a fallback when encryption is unavailable                        | Addressed, M7 — `writeSecret` throws `SecretStoreUnavailableError` before any disk write when `safeStorage.isEncryptionAvailable()` is `false`; proven by test                                               |
-| Plaintext API key reaching settings.json, an audit record, an error message, or the renderer | Addressed, M7 — `apiKey` never enters `proposal.parameters`; secrets IPC responses carry only `{present: boolean}`; proven by test                                                                           |
-| `hasApiKey` reported as `true` for a provider that does not use a key (`none`, `ollama`)     | Addressed, M7 — forced `false` regardless of the secret store; proven by test                                                                                                                                |
-| A denied or rejected secret operation still mutating the store or `hasApiKey`                | Addressed, M7 — `perform` is structurally unreachable on `deny`/`reject`; `hasApiKey` is only refreshed after the store write already succeeded; proven by test                                              |
-| Renderer-supplied `hasApiKey` reaching a persisted document                                  | Addressed, M7 — `settingsUpdateRequestSchema` has no such field; `strictObject` rejects the extra key outright                                                                                               |
-| Path traversal                                                                               | Not reachable — all paths derive from the app-data directory; none is user-supplied                                                                                                                          |
-| Prompt injection, untrusted model or tool output                                             | Not reachable in Phase 1 — no model call exists. The proposal/executor split pre-empts it                                                                                                                    |
-| Supply-chain compromise via npm                                                              | Mitigated, not eliminated — see below                                                                                                                                                                        |
+| Threat                                                                                       | Status                                                                                                                                                                                                             |
+| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Renderer compromise (XSS, malicious UI dependency)                                           | Addressed, M2 — process isolation and CSP; asserted by an end-to-end test                                                                                                                                          |
+| Malicious or malformed IPC payload                                                           | Addressed, M2–M7 — schema validation on every registered channel (`health`, `settings:get`, `settings:update`, `secrets:status`, `secrets:write`, `secrets:clear`); no unvalidated or generic channel exists       |
+| Secret exfiltration through the interface                                                    | Addressed — no channel returns a key; asserted by test                                                                                                                                                             |
+| Secret leakage into logs or errors                                                           | Addressed, M4 — schema-level redaction contract plus writer-side redaction, both verified                                                                                                                          |
+| Credential persisted inside a settings _value_                                               | Addressed — `baseUrl` rejects embedded userinfo                                                                                                                                                                    |
+| Log injection via a crafted user name                                                        | Addressed — control characters rejected                                                                                                                                                                            |
+| Display spoofing via bidirectional overrides                                                 | Addressed — bidi overrides and isolates rejected in display strings                                                                                                                                                |
+| Forged audit record                                                                          | Addressed — biconditional cross-field integrity rules                                                                                                                                                              |
+| Unbounded or non-serialisable audit payload                                                  | Addressed — bounded JSON-safe parameter schema; writer-side scan bounds the whole record                                                                                                                           |
+| Audit record overwritten or truncated by a write                                             | Addressed, M4 — append-only file handle; proven under concurrent writes by test                                                                                                                                    |
+| Prototype-pollution key bypassing schema validation                                          | Addressed, M4 — explicit writer-side scan; schema-only reliance was verified insufficient                                                                                                                          |
+| Settings tampering or corruption                                                             | Addressed, M3 — strict validation, fail-safe loading to defaults, atomic writes                                                                                                                                    |
+| Policy tampering or corruption                                                               | Addressed, M5 — fail-closed loading (`main/policy.ts`) plus engine-side floor enforcement independent of it                                                                                                        |
+| Policy file removing the user's emergency controls                                           | Addressed, M5 — availability floor enforced at both the schema layer and, independently, by `decidePermission`                                                                                                     |
+| Policy bypassing schema validation before reaching the engine                                | Addressed, M5 — floors re-verified by the engine regardless of validation history                                                                                                                                  |
+| Corruption of a shared security default in memory                                            | Addressed — exported defaults deeply frozen; resolvers return fresh objects                                                                                                                                        |
+| `src/shared` reaching the OS, network or eval                                                | Addressed — lint boundary, verified by probe; not a runtime sandbox                                                                                                                                                |
+| Privilege escalation via the executor                                                        | Addressed, M5 — `execute` requires a verdict as an explicit argument; proven by tests that no denial or rejection reaches `perform`                                                                                |
+| A side effect running without a permission decision                                          | Addressed, M5 — structural: no code path in `execute` calls `perform` without an authorizing verdict                                                                                                               |
+| Model rationale/confidence used as authorization                                             | Addressed, M5 — `decidePermission` never reads `proposal.parameters`; proven by test                                                                                                                               |
+| Emergency-stop bypass (decision logic)                                                       | Addressed, M5 — engine denies non-exempt actions when engaged, evaluated after both floors                                                                                                                         |
+| Emergency-stop bypass (persistence)                                                          | Addressed, M6 — atomic writes, fail-safe loading; reset requires an approved confirmation the pipeline already enforces                                                                                            |
+| Emergency-stop state corruption fails open instead of closed                                 | Addressed, M6 — malformed or unreadable state resolves engaged, not disengaged; proven by test                                                                                                                     |
+| Emergency reset triggered by a model or a policy rule alone                                  | Addressed, M6 — always resolves to `confirm`; proven across a policy × emergency-state test matrix                                                                                                                 |
+| Plaintext API key stored as a fallback when encryption is unavailable                        | Addressed, M7 — `writeSecret` throws `SecretStoreUnavailableError` before any disk write when `safeStorage.isEncryptionAvailable()` is `false`; proven by test                                                     |
+| Plaintext API key reaching settings.json, an audit record, an error message, or the renderer | Addressed, M7 — `apiKey` never enters `proposal.parameters`; secrets IPC responses carry only `{present: boolean}`; proven by test                                                                                 |
+| `hasApiKey` reported as `true` for a provider that does not use a key (`none`, `ollama`)     | Addressed, M7 — forced `false` regardless of the secret store; proven by test                                                                                                                                      |
+| A denied or rejected secret operation still mutating the store or `hasApiKey`                | Addressed, M7 — `perform` is structurally unreachable on `deny`/`reject`; `hasApiKey` is only refreshed after the store write already succeeded; proven by test                                                    |
+| Renderer-supplied `hasApiKey` reaching a persisted document                                  | Addressed, M7 — `settingsUpdateRequestSchema` has no such field; `strictObject` rejects the extra key outright                                                                                                     |
+| Path traversal                                                                               | Not reachable — all paths derive from the app-data directory; none is user-supplied                                                                                                                                |
+| Prompt injection, untrusted model or tool output                                             | Reachable from Phase 2 M3 (a real provider replies) — no tool exists for a model to invoke, so untrusted assistant text still cannot authorize or perform an action; see the proposal/executor split               |
+| Renderer or a compromised dependency making a network request directly                       | Addressed, Phase 2 M3 — CSP `connect-src 'none'` (unmodified since M2) plus the `src/shared` and `src/renderer/chat` purity/scan boundaries; only `src/main/openai-compatible-provider.ts` can reach the network   |
+| Plaintext API key reaching the renderer through a real provider call                         | Addressed, Phase 2 M3 — stays inside `resolveMainChatProvider`/`openai-compatible-provider.ts`; never in `ActionProposal.parameters`, `chatSendResponseSchema`, an audit record, or a thrown error; proven by test |
+| A real provider call bypassing the permission engine or the emergency stop                   | Addressed, Phase 2 M3 — reached only through the unmodified `runAction`/`handleActionProposal`; denied while the emergency stop is engaged                                                                         |
+| Message content or a raw provider error leaking into the audit trail                         | Addressed, Phase 2 M3 — the `chat.send` proposal carries only `{provider, messageCount}`; every provider failure normalizes to one of five fixed codes first                                                       |
+| Supply-chain compromise via npm                                                              | Mitigated, not eliminated — see below                                                                                                                                                                              |
 
 ---
 

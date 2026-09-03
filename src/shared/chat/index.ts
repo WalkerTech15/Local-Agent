@@ -28,6 +28,7 @@ export type {
   ChatProviderAvailability,
   ChatProviderCapabilities,
   ChatProviderStatus,
+  ChatProviderStatusInput,
 } from './registry';
 
 export { withProviderTimeout } from './timeout';

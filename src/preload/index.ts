@@ -1,7 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 import {
+  chatCancelResponseSchema,
+  chatSendResponseSchema,
   healthCheckResponseSchema,
+  IPC_CHAT_CANCEL_CHANNEL,
+  IPC_CHAT_SEND_CHANNEL,
   IPC_HEALTH_CHANNEL,
   IPC_SECRETS_CLEAR_CHANNEL,
   IPC_SECRETS_STATUS_CHANNEL,
@@ -13,6 +17,8 @@ import {
   secretsWriteResponseSchema,
   settingsGetResponseSchema,
   settingsUpdateResponseSchema,
+  type ChatMessage,
+  type ChatSendResponse,
   type HealthCheckResponse,
   type SecretsActionResponse,
   type SettingsActionResponse,
@@ -65,6 +71,31 @@ const bridge = {
     clear: async (): Promise<SecretsActionResponse> => {
       const result: unknown = await ipcRenderer.invoke(IPC_SECRETS_CLEAR_CHANNEL);
       return secretsClearResponseSchema.parse(result);
+    },
+  },
+  /**
+   * The one network-capable pair of channels (Phase 2, Milestone 3). Neither
+   * accepts or returns an API key, a header, or a provider URL — `send`
+   * takes only the conversation itself; the main process resolves which
+   * provider and which stored credential to use from settings and the
+   * encrypted secret store, never from a renderer-supplied value. `cancel`
+   * is fire-and-forget best effort: it asks the main process to abort a
+   * `send` already in flight, identified by the same `requestId`.
+   */
+  chat: {
+    send: async (
+      requestId: string,
+      messages: readonly ChatMessage[],
+    ): Promise<ChatSendResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_CHAT_SEND_CHANNEL, {
+        requestId,
+        messages,
+      });
+      return chatSendResponseSchema.parse(result);
+    },
+    cancel: async (requestId: string): Promise<void> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_CHAT_CANCEL_CHANNEL, { requestId });
+      chatCancelResponseSchema.parse(result);
     },
   },
 };

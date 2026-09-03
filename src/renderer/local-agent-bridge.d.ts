@@ -9,6 +9,8 @@
  */
 
 import type {
+  ChatMessage,
+  ChatSendResponse,
   HealthCheckResponse,
   SecretsActionResponse,
   SettingsActionResponse,
@@ -29,6 +31,13 @@ declare global {
         readonly status: () => Promise<SecretsActionResponse>;
         readonly write: (apiKey: string) => Promise<SecretsActionResponse>;
         readonly clear: () => Promise<SecretsActionResponse>;
+      };
+      readonly chat: {
+        readonly send: (
+          requestId: string,
+          messages: readonly ChatMessage[],
+        ) => Promise<ChatSendResponse>;
+        readonly cancel: (requestId: string) => Promise<void>;
       };
     };
   }

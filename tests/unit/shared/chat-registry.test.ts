@@ -23,10 +23,11 @@ describe('getChatProviderCapabilities', () => {
     expect(getChatProviderCapabilities('openai-compatible').requiresApiKey).toBe(true);
   });
 
-  it('reports every provider as not implemented in this phase', () => {
-    for (const id of MODEL_PROVIDERS) {
-      expect(getChatProviderCapabilities(id).implemented).toBe(false);
-    }
+  it('reports implemented only for openai-compatible, since Milestone 3', () => {
+    expect(getChatProviderCapabilities('none').implemented).toBe(false);
+    expect(getChatProviderCapabilities('glm').implemented).toBe(false);
+    expect(getChatProviderCapabilities('ollama').implemented).toBe(false);
+    expect(getChatProviderCapabilities('openai-compatible').implemented).toBe(true);
   });
 
   it('exposes requiresApiKey only as a boolean flag, never a credential-shaped value', () => {
@@ -48,29 +49,48 @@ describe('getChatProviderCapabilities', () => {
 
 describe('describeChatProviderStatus', () => {
   it('reports "none" as not-configured', () => {
-    const status = describeChatProviderStatus('none');
+    const status = describeChatProviderStatus({ provider: 'none', hasApiKey: false });
     expect(status.availability).toBe('not-configured');
     expect(status.summary).toMatch(/mock/i);
   });
 
-  it.each(['glm', 'openai-compatible', 'ollama'] as const)(
-    'reports %s as not-implemented',
-    (id) => {
-      const status = describeChatProviderStatus(id);
-      expect(status.availability).toBe('not-implemented');
-      expect(status.summary).toMatch(/mock/i);
-    },
-  );
+  it.each(['glm', 'ollama'] as const)('reports %s as not-implemented', (id) => {
+    const status = describeChatProviderStatus({ provider: id, hasApiKey: false });
+    expect(status.availability).toBe('not-implemented');
+    expect(status.summary).toMatch(/mock/i);
+  });
+
+  it('reports openai-compatible without a stored key as missing-api-key', () => {
+    const status = describeChatProviderStatus({ provider: 'openai-compatible', hasApiKey: false });
+    expect(status.availability).toBe('missing-api-key');
+    expect(status.summary).not.toMatch(/mock/i);
+  });
+
+  it('reports openai-compatible with a stored key as ready', () => {
+    const status = describeChatProviderStatus({ provider: 'openai-compatible', hasApiKey: true });
+    expect(status.availability).toBe('ready');
+    expect(status.summary).not.toMatch(/mock/i);
+  });
+
+  it('ignores hasApiKey for providers that do not require one', () => {
+    for (const id of ['none', 'ollama'] as const) {
+      const withoutKey = describeChatProviderStatus({ provider: id, hasApiKey: false });
+      const withKey = describeChatProviderStatus({ provider: id, hasApiKey: true });
+      expect(withKey).toEqual(withoutKey);
+    }
+  });
 
   it('never places settings input into the summary text, only fixed labels', () => {
-    // The function's only input is the enum identifier itself — there is no
-    // parameter through which a hostile or unexpected string could reach
-    // the summary, so this asserts the output is always one of the four
-    // known, reviewed templates.
+    // The function's only inputs are the enum identifier and a boolean —
+    // there is no parameter through which a hostile or unexpected string
+    // could reach the summary, so this asserts the output is always one of
+    // this function's known, reviewed templates.
     for (const id of MODEL_PROVIDERS) {
-      const summary = describeChatProviderStatus(id).summary;
-      expect(summary).not.toContain('apiKey');
-      expect(summary).not.toContain('token');
+      for (const hasApiKey of [true, false]) {
+        const summary = describeChatProviderStatus({ provider: id, hasApiKey }).summary;
+        expect(summary).not.toContain('apiKey');
+        expect(summary).not.toContain('token');
+      }
     }
   });
 });

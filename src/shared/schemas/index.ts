@@ -57,8 +57,14 @@ export type {
 } from './emergency.schema';
 
 export {
+  chatCancelRequestSchema,
+  chatCancelResponseSchema,
+  chatSendRequestSchema,
+  chatSendResponseSchema,
   healthCheckRequestSchema,
   healthCheckResponseSchema,
+  IPC_CHAT_CANCEL_CHANNEL,
+  IPC_CHAT_SEND_CHANNEL,
   IPC_HEALTH_CHANNEL,
   IPC_SECRETS_CLEAR_CHANNEL,
   IPC_SECRETS_STATUS_CHANNEL,
@@ -78,6 +84,9 @@ export {
   settingsUpdateResponseSchema,
 } from './ipc.schema';
 export type {
+  ChatCancelResponse,
+  ChatSendRequestInput,
+  ChatSendResponse,
   HealthCheckResponse,
   SecretsActionResponse,
   SecretStatusResult,
@@ -89,6 +98,7 @@ export { createEmptySecretStoreFile, secretStoreFileSchema } from './secrets.sch
 export type { SecretStoreFile } from './secrets.schema';
 
 export {
+  chatContentSchema,
   chatMessageMetadataSchema,
   chatMessageSchema,
   chatProviderRequestSchema,

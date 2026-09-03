@@ -136,12 +136,16 @@ export const BIDI_CONTROL_PATTERN = /[\u202A-\u202E\u2066-\u2069]/;
 // ---------------------------------------------------------------------------
 
 /**
- * Every privileged operation available in Phase 1.
+ * Every privileged operation available so far.
  *
- * Phase 1 deliberately contains no filesystem tool, no shell execution and no
- * network action. The list stays this short until a later phase adds one, and
- * every addition needs a matching policy rule because unmatched actions are
- * denied.
+ * Phase 1 contained no filesystem tool, no shell execution and no network
+ * action. Phase 2, Milestone 3 adds exactly one network-capable action,
+ * `chat.send` — sending the current conversation to the provider the user
+ * selected in settings, through the permission engine like every other
+ * action here, never directly from an IPC handler. It remains the only
+ * network-capable action: no filesystem tool, no shell execution, and no
+ * generic "make a request" action exist. Every addition needs a matching
+ * policy rule because unmatched actions are denied.
  */
 export const ACTION_TYPES = [
   'settings.read',
@@ -153,6 +157,7 @@ export const ACTION_TYPES = [
   'emergency.engage',
   'emergency.reset',
   'app.exit',
+  'chat.send',
 ] as const;
 export type ActionType = (typeof ACTION_TYPES)[number];
 

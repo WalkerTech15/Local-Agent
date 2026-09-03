@@ -29,11 +29,13 @@ import type { AuditParameters } from './audit-parameters.schema';
 
 /**
  * Bounded, control-character- and bidi-safe text, shared by a message's own
- * `content` and by {@link chatProviderResultSchema}'s `content` — the same
+ * `content`, by {@link chatProviderResultSchema}'s `content`, and by
+ * `chatSendResponseSchema` (`ipc.schema.ts`, Phase 2 Milestone 3) — the same
  * safety rules apply the moment either crosses a validation boundary,
- * whether that text was typed by the user or returned by a provider.
+ * whether that text was typed by the user, returned by a provider, or
+ * crossed the IPC boundary from the main process's real adapter.
  */
-const chatContentSchema = z
+export const chatContentSchema = z
   .string()
   .min(CHAT_MESSAGE_CONTENT_MIN_LENGTH)
   .max(CHAT_MESSAGE_CONTENT_MAX_LENGTH)
