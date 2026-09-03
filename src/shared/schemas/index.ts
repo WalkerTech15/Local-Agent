@@ -87,3 +87,17 @@ export type {
 
 export { createEmptySecretStoreFile, secretStoreFileSchema } from './secrets.schema';
 export type { SecretStoreFile } from './secrets.schema';
+
+export {
+  chatMessageMetadataSchema,
+  chatMessageSchema,
+  chatProviderRequestSchema,
+  chatProviderResultSchema,
+  createChatMessage,
+} from './chat.schema';
+export type {
+  ChatMessage,
+  ChatMessageMetadata,
+  ChatProviderRequestPayload,
+  ChatProviderResultPayload,
+} from './chat.schema';

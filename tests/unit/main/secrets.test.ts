@@ -300,6 +300,16 @@ describe('concurrency', () => {
   });
 
   it('leaves no orphaned temporary files after many concurrent writes', async () => {
+    // This test intermittently failed with EPERM on `rename` when run as
+    // part of the full suite (never in isolation) under the original
+    // 5-attempt/15ms retry budget — the same class of transient Windows
+    // sharing-violation contention `main/emergency.ts`'s own concurrency
+    // test previously surfaced for the identical atomic-rename pattern. The
+    // fix was widening `main/secrets.ts`'s `RENAME_MAX_ATTEMPTS`/
+    // `RENAME_RETRY_DELAY_MS` to match `main/emergency.ts`'s; see that
+    // module's constant declaration for the full rationale. This test is
+    // the regression guard for that budget — it should keep passing
+    // reliably as part of the full suite, not only alone.
     const safeStorage = createFakeSafeStorage(true);
     await Promise.all(
       Array.from({ length: 8 }, (_, index) =>

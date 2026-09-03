@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 
+import { Chat } from './chat/Chat';
 import { Onboarding } from './Onboarding';
 import { createDefaultSettings } from '../shared/schemas';
 import type { Settings } from '../shared/schemas';
@@ -64,15 +65,20 @@ export function App() {
     );
   }
 
+  const assistantName = settings?.assistant.name ?? 'JARVIS';
+  const modelProvider = settings?.modelProvider ?? fallbackSettings().modelProvider;
+
   return (
-    <main>
-      <p className="eyebrow">LOCAL-FIRST INTELLIGENCE</p>
-      <h1>{settings?.assistant.name ?? 'JARVIS'}</h1>
-      <p className="lede">A secure foundation for your personal AI assistant.</p>
-      {settings && settings.user.displayName.length > 0 && (
-        <p className="lede">Welcome back, {settings.user.displayName}.</p>
-      )}
-      <p className="status">Main process: {health}</p>
+    <main className="app-ready">
+      <header className="app-header">
+        <p className="eyebrow">LOCAL-FIRST INTELLIGENCE</p>
+        <h1>{assistantName}</h1>
+        {settings && settings.user.displayName.length > 0 && (
+          <p className="lede">Welcome back, {settings.user.displayName}.</p>
+        )}
+        <p className="status">Main process: {health}</p>
+      </header>
+      <Chat assistantName={assistantName} modelProvider={modelProvider} />
     </main>
   );
 }

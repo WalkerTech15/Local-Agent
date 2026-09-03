@@ -49,14 +49,29 @@ import type { SecretStoreFile } from '../shared/schemas';
 const MAX_SECRET_STORE_JSON_DEPTH = 64;
 
 /**
- * Mirrors `main/settings.ts`'s retry budget exactly. A second, independent
- * copy rather than a shared import, consistent with `main/policy.ts` and
- * `main/emergency.ts`: this module should not gain a runtime dependency on an
- * already-reviewed module from an earlier milestone for one small,
- * self-contained, pure helper.
+ * Same mechanism as `main/settings.ts`'s and `main/emergency.ts`'s identical
+ * retry, for the same reason — a destination-file rename can transiently
+ * fail on Windows (`EPERM`, `EBUSY`, `EACCES`) when something else briefly
+ * holds the destination path open. A second, independent copy rather than a
+ * shared import, consistent with `main/policy.ts` and `main/emergency.ts`:
+ * this module should not gain a runtime dependency on an already-reviewed
+ * module from an earlier milestone for one small, self-contained, pure
+ * helper.
+ *
+ * The budget matches `main/emergency.ts`'s, not `main/settings.ts`'s
+ * smaller original: this repository now has three modules performing this
+ * same atomic-rename pattern, each with its own concurrent-write test, and
+ * running all of them together in one full suite run measurably increases
+ * how often a transient sharing violation needs more than 5 attempts to
+ * clear — reproduced directly against this module's own 8-way concurrency
+ * test failing intermittently only as part of the full suite, never in
+ * isolation, exactly the failure mode `main/emergency.ts`'s own comment
+ * already documents for the same underlying cause. Each attempt is still one
+ * whole-file rename, so a larger budget only ever risks a longer delay
+ * before giving up, never a partial write.
  */
-const RENAME_MAX_ATTEMPTS = 5;
-const RENAME_RETRY_DELAY_MS = 15;
+const RENAME_MAX_ATTEMPTS = 10;
+const RENAME_RETRY_DELAY_MS = 20;
 
 function isTransientRenameError(error: unknown): boolean {
   if (typeof error !== 'object' || error === null || !('code' in error)) return false;

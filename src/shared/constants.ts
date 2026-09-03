@@ -371,3 +371,72 @@ export const FORBIDDEN_OBJECT_KEYS: readonly string[] = [
   'constructor',
   'prototype',
 ] as const;
+
+// ---------------------------------------------------------------------------
+// Chat (Phase 2, Milestone 1)
+//
+// A mock-only chat foundation: message and conversation shapes, and the
+// bounds that keep a hostile or runaway conversation from producing an
+// unbounded amount of state. No model is called anywhere yet — see
+// docs/phase-2-chat-architecture.md.
+// ---------------------------------------------------------------------------
+
+/**
+ * `tool` is declared now, alongside the roles this milestone actually
+ * produces, so that adding real tool-call support later is a new code path,
+ * not a breaking schema change. Nothing in Phase 2 Milestone 1 constructs a
+ * `tool` message; the mock provider never returns one.
+ */
+export const CHAT_MESSAGE_ROLES = ['system', 'user', 'assistant', 'tool'] as const;
+export type ChatMessageRole = (typeof CHAT_MESSAGE_ROLES)[number];
+
+/**
+ * Optional per-message status metadata.
+ *
+ * Unused by this milestone's actual conversation logic — a failed provider
+ * call never becomes an `'error'`-status message; see
+ * `src/renderer/chat/conversation-controller.ts`, which keeps loading and
+ * error state at the conversation level instead, so the message list stays a
+ * clean, append-only transcript. Declared on the schema now so a later
+ * milestone (for example, a streaming provider marking a message
+ * `'streaming'` while it fills in) is a new enum member, not a new field.
+ */
+export const CHAT_MESSAGE_STATUSES = ['complete', 'error'] as const;
+export type ChatMessageStatus = (typeof CHAT_MESSAGE_STATUSES)[number];
+
+export const CHAT_MESSAGE_CONTENT_MIN_LENGTH = 1;
+/**
+ * Generous enough for a long pasted paragraph; tight enough that a hostile or
+ * accidental multi-megabyte payload cannot be carried as a single message.
+ */
+export const CHAT_MESSAGE_CONTENT_MAX_LENGTH = 8_000;
+
+/**
+ * Maximum number of messages a single conversation may hold in memory.
+ *
+ * Conversation state is not persisted to disk in this milestone — it lives
+ * only in the renderer for the lifetime of the window — so this bound exists
+ * to keep an unbounded chat session from growing memory use without limit,
+ * not to protect a file format.
+ */
+export const CHAT_CONVERSATION_MAX_MESSAGES = 200;
+
+/**
+ * Rejects control characters unsafe in chat content, while still allowing the
+ * tab, newline and carriage return a genuine multi-line message needs — the
+ * one difference from {@link CONTROL_CHARACTER_PATTERN}, which forbids all
+ * three because it guards single-line display strings, not free-form content.
+ */
+// eslint-disable-next-line no-control-regex
+export const CHAT_CONTROL_CHARACTER_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
+
+/** The only provider implemented in this milestone. */
+export const MOCK_CHAT_PROVIDER_ID = 'mock';
+
+/**
+ * A deterministic, documented way to exercise the failure/retry path without
+ * a real provider to fail. Sending this exact trimmed message content makes
+ * {@link MOCK_CHAT_PROVIDER_ID} reject instead of responding — used by tests
+ * and available during manual review of the failure and retry UI.
+ */
+export const MOCK_CHAT_PROVIDER_FAILURE_TRIGGER = '/mock-fail';
