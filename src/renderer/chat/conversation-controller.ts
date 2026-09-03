@@ -23,7 +23,12 @@
  * action — there is no action to authorize here at all.
  */
 
-import { createChatMessage, type ChatMessage } from '../../shared/schemas';
+import {
+  chatProviderRequestSchema,
+  chatProviderResultSchema,
+  createChatMessage,
+  type ChatMessage,
+} from '../../shared/schemas';
 import { CHAT_CONVERSATION_MAX_MESSAGES } from '../../shared/constants';
 import type { ChatProvider } from '../../shared/chat';
 
@@ -87,7 +92,7 @@ function describeProviderFailure(_error: unknown): string {
  * exposes this to a component via `useState`/`useEffect`.
  */
 export class ConversationController {
-  private readonly provider: ChatProvider;
+  private provider: ChatProvider;
   private readonly now: () => string;
   private readonly generateId: () => string;
   private readonly listeners = new Set<ConversationListener>();
@@ -108,6 +113,29 @@ export class ConversationController {
   /** True while idle and able to accept a new submission or a retry. */
   get canSubmit(): boolean {
     return this.state.status === 'idle';
+  }
+
+  /**
+   * Switches which `ChatProvider` this conversation talks to, without
+   * losing any prior message. A no-op when `provider` is the same reference
+   * already in use.
+   *
+   * Any request already in flight against the previous provider is aborted
+   * first — its `AbortSignal` fires, so `requestAssistantReply`'s own
+   * `if (controller.signal.aborted) return;` guard discards whatever it was
+   * waiting for, and that stale response can never be appended to the
+   * conversation the new provider is now serving. `status` returns to
+   * `'idle'` so the composer is usable again immediately, rather than left
+   * showing "awaiting response" for a request that will never resolve into
+   * this conversation.
+   */
+  setProvider(provider: ChatProvider): void {
+    if (provider === this.provider) return;
+    this.provider = provider;
+    this.activeAbortController?.abort();
+    if (this.state.status === 'awaiting-response') {
+      this.setState({ ...this.state, status: 'idle' });
+    }
   }
 
   subscribe(listener: ConversationListener): () => void {
@@ -185,8 +213,22 @@ export class ConversationController {
     this.activeAbortController = controller;
 
     try {
-      const result = await this.provider.send({ messages }, { signal: controller.signal });
+      // Defence in depth: `messages` is already every element individually
+      // validated by `createChatMessage`, and `submit()`'s own runtime check
+      // already keeps the array at or under `CHAT_CONVERSATION_MAX_MESSAGES`
+      // before this is ever reached — but this is the schema-level backstop
+      // for that same bound at the exact boundary a request crosses into a
+      // provider, so a future bug in either caller does not silently send an
+      // unbounded request. Never expected to reject in normal operation.
+      const request = chatProviderRequestSchema.parse({ messages });
+      const rawResult = await this.provider.send(request, { signal: controller.signal });
       if (controller.signal.aborted) return;
+
+      // The provider's raw result is untrusted the moment it returns —
+      // whether that is the deterministic mock today or a real adapter in a
+      // later phase — so it is validated here, before any of it is trusted
+      // enough to become part of the conversation.
+      const result = chatProviderResultSchema.parse(rawResult);
 
       const assistantMessage = createChatMessage({
         id: this.generateId(),

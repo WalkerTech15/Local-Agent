@@ -66,6 +66,7 @@ export function App() {
   }
 
   const assistantName = settings?.assistant.name ?? 'JARVIS';
+  const modelProvider = settings?.modelProvider ?? fallbackSettings().modelProvider;
 
   return (
     <main className="app-ready">
@@ -77,7 +78,7 @@ export function App() {
         )}
         <p className="status">Main process: {health}</p>
       </header>
-      <Chat assistantName={assistantName} />
+      <Chat assistantName={assistantName} modelProvider={modelProvider} />
     </main>
   );
 }

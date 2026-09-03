@@ -307,4 +307,110 @@ describe('ConversationController', () => {
 
     expect(listener).not.toHaveBeenCalled();
   });
+
+  describe('setProvider', () => {
+    it('is a no-op when passed the same provider reference already in use', async () => {
+      const provider = instantProvider(() => ({ content: 'ok' }));
+      const controller = new ConversationController({ provider, ...makeDeps() });
+      await controller.submit('hello');
+
+      const before = controller.getState();
+      controller.setProvider(provider);
+
+      expect(controller.getState()).toBe(before);
+    });
+
+    it('switching provider while idle preserves the existing conversation', async () => {
+      const providerA = instantProvider(() => ({ content: 'from A' }));
+      const controller = new ConversationController({ provider: providerA, ...makeDeps() });
+      await controller.submit('hello');
+      expect(controller.getState().messages).toHaveLength(2);
+
+      const providerB = instantProvider(() => ({ content: 'from B' }));
+      controller.setProvider(providerB);
+
+      expect(controller.getState().messages).toHaveLength(2);
+      expect(controller.getState().status).toBe('idle');
+
+      await controller.submit('second message');
+      const state = controller.getState();
+      expect(state.messages).toHaveLength(4);
+      expect(state.messages[3]?.content).toBe('from B');
+    });
+
+    it('switching provider while a response is pending aborts the stale request and returns to idle without losing the user message', async () => {
+      const { provider: providerA, resolve: resolveA, calls: callsA } = deferredProvider();
+      const controller = new ConversationController({ provider: providerA, ...makeDeps() });
+
+      const submitPromise = controller.submit('hello');
+      expect(controller.getState().status).toBe('awaiting-response');
+      expect(callsA).toHaveLength(1);
+
+      const providerB = instantProvider(() => ({ content: 'unused' }));
+      controller.setProvider(providerB);
+
+      expect(controller.getState().status).toBe('idle');
+      expect(controller.getState().messages).toHaveLength(1);
+      expect(controller.getState().messages[0]).toMatchObject({ role: 'user', content: 'hello' });
+
+      // The original request resolves late, after the switch. Its result
+      // must never land in the conversation now being served by providerB.
+      resolveA({ content: 'stale response from A' });
+      await submitPromise;
+
+      const state = controller.getState();
+      expect(state.messages).toHaveLength(1);
+      expect(state.messages.some((message) => message.content.includes('stale'))).toBe(false);
+    });
+
+    it('a stale response cannot overwrite a newer response already recorded', async () => {
+      const { provider: providerA, resolve: resolveA } = deferredProvider();
+      const controller = new ConversationController({ provider: providerA, ...makeDeps() });
+
+      // This request is never resolved until the end of the test, so its
+      // own promise is not awaited here — awaiting it now, before resolveA
+      // is ever called, would hang forever.
+      const submitPromise = controller.submit('hello');
+      const providerB = instantProvider(() => ({ content: 'fresh response from B' }));
+      controller.setProvider(providerB);
+
+      // A fresh submission (not retry() — there is no standing error to
+      // retry from, just a switch) now goes through providerB and completes.
+      await controller.submit('are you there');
+      const afterB = controller.getState();
+      expect(afterB.messages).toHaveLength(3);
+      expect(afterB.messages[2]?.content).toBe('fresh response from B');
+
+      // providerA's long-abandoned request finally resolves. It must not be
+      // appended, and it must not disturb the conversation providerB already
+      // completed.
+      resolveA({ content: 'very stale response from A' });
+      await submitPromise;
+
+      const state = controller.getState();
+      expect(state.messages).toHaveLength(3);
+      expect(state.messages[2]?.content).toBe('fresh response from B');
+      expect(state.messages.some((message) => message.content.includes('stale'))).toBe(false);
+    });
+
+    it('retry after a provider switch with no standing error is a no-op, not a call to either provider', async () => {
+      const sendA = vi.fn(() => new Promise<ChatProviderResult>(() => undefined));
+      const providerA: ChatProvider = { id: 'a', send: sendA };
+      const controller = new ConversationController({ provider: providerA, ...makeDeps() });
+
+      void controller.submit('hello');
+      expect(sendA).toHaveBeenCalledTimes(1);
+
+      const sendB = vi.fn(() => Promise.resolve({ content: 'ok' }));
+      controller.setProvider({ id: 'b', send: sendB });
+
+      // The switch itself never failed anything — status is idle with no
+      // error — so retry() (meant only to recover from a failure) must stay
+      // a no-op rather than firing a request of its own against providerB.
+      await controller.retry();
+
+      expect(sendA).toHaveBeenCalledTimes(1);
+      expect(sendB).not.toHaveBeenCalled();
+    });
+  });
 });

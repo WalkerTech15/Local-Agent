@@ -1,11 +1,12 @@
-import { useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 
+import { useActiveChatProvider } from './useActiveChatProvider';
 import { useConversation } from './useConversation';
-import { createMockChatProvider } from '../../shared/chat';
-import type { ChatMessage } from '../../shared/schemas';
+import type { ChatMessage, ModelProviderSettings } from '../../shared/schemas';
 
 interface ChatProps {
   readonly assistantName: string;
+  readonly modelProvider: ModelProviderSettings;
 }
 
 const ROLE_LABELS: Record<ChatMessage['role'], string> = {
@@ -37,17 +38,17 @@ function MessageBubble({ message }: { readonly message: ChatMessage }) {
 }
 
 /**
- * Chat surface for Phase 2, Milestone 1.
+ * Chat surface for Phase 2, Milestones 1–2.
  *
- * Talks only to the deterministic mock provider, entirely inside the
- * renderer — no IPC channel, no call to `window.localAgent`, so nothing
- * typed here can reach a privileged API, a file, the network, or an action
- * the permission engine would need to see. Assistant text is untrusted
- * output: displayed, never executed, never treated as authorization for
- * anything.
+ * Resolves its provider through `useActiveChatProvider` — never imports the
+ * mock directly — entirely inside the renderer: no IPC channel, no call to
+ * `window.localAgent`, so nothing typed here can reach a privileged API, a
+ * file, the network, or an action the permission engine would need to see.
+ * Assistant text is untrusted output: displayed, never executed, never
+ * treated as authorization for anything.
  */
-export function Chat({ assistantName }: ChatProps) {
-  const provider = useMemo(() => createMockChatProvider(), []);
+export function Chat({ assistantName, modelProvider }: ChatProps) {
+  const { provider, status } = useActiveChatProvider(modelProvider);
   const { state, canSubmit, submit, retry } = useConversation(provider);
   const [draft, setDraft] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -77,12 +78,16 @@ export function Chat({ assistantName }: ChatProps) {
 
   return (
     <section className="chat" aria-label={`Chat with ${assistantName}`}>
+      {/*
+        Safe provider status only: a fixed label plus a fixed template
+        string built from it (see `describeChatProviderStatus`) — never a
+        key, a header, a URL, or `hasApiKey`. `Chat.tsx` never even receives
+        a value that could contain one.
+      */}
+      <p className="chat__provider-status">{status.summary}</p>
       <div className="chat__transcript" role="log" aria-live="polite" aria-label="Conversation">
         {state.messages.length === 0 ? (
-          <p className="chat__empty">
-            No messages yet. Say hello to {assistantName} — every reply right now comes from a local
-            mock provider, not a real model.
-          </p>
+          <p className="chat__empty">No messages yet. Say hello to {assistantName}.</p>
         ) : (
           state.messages.map((message) => <MessageBubble key={message.id} message={message} />)
         )}

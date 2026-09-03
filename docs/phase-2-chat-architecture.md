@@ -5,6 +5,12 @@
 > tested; everything marked **[deferred]** does not exist yet and this
 > milestone does not lay groundwork that quietly enables it. Nothing here
 > makes a network request, and nothing here can trigger a privileged action.
+> Milestone 2 (see
+> [docs/phase-2-provider-architecture.md](phase-2-provider-architecture.md))
+> adds the provider registry, request/response schemas, a timeout decorator,
+> and provider-status display on top of this same foundation — this document
+> is kept as the record of what Milestone 1 built and is not rewritten to
+> describe Milestone 2's additions.
 
 ---
 
@@ -107,7 +113,7 @@ interface ConversationState {
 
 `src/renderer/chat/Chat.tsx`, mounted from `App.tsx`'s `'ready'` phase, replacing the previous static welcome screen with the assistant's name and status line as a compact header above the chat surface.
 
-- **Empty state** — a friendly prompt when no messages exist yet, explicitly naming the mock provider.
+- **Empty state** — a friendly prompt when no messages exist yet. (Milestone 2 moved the "which provider is actually answering" text out of this prompt and into its own status line — see `docs/phase-2-provider-architecture.md`.)
 - **Message list** (`role="log"`, `aria-live="polite"`) — each message a bubble labelled by role.
 - **Loading state** — an `aria-live` "…is thinking" line while `status === 'awaiting-response'`; the composer is disabled for the same duration, which is the actual duplicate-submission prevention the user sees (the controller enforces it structurally regardless).
 - **Error state** (`role="alert"`) with a **Retry** button, shown only when `state.error` is set.

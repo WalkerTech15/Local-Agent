@@ -138,6 +138,11 @@ main.app-ready {
   border-radius: 0.6rem;
   background: #0c1626;
 }
+.chat__provider-status {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #73d5c8;
+}
 .chat__empty {
   margin: auto;
   max-width: 28rem;
