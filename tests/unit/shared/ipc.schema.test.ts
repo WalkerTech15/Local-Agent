@@ -4,6 +4,7 @@ import { CHAT_PROVIDER_ERROR_CODES } from '../../../src/shared/chat/provider';
 import {
   API_KEY_MAX_LENGTH,
   CHAT_CONVERSATION_MAX_MESSAGES,
+  CHAT_STREAM_MAX_DELTA_LENGTH,
   MODEL_PROVIDERS,
   UI_LANGUAGES,
 } from '../../../src/shared/constants';
@@ -11,6 +12,7 @@ import { createDefaultSettings } from '../../../src/shared/schemas/settings.sche
 import {
   chatCancelRequestSchema,
   chatCancelResponseSchema,
+  chatChunkEventSchema,
   chatSendRequestSchema,
   chatSendResponseSchema,
   secretsActionResponseSchema,
@@ -320,6 +322,75 @@ describe('chatSendResponseSchema', () => {
 
   it('rejects content that fails the shared content-safety schema', () => {
     const result = chatSendResponseSchema.safeParse({ outcome: 'success', content: '' });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('chatChunkEventSchema (Phase 2, Milestone 4)', () => {
+  const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
+
+  it('accepts a well-formed streaming event', () => {
+    const result = chatChunkEventSchema.safeParse({ requestId: REQUEST_ID, delta: 'hello' });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a non-uuid requestId, so an uncorrelated event cannot be delivered', () => {
+    const result = chatChunkEventSchema.safeParse({ requestId: 'nope', delta: 'hello' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an empty delta', () => {
+    expect(chatChunkEventSchema.safeParse({ requestId: REQUEST_ID, delta: '' }).success).toBe(
+      false,
+    );
+  });
+
+  it('rejects a delta longer than the per-chunk bound', () => {
+    const result = chatChunkEventSchema.safeParse({
+      requestId: REQUEST_ID,
+      delta: 'a'.repeat(CHAT_STREAM_MAX_DELTA_LENGTH + 1),
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts a delta exactly at the per-chunk bound', () => {
+    const result = chatChunkEventSchema.safeParse({
+      requestId: REQUEST_ID,
+      delta: 'a'.repeat(CHAT_STREAM_MAX_DELTA_LENGTH),
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a delta carrying an unsafe control character', () => {
+    const result = chatChunkEventSchema.safeParse({
+      requestId: REQUEST_ID,
+      delta: 'bad' + String.fromCharCode(0) + 'delta',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a delta carrying a bidirectional override', () => {
+    const result = chatChunkEventSchema.safeParse({
+      requestId: REQUEST_ID,
+      delta: 'spoofed‮text',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('allows the newlines and tabs a real reply legitimately contains', () => {
+    const result = chatChunkEventSchema.safeParse({
+      requestId: REQUEST_ID,
+      delta: 'line one\nline two\tindented',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects an unknown field — a chunk carries nothing but its correlation and its text', () => {
+    const result = chatChunkEventSchema.safeParse({
+      requestId: REQUEST_ID,
+      delta: 'hello',
+      apiKey: 'sk-not-real',
+    });
     expect(result.success).toBe(false);
   });
 });

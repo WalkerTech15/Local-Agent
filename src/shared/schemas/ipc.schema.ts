@@ -44,7 +44,7 @@ import {
   CHAT_CONVERSATION_MAX_MESSAGES,
   CONTROL_CHARACTER_PATTERN,
 } from '../constants';
-import { chatContentSchema, chatMessageSchema } from './chat.schema';
+import { chatContentSchema, chatMessageSchema, chatStreamDeltaSchema } from './chat.schema';
 import {
   assistantSettingsSchema,
   languageSettingsSchema,
@@ -231,3 +231,34 @@ export const chatCancelResponseSchema = z.strictObject({
 });
 
 export type ChatCancelResponse = z.infer<typeof chatCancelResponseSchema>;
+
+/**
+ * The one main → renderer push channel in this codebase (Phase 2, Milestone
+ * 4), carrying streaming previews for an in-flight `chat:send`.
+ *
+ * Deliberately narrow, in every dimension:
+ *
+ *  - **One direction, one purpose.** The renderer can only listen; there is
+ *    no request it can make on this channel and no reply it can send back.
+ *  - **Correlated.** `requestId` matches the `chat:send` call this delta
+ *    belongs to, so a listener discards anything that is not its own
+ *    request rather than trusting whatever arrives.
+ *  - **Bounded and content-safe.** `delta` is {@link chatStreamDeltaSchema}:
+ *    short, control-character-free, bidi-free. A larger fragment is split by
+ *    the sender into several events rather than sent whole.
+ *  - **Advisory.** A delta is a preview to render, never a message to
+ *    commit. The authoritative reply is still the one `chat:send` resolves
+ *    with, validated as a whole. Dropping every event on this channel would
+ *    cost the live preview and change nothing about the final conversation.
+ *
+ * Validated by `main/ipc.ts` before it is sent and again by
+ * `src/preload/index.ts` before any renderer listener sees it.
+ */
+export const IPC_CHAT_CHUNK_CHANNEL = 'chat:chunk';
+
+export const chatChunkEventSchema = z.strictObject({
+  requestId: z.uuid(),
+  delta: chatStreamDeltaSchema,
+});
+
+export type ChatChunkEvent = z.infer<typeof chatChunkEventSchema>;

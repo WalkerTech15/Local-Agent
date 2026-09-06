@@ -10,6 +10,16 @@
 > `withProviderTimeout`, the provider request/response schemas), none of
 > which changed shape. **`glm` and `ollama` remain unimplemented.
 > `anthropic`, `openai`, `claude` and `gemini` remain absent.**
+>
+> Milestone 4 (see
+> [docs/phase-2-provider-completion.md](phase-2-provider-completion.md))
+> implements `glm` and `ollama` on top of this same design and adds bounded
+> streaming, without changing any boundary described here: the exchange
+> below was factored into a shared transport
+> (`src/main/chat-completions-transport.ts`) that all three adapters use,
+> `chat.send` is still the only provider action, and the timeout constant was
+> renamed `CHAT_PROVIDER_REQUEST_TIMEOUT_MS` now that it covers every
+> provider. This document is kept as the record of what Milestone 3 built.
 
 ---
 

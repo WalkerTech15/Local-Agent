@@ -15,11 +15,18 @@
  * Milestone 5 `handleActionProposal`. No handler here calls `execute` or the
  * secret-store / settings-write functions directly; every side effect is
  * reached only through a permission decision.
+ *
+ * Phase 2 Milestone 3 adds `chat:send` (routed through that same pipeline)
+ * and `chat:cancel` (no side effect of its own to gate). Phase 2 Milestone 4
+ * adds `chat:chunk`, the only main → renderer *push* channel in this
+ * codebase: one-way, correlated to a single in-flight `chat:send`, bounded
+ * and validated before it is sent, and advisory — see {@link emitChatChunks}
+ * and `docs/phase-2-provider-completion.md`.
  */
 
 import { randomUUID } from 'node:crypto';
 
-import type { IpcMain, SafeStorage } from 'electron';
+import type { IpcMain, IpcMainInvokeEvent, SafeStorage } from 'electron';
 
 import { runAction } from './action-runtime';
 import type { ActionRuntime } from './action-runtime';
@@ -35,15 +42,17 @@ import {
 import { loadSettings } from './settings';
 import { CHAT_PROVIDER_ERROR_CODES, ChatProviderError } from '../shared/chat/provider';
 import type { ChatProviderResult } from '../shared/chat/provider';
-import { PROVIDERS_REQUIRING_API_KEY } from '../shared/constants';
+import { CHAT_STREAM_MAX_DELTA_LENGTH, PROVIDERS_REQUIRING_API_KEY } from '../shared/constants';
 import {
   chatCancelRequestSchema,
   chatCancelResponseSchema,
+  chatChunkEventSchema,
   chatSendRequestSchema,
   chatSendResponseSchema,
   healthCheckRequestSchema,
   healthCheckResponseSchema,
   IPC_CHAT_CANCEL_CHANNEL,
+  IPC_CHAT_CHUNK_CHANNEL,
   IPC_CHAT_SEND_CHANNEL,
   IPC_HEALTH_CHANNEL,
   IPC_SECRETS_CLEAR_CHANNEL,
@@ -138,6 +147,39 @@ function toSecretsResponse(result: ActionResult<SecretStatusResult>): SecretsAct
     ...(result.value === undefined ? {} : { status: result.value }),
     ...(result.errorCode === undefined ? {} : { errorCode: result.errorCode }),
   };
+}
+
+/**
+ * Forwards one streamed fragment to the renderer that asked for it, as one
+ * or more `chat:chunk` events (Phase 2, Milestone 4).
+ *
+ * Four properties, all enforced here rather than assumed of the caller:
+ *
+ *  - **Only the requesting window is told.** The event goes to
+ *    `event.sender` — the `WebContents` that invoked this `chat:send` — not
+ *    broadcast, and never to a destroyed one.
+ *  - **Only bounded fragments are sent.** A delta longer than
+ *    {@link CHAT_STREAM_MAX_DELTA_LENGTH} is split across several events
+ *    rather than truncated or dropped, so no single IPC message is
+ *    unbounded and no text is lost.
+ *  - **Only content-safe fragments are sent.** Each piece is validated by
+ *    {@link chatChunkEventSchema}; one that fails is skipped silently. A
+ *    dropped preview fragment costs nothing, because the authoritative reply
+ *    is the validated one `chat:send` resolves with — never the sum of these
+ *    events.
+ *  - **A failure here never fails the request.** Streaming is advisory; the
+ *    provider call continues regardless.
+ */
+function emitChatChunks(event: IpcMainInvokeEvent, requestId: string, delta: string): void {
+  const sender = event.sender;
+  if (sender.isDestroyed()) return;
+
+  for (let index = 0; index < delta.length; index += CHAT_STREAM_MAX_DELTA_LENGTH) {
+    const piece = delta.slice(index, index + CHAT_STREAM_MAX_DELTA_LENGTH);
+    const payload = chatChunkEventSchema.safeParse({ requestId, delta: piece });
+    if (!payload.success) continue;
+    sender.send(IPC_CHAT_CHUNK_CHANNEL, payload.data);
+  }
 }
 
 /**
@@ -305,7 +347,7 @@ export function registerIpcHandlers(ipcMain: IpcMain, runtime: IpcHandlerRuntime
     return secretsClearResponseSchema.parse(toSecretsResponse(result));
   });
 
-  ipcMain.handle(IPC_CHAT_SEND_CHANNEL, async (_event, ...args: unknown[]) => {
+  ipcMain.handle(IPC_CHAT_SEND_CHANNEL, async (event: IpcMainInvokeEvent, ...args: unknown[]) => {
     const [{ requestId, messages }] = chatSendRequestSchema.parse(args);
     const now = runtime.nowFn();
     const actionRuntime = buildActionRuntime(runtime, now);
@@ -331,7 +373,15 @@ export function registerIpcHandlers(ipcMain: IpcMain, runtime: IpcHandlerRuntime
         });
 
         try {
-          return await provider.send({ messages }, { signal: abortController.signal });
+          return await provider.send(
+            { messages },
+            {
+              signal: abortController.signal,
+              onChunk: (delta) => {
+                emitChatChunks(event, requestId, delta);
+              },
+            },
+          );
         } catch (error) {
           if (error instanceof ChatProviderError) {
             throw new ActionExecutionError(error.code, error.message);

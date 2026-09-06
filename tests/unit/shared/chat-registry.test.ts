@@ -23,10 +23,10 @@ describe('getChatProviderCapabilities', () => {
     expect(getChatProviderCapabilities('openai-compatible').requiresApiKey).toBe(true);
   });
 
-  it('reports implemented only for openai-compatible, since Milestone 3', () => {
+  it('reports implemented for every real provider, and never for none', () => {
     expect(getChatProviderCapabilities('none').implemented).toBe(false);
-    expect(getChatProviderCapabilities('glm').implemented).toBe(false);
-    expect(getChatProviderCapabilities('ollama').implemented).toBe(false);
+    expect(getChatProviderCapabilities('glm').implemented).toBe(true);
+    expect(getChatProviderCapabilities('ollama').implemented).toBe(true);
     expect(getChatProviderCapabilities('openai-compatible').implemented).toBe(true);
   });
 
@@ -54,10 +54,36 @@ describe('describeChatProviderStatus', () => {
     expect(status.summary).toMatch(/mock/i);
   });
 
-  it.each(['glm', 'ollama'] as const)('reports %s as not-implemented', (id) => {
-    const status = describeChatProviderStatus({ provider: id, hasApiKey: false });
-    expect(status.availability).toBe('not-implemented');
-    expect(status.summary).toMatch(/mock/i);
+  it('reports glm without a stored key as missing-api-key', () => {
+    const status = describeChatProviderStatus({ provider: 'glm', hasApiKey: false });
+    expect(status.availability).toBe('missing-api-key');
+    expect(status.summary).not.toMatch(/mock/i);
+  });
+
+  it('reports glm with a stored key as ready', () => {
+    const status = describeChatProviderStatus({ provider: 'glm', hasApiKey: true });
+    expect(status.availability).toBe('ready');
+    expect(status.summary).not.toMatch(/mock/i);
+  });
+
+  it('reports ollama as ready with or without a key, since it needs none', () => {
+    for (const hasApiKey of [true, false]) {
+      const status = describeChatProviderStatus({ provider: 'ollama', hasApiKey });
+      expect(status.availability).toBe('ready');
+      expect(status.summary).not.toMatch(/mock/i);
+    }
+  });
+
+  it('describes ollama as local in its own status text', () => {
+    const status = describeChatProviderStatus({ provider: 'ollama', hasApiKey: false });
+    expect(status.summary).toMatch(/local/i);
+  });
+
+  it('still routes only `none` to the mock provider', () => {
+    const mockBacked = MODEL_PROVIDERS.filter((id) =>
+      /mock/i.test(describeChatProviderStatus({ provider: id, hasApiKey: false }).summary),
+    );
+    expect(mockBacked).toEqual(['none']);
   });
 
   it('reports openai-compatible without a stored key as missing-api-key', () => {

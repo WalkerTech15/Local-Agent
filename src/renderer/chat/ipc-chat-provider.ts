@@ -1,6 +1,6 @@
 /**
- * Renderer-side `ChatProvider` backed by the real, network-capable adapter
- * that lives in the main process (Phase 2, Milestone 3).
+ * Renderer-side `ChatProvider` backed by whichever real, network-capable
+ * adapter the main process resolves (Phase 2, Milestones 3-4).
  *
  * This is the one file under `src/renderer/chat` permitted to reference
  * `window.localAgent` — `tests/unit/shared/chat-boundary-scan.test.ts`
@@ -9,12 +9,16 @@
  * network, no secret.
  *
  * No network call, no secret, and no privileged API is reachable from this
- * file directly — it only ever calls the two narrow, typed,
+ * file directly — it only ever calls the three narrow, typed,
  * schema-validated functions the preload bridge exposes (`chat.send`,
- * `chat.cancel`). The actual HTTP request, the API key, and the provider
- * selection all live in the main process; see
- * `src/main/chat-provider-registry.ts` and
- * `src/main/openai-compatible-provider.ts`.
+ * `chat.cancel`, `chat.onChunk`). The actual HTTP request, the API key, and
+ * the provider selection all live in the main process; see
+ * `src/main/chat-provider-registry.ts` and the adapters it resolves.
+ *
+ * Streamed deltas are **previews, never results**: they are forwarded to
+ * `options.onChunk` for the caller to display, while the value this function
+ * resolves with — the only thing that becomes a conversation message — is
+ * still the whole, separately validated reply from `chat.send`.
  *
  * Never trusts text that crossed the IPC boundary: on failure, only the
  * bounded `errorCode` enum from `chatSendResponseSchema` is read. The
@@ -33,8 +37,16 @@ import {
   type ChatProviderResult,
 } from '../../shared/chat';
 
-/** The identifier for this adapter, distinct from `MOCK_CHAT_PROVIDER_ID`. */
-export const IPC_CHAT_PROVIDER_ID = 'openai-compatible';
+/**
+ * The identifier for this adapter, distinct from `MOCK_CHAT_PROVIDER_ID`.
+ *
+ * Deliberately not the name of any one provider: since Milestone 4 this
+ * single adapter fronts whichever real provider the main process resolves
+ * (`openai-compatible`, `glm` or `ollama`), and the renderer is never told
+ * which — it does not need to know, and not knowing is what keeps provider
+ * selection a main-process decision.
+ */
+export const IPC_CHAT_PROVIDER_ID = 'ipc';
 
 const GENERIC_IPC_FAILURE_MESSAGE = 'The provider request did not succeed.';
 
@@ -69,6 +81,21 @@ export function createIpcChatProvider(): ChatProvider {
       };
       signal?.addEventListener('abort', onAbort, { once: true });
 
+      // Streaming previews (Phase 2, Milestone 4). Subscribed *before* the
+      // request is sent, so no early delta can arrive unobserved, and
+      // unsubscribed in the `finally` below, so one subscription never
+      // outlives the one call it belongs to. Deltas for another request, or
+      // any delta after this call was cancelled, are discarded here rather
+      // than trusted — the correlating `requestId` is checked on arrival.
+      const unsubscribe =
+        options?.onChunk === undefined
+          ? null
+          : window.localAgent.chat.onChunk((chunkEvent) => {
+              if (chunkEvent.requestId !== requestId) return;
+              if (signal?.aborted) return;
+              options.onChunk?.(chunkEvent.delta);
+            });
+
       try {
         const response = await window.localAgent.chat.send(requestId, [...request.messages]);
 
@@ -85,6 +112,7 @@ export function createIpcChatProvider(): ChatProvider {
           : 'PROVIDER_REQUEST_FAILED';
         throw new ChatProviderError(code, GENERIC_IPC_FAILURE_MESSAGE);
       } finally {
+        unsubscribe?.();
         signal?.removeEventListener('abort', onAbort);
       }
     },

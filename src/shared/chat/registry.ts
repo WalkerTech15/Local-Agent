@@ -1,34 +1,36 @@
 /**
- * Approved-provider registry (Phase 2, Milestones 2-3).
+ * Approved-provider registry (Phase 2, Milestones 2-4).
  *
  * Maps the four settings-level provider identifiers (`none`, `glm`,
  * `openai-compatible`, `ollama` — {@link MODEL_PROVIDERS}) to safe capability
  * metadata and to a `ChatProvider` adapter.
  *
  * **{@link createChatProviderForSelection} in this file always fails
- * closed, for all four identifiers, including `openai-compatible` — this
- * has not changed since Milestone 2 and never will while this function
- * lives under `src/shared`.** `src/shared` cannot perform network access —
+ * closed, for all four identifiers, real adapters or not — this has not
+ * changed since Milestone 2 and never will while this function lives under
+ * `src/shared`.** `src/shared` cannot perform network access —
  * `eslint.config.js`'s purity boundary blocks `fetch` and every other
  * network-capable global here, structurally, not by convention — so a
  * "registry" living in this directory can never itself place a real call.
- * Milestone 3's real, network-capable `openai-compatible` adapter lives in
- * `src/main/openai-compatible-provider.ts` and is resolved by
+ * The real, network-capable adapters all live in `src/main`
+ * (`openai-compatible-provider.ts`, `glm-provider.ts`, `ollama-provider.ts`,
+ * over the shared `chat-completions-transport.ts`) and are resolved by
  * `src/main/chat-provider-registry.ts`'s `resolveMainChatProvider`, reached
  * from the renderer only through the `chat:send` IPC channel
  * (`main/ipc.ts`) — never through this function. This module's
  * {@link ChatProviderCapabilities.implemented} flag reflects that a real
- * adapter exists *somewhere* in the codebase for `openai-compatible` now;
+ * adapter exists *somewhere* in the codebase for an identifier;
  * `createChatProviderForSelection` reflects what *this* file can do, which
- * is, and stays, nothing. See `docs/phase-2-provider-architecture.md` and
- * `docs/phase-2-real-provider-architecture.md`.
+ * is, and stays, nothing. See `docs/phase-2-provider-architecture.md`,
+ * `docs/phase-2-real-provider-architecture.md` and
+ * `docs/phase-2-provider-completion.md`.
  *
  * The deterministic mock (`./mock-provider.ts`) is a separate, always-
  * available adapter — for tests, and as what answers a chat message for
- * every identifier `implemented` is still `false` for.
- * `src/renderer/chat/useActiveChatProvider.ts` is the single, explicit place
- * that decides between the mock and the real IPC-backed adapter, based on
- * {@link ChatProviderCapabilities.implemented}.
+ * every identifier `implemented` is still `false` for (only `none`, as of
+ * Milestone 4). `src/renderer/chat/useActiveChatProvider.ts` is the single,
+ * explicit place that decides between the mock and the real IPC-backed
+ * adapter, based on {@link ChatProviderCapabilities.implemented}.
  *
  * No I/O, no Electron, no network — the same `src/shared` purity boundary as
  * every file in this directory.
@@ -62,12 +64,19 @@ const LABEL_BY_PROVIDER: Readonly<Record<ModelProvider, string>> = {
 
 /**
  * Identifiers with a real, network-capable adapter somewhere in the
- * codebase (always `src/main`, never here). The single place this milestone
+ * codebase (always `src/main`, never here). The single place a milestone
  * flips an identifier from mock-only to real — see
  * `src/renderer/chat/useActiveChatProvider.ts`, the one thing that reads
  * this through {@link getChatProviderCapabilities}.
+ *
+ * `openai-compatible` since Milestone 3; `glm` and `ollama` since Milestone
+ * 4. `none` is not an adapter and never becomes one.
  */
-const IMPLEMENTED_PROVIDERS: ReadonlySet<ModelProvider> = new Set(['openai-compatible']);
+const IMPLEMENTED_PROVIDERS: ReadonlySet<ModelProvider> = new Set([
+  'openai-compatible',
+  'glm',
+  'ollama',
+]);
 
 /**
  * Safe capability metadata for an approved provider identifier.
@@ -168,12 +177,14 @@ export function describeChatProviderStatus(input: ChatProviderStatusInput): Chat
   };
 }
 
+const REACHED_THROUGH_IPC_MESSAGE =
+  'This function never reaches the network; use chat:send for the real adapter.';
+
 const UNAVAILABLE_MESSAGE_BY_PROVIDER: Readonly<Record<ModelProvider, string>> = {
   none: 'No provider is configured. Choose one in provider settings.',
-  glm: 'GLM is configured but not yet connected in this version.',
-  'openai-compatible':
-    'This function never reaches the network; use chat:send for the real OpenAI-compatible adapter.',
-  ollama: 'Ollama is configured but not yet connected in this version.',
+  glm: REACHED_THROUGH_IPC_MESSAGE,
+  'openai-compatible': REACHED_THROUGH_IPC_MESSAGE,
+  ollama: REACHED_THROUGH_IPC_MESSAGE,
 };
 
 /**

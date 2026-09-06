@@ -59,11 +59,13 @@ export type {
 export {
   chatCancelRequestSchema,
   chatCancelResponseSchema,
+  chatChunkEventSchema,
   chatSendRequestSchema,
   chatSendResponseSchema,
   healthCheckRequestSchema,
   healthCheckResponseSchema,
   IPC_CHAT_CANCEL_CHANNEL,
+  IPC_CHAT_CHUNK_CHANNEL,
   IPC_CHAT_SEND_CHANNEL,
   IPC_HEALTH_CHANNEL,
   IPC_SECRETS_CLEAR_CHANNEL,
@@ -85,6 +87,7 @@ export {
 } from './ipc.schema';
 export type {
   ChatCancelResponse,
+  ChatChunkEvent,
   ChatSendRequestInput,
   ChatSendResponse,
   HealthCheckResponse,
@@ -103,6 +106,7 @@ export {
   chatMessageSchema,
   chatProviderRequestSchema,
   chatProviderResultSchema,
+  chatStreamDeltaSchema,
   createChatMessage,
 } from './chat.schema';
 export type {

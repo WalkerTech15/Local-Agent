@@ -16,11 +16,16 @@ import type { IpcHandlerRuntime } from '../../../src/main/ipc';
 import type { UserDataPaths } from '../../../src/main/paths';
 import { hasStoredSecret, writeSecret } from '../../../src/main/secrets';
 import { loadSettings, writeSettings } from '../../../src/main/settings';
-import { AUDIT_LOG_FILE_EXTENSION, AUDIT_LOG_FILE_PREFIX } from '../../../src/shared/constants';
+import {
+  AUDIT_LOG_FILE_EXTENSION,
+  AUDIT_LOG_FILE_PREFIX,
+  CHAT_STREAM_MAX_DELTA_LENGTH,
+} from '../../../src/shared/constants';
 import {
   createChatMessage,
   createDefaultSettings,
   IPC_CHAT_CANCEL_CHANNEL,
+  IPC_CHAT_CHUNK_CHANNEL,
   IPC_CHAT_SEND_CHANNEL,
   IPC_SECRETS_CLEAR_CHANNEL,
   IPC_SECRETS_STATUS_CHANNEL,
@@ -39,9 +44,19 @@ import type { ConfirmationResult } from '../../../src/shared/types';
 const NOW = '2026-08-07T00:00:00.000Z';
 const PLAINTEXT_KEY = 'sk-super-secret-onboarding-key';
 
+/** One main → renderer event the fake `WebContents` was asked to send. */
+interface SentEvent {
+  readonly channel: string;
+  readonly payload: unknown;
+}
+
 function createFakeIpcMain(): {
   ipcMain: IpcMain;
   invoke: (channel: string, ...args: unknown[]) => Promise<unknown>;
+  /** Everything pushed to the invoking renderer, in order. */
+  sentEvents: SentEvent[];
+  /** Simulates the window closing mid-request. */
+  destroySender: () => void;
 } {
   const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
   const ipcMain = {
@@ -50,8 +65,26 @@ function createFakeIpcMain(): {
     },
   } as unknown as IpcMain;
 
+  // Stands in for the `IpcMainInvokeEvent.sender` `WebContents` that real
+  // Electron hands a handler: the only way a handler can push an event back
+  // to the renderer that invoked it.
+  const sentEvents: SentEvent[] = [];
+  let senderDestroyed = false;
+  const event = {
+    sender: {
+      isDestroyed: () => senderDestroyed,
+      send: (channel: string, payload: unknown) => {
+        sentEvents.push({ channel, payload });
+      },
+    },
+  };
+
   return {
     ipcMain,
+    sentEvents,
+    destroySender: () => {
+      senderDestroyed = true;
+    },
     invoke: (channel: string, ...args: unknown[]) => {
       const handler = handlers.get(channel);
       if (!handler) {
@@ -62,7 +95,7 @@ function createFakeIpcMain(): {
       // promise) still rejects `ipcRenderer.invoke`'s promise, exactly as one
       // that returns a rejected promise does.
       try {
-        return Promise.resolve(handler({}, ...args));
+        return Promise.resolve(handler(event, ...args));
       } catch (error) {
         return Promise.reject(error instanceof Error ? error : new Error(String(error)));
       }
@@ -120,6 +153,13 @@ function setUp(overrides: Partial<IpcHandlerRuntime> = {}) {
   const { ipcMain, invoke } = createFakeIpcMain();
   registerIpcHandlers(ipcMain, buildRuntime(overrides));
   return invoke;
+}
+
+/** Like {@link setUp}, but also exposes what was pushed back to the renderer. */
+function setUpWithEvents(overrides: Partial<IpcHandlerRuntime> = {}) {
+  const fake = createFakeIpcMain();
+  registerIpcHandlers(fake.ipcMain, buildRuntime(overrides));
+  return fake;
 }
 
 async function readAuditLines(): Promise<Record<string, unknown>[]> {
@@ -714,6 +754,127 @@ describe('chat:send — openai-compatible, fully configured', () => {
     expect(response.outcome).toBe('failure');
     expect(response.errorCode).toBe('PROVIDER_INVALID_CONFIGURATION');
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('chat:send — streaming previews (chat:chunk)', () => {
+  function sseResponse(...contents: string[]): Response {
+    const body =
+      contents
+        .map((content) => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`)
+        .join('') + 'data: [DONE]\n\n';
+    return new Response(body, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    });
+  }
+
+  it('pushes one chat:chunk event per streamed fragment, correlated by requestId', async () => {
+    await configureOpenAiCompatible();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse('Hel', 'lo')));
+
+    const { invoke, sentEvents } = setUpWithEvents();
+    const requestId = randomUUID();
+    const response = (await invoke(IPC_CHAT_SEND_CHANNEL, {
+      requestId,
+      messages: [userMessage('hi')],
+    })) as ChatSendResponse;
+
+    expect(response.outcome).toBe('success');
+    expect(response.content).toBe('Hello');
+    expect(sentEvents).toEqual([
+      { channel: IPC_CHAT_CHUNK_CHANNEL, payload: { requestId, delta: 'Hel' } },
+      { channel: IPC_CHAT_CHUNK_CHANNEL, payload: { requestId, delta: 'lo' } },
+    ]);
+  });
+
+  it('sends no chunk event for a non-streamed response', async () => {
+    await configureOpenAiCompatible();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse({ choices: [{ message: { content: 'whole' } }] })),
+    );
+
+    const { invoke, sentEvents } = setUpWithEvents();
+    await invoke(IPC_CHAT_SEND_CHANNEL, { requestId: randomUUID(), messages: [userMessage('hi')] });
+
+    expect(sentEvents).toEqual([]);
+  });
+
+  it('sends no chunk event when the action is denied by the emergency stop', async () => {
+    await configureOpenAiCompatible();
+    await engageEmergencyStop(paths.emergencyStateFile, NOW);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse('never')));
+
+    const { invoke, sentEvents } = setUpWithEvents();
+    const response = (await invoke(IPC_CHAT_SEND_CHANNEL, {
+      requestId: randomUUID(),
+      messages: [userMessage('hi')],
+    })) as ChatSendResponse;
+
+    expect(response.outcome).toBe('denied');
+    expect(sentEvents).toEqual([]);
+  });
+
+  it('splits an oversized fragment across several bounded events rather than dropping it', async () => {
+    await configureOpenAiCompatible();
+    const long = 'x'.repeat(CHAT_STREAM_MAX_DELTA_LENGTH + 500);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse(long)));
+
+    const { invoke, sentEvents } = setUpWithEvents();
+    await invoke(IPC_CHAT_SEND_CHANNEL, { requestId: randomUUID(), messages: [userMessage('hi')] });
+
+    expect(sentEvents.length).toBe(2);
+    for (const event of sentEvents) {
+      const { delta } = event.payload as { delta: string };
+      expect(delta.length).toBeLessThanOrEqual(CHAT_STREAM_MAX_DELTA_LENGTH);
+    }
+    const rejoined = sentEvents.map((event) => (event.payload as { delta: string }).delta).join('');
+    expect(rejoined).toBe(long);
+  });
+
+  it('never sends a chunk event to a destroyed renderer', async () => {
+    await configureOpenAiCompatible();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse('gone')));
+
+    const fake = setUpWithEvents();
+    fake.destroySender();
+    const response = (await fake.invoke(IPC_CHAT_SEND_CHANNEL, {
+      requestId: randomUUID(),
+      messages: [userMessage('hi')],
+    })) as ChatSendResponse;
+
+    // The request itself still completes; only the preview is skipped.
+    expect(response.outcome).toBe('success');
+    expect(fake.sentEvents).toEqual([]);
+  });
+
+  it('never includes the API key or the conversation in a chunk event', async () => {
+    await configureOpenAiCompatible();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse('safe reply')));
+
+    const { invoke, sentEvents } = setUpWithEvents();
+    await invoke(IPC_CHAT_SEND_CHANNEL, {
+      requestId: randomUUID(),
+      messages: [userMessage('a private question nobody should echo')],
+    });
+
+    const serialized = JSON.stringify(sentEvents);
+    expect(serialized).not.toContain(PLAINTEXT_KEY);
+    expect(serialized).not.toContain('a private question nobody should echo');
+  });
+
+  it('records nothing about streamed content in the audit trail', async () => {
+    await configureOpenAiCompatible();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse('audited nowhere')));
+
+    const { invoke } = setUpWithEvents();
+    await invoke(IPC_CHAT_SEND_CHANNEL, { requestId: randomUUID(), messages: [userMessage('hi')] });
+
+    const lines = await readAuditLines();
+    const record = lines.find((line) => line.actionType === 'chat.send');
+    expect(record?.parameters).toEqual({ provider: 'openai-compatible', messageCount: 1 });
+    expect(JSON.stringify(lines)).not.toContain('audited nowhere');
   });
 });
 

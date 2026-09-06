@@ -29,7 +29,10 @@ import {
   createChatMessage,
   type ChatMessage,
 } from '../../shared/schemas';
-import { CHAT_CONVERSATION_MAX_MESSAGES } from '../../shared/constants';
+import {
+  CHAT_CONVERSATION_MAX_MESSAGES,
+  CHAT_MESSAGE_CONTENT_MAX_LENGTH,
+} from '../../shared/constants';
 import type { ChatProvider } from '../../shared/chat';
 
 export type ConversationStatus = 'idle' | 'awaiting-response';
@@ -42,6 +45,24 @@ export interface ConversationState {
   readonly messages: readonly ChatMessage[];
   readonly status: ConversationStatus;
   readonly error: ConversationError | null;
+  /**
+   * The assistant reply as it streams in, or `null` when nothing is
+   * streaming (Phase 2, Milestone 4).
+   *
+   * A **preview**, deliberately kept outside `messages` — exactly as
+   * `status` and `error` are, and for the same reason: the message list
+   * stays append-only and only ever holds fully validated messages. This
+   * value is replaced wholesale by the real assistant message on success and
+   * discarded on failure, cancellation or a provider switch; it is never
+   * itself committed to the conversation, never persisted, and never treated
+   * as authorization for anything.
+   *
+   * Bounded to {@link CHAT_MESSAGE_CONTENT_MAX_LENGTH}: a provider streaming
+   * more than a message may contain cannot grow renderer memory without
+   * limit here, independently of the identical cap the main process already
+   * applies while reading the stream.
+   */
+  readonly streamingContent: string | null;
 }
 
 export type ConversationListener = (state: ConversationState) => void;
@@ -55,7 +76,7 @@ export interface ConversationControllerDeps {
 }
 
 function initialState(): ConversationState {
-  return { messages: [], status: 'idle', error: null };
+  return { messages: [], status: 'idle', error: null, streamingContent: null };
 }
 
 const GENERIC_SEND_ERROR =
@@ -133,8 +154,11 @@ export class ConversationController {
     if (provider === this.provider) return;
     this.provider = provider;
     this.activeAbortController?.abort();
-    if (this.state.status === 'awaiting-response') {
-      this.setState({ ...this.state, status: 'idle' });
+    if (this.state.status === 'awaiting-response' || this.state.streamingContent !== null) {
+      // Any streaming preview belonged to the superseded request; it is
+      // discarded with it rather than left on screen under a provider that
+      // never produced it.
+      this.setState({ ...this.state, status: 'idle', streamingContent: null });
     }
   }
 
@@ -186,7 +210,12 @@ export class ConversationController {
     }
 
     const nextMessages = [...this.state.messages, userMessage];
-    this.setState({ messages: nextMessages, status: 'awaiting-response', error: null });
+    this.setState({
+      messages: nextMessages,
+      status: 'awaiting-response',
+      error: null,
+      streamingContent: null,
+    });
     await this.requestAssistantReply(nextMessages);
   }
 
@@ -203,7 +232,7 @@ export class ConversationController {
     if (this.state.messages.length === 0) return;
 
     const messages = this.state.messages;
-    this.setState({ messages, status: 'awaiting-response', error: null });
+    this.setState({ messages, status: 'awaiting-response', error: null, streamingContent: null });
     await this.requestAssistantReply(messages);
   }
 
@@ -211,6 +240,11 @@ export class ConversationController {
     this.activeAbortController?.abort();
     const controller = new AbortController();
     this.activeAbortController = controller;
+
+    // Accumulated locally rather than read back out of `state`, so a
+    // superseded request that is still emitting deltas can never append to
+    // the preview of the request that replaced it.
+    let streamed = '';
 
     try {
       // Defence in depth: `messages` is already every element individually
@@ -221,13 +255,27 @@ export class ConversationController {
       // provider, so a future bug in either caller does not silently send an
       // unbounded request. Never expected to reject in normal operation.
       const request = chatProviderRequestSchema.parse({ messages });
-      const rawResult = await this.provider.send(request, { signal: controller.signal });
+      const rawResult = await this.provider.send(request, {
+        signal: controller.signal,
+        onChunk: (delta) => {
+          // A delta from an aborted or superseded request is dropped, and
+          // the preview never grows past what a message may hold.
+          if (controller.signal.aborted) return;
+          if (this.activeAbortController !== controller) return;
+          if (streamed.length >= CHAT_MESSAGE_CONTENT_MAX_LENGTH) return;
+
+          streamed = (streamed + delta).slice(0, CHAT_MESSAGE_CONTENT_MAX_LENGTH);
+          this.setState({ ...this.state, streamingContent: streamed });
+        },
+      });
       if (controller.signal.aborted) return;
 
       // The provider's raw result is untrusted the moment it returns —
-      // whether that is the deterministic mock today or a real adapter in a
-      // later phase — so it is validated here, before any of it is trusted
-      // enough to become part of the conversation.
+      // whether that is the deterministic mock, a real adapter, or the
+      // accumulation of a stream — so it is validated here, before any of it
+      // is trusted enough to become part of the conversation. The streamed
+      // preview is discarded at this point in every case: what is committed
+      // is this validated value, never the sum of the deltas.
       const result = chatProviderResultSchema.parse(rawResult);
 
       const assistantMessage = createChatMessage({
@@ -236,13 +284,19 @@ export class ConversationController {
         content: result.content,
         createdAt: this.now(),
       });
-      this.setState({ messages: [...messages, assistantMessage], status: 'idle', error: null });
+      this.setState({
+        messages: [...messages, assistantMessage],
+        status: 'idle',
+        error: null,
+        streamingContent: null,
+      });
     } catch (error) {
       if (controller.signal.aborted) return;
       this.setState({
         messages,
         status: 'idle',
         error: { message: describeProviderFailure(error) },
+        streamingContent: null,
       });
     }
   }

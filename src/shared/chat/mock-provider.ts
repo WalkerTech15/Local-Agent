@@ -110,10 +110,29 @@ async function delay(delayMs: number, signal: AbortSignal | undefined): Promise<
 }
 
 /**
+ * Longest fragment the mock emits through `onChunk`. Small enough that a
+ * normal reply arrives as several deltas, so the streaming path is genuinely
+ * exercised rather than delivered in one piece.
+ */
+const MOCK_STREAM_CHUNK_LENGTH = 24;
+
+function splitIntoChunks(content: string, size: number): string[] {
+  const chunks: string[] = [];
+  for (let index = 0; index < content.length; index += size) {
+    chunks.push(content.slice(index, index + size));
+  }
+  return chunks;
+}
+
+/**
  * Creates the deterministic mock provider.
  *
- * `id` is {@link MOCK_CHAT_PROVIDER_ID} — the only provider identifier in
- * use anywhere in this codebase today.
+ * `id` is {@link MOCK_CHAT_PROVIDER_ID}. Streaming (Phase 2, Milestone 4) is
+ * offered only when the caller passes `onChunk`: the reply is then delivered
+ * as several fragments spread across the *same* simulated delay — not an
+ * additional one — so total timing, and the final content, are byte-for-byte
+ * what they were without streaming. A caller that passes no `onChunk`
+ * observes exactly the Milestone 1 behaviour.
  */
 export function createMockChatProvider(options: CreateMockChatProviderOptions = {}): ChatProvider {
   const delayMs = options.delayMs ?? MOCK_CHAT_PROVIDER_DEFAULT_DELAY_MS;
@@ -124,17 +143,37 @@ export function createMockChatProvider(options: CreateMockChatProviderOptions = 
       request: ChatProviderRequest,
       requestOptions?: ChatProviderRequestOptions,
     ): Promise<ChatProviderResult> {
-      await delay(delayMs, requestOptions?.signal);
-
+      const signal = requestOptions?.signal;
+      const onChunk = requestOptions?.onChunk;
       const latest = lastUserContent(request);
-      if (latest !== null && latest.trim() === MOCK_CHAT_PROVIDER_FAILURE_TRIGGER) {
-        throw new ChatProviderError(
-          'PROVIDER_REQUEST_FAILED',
-          'The mock provider was asked to simulate a failure.',
-        );
+      const shouldFail = latest !== null && latest.trim() === MOCK_CHAT_PROVIDER_FAILURE_TRIGGER;
+
+      if (onChunk === undefined || shouldFail) {
+        // The failure trigger deliberately streams nothing: a request that
+        // fails must not leave a partial preview behind, exactly as a real
+        // adapter's failure does not.
+        await delay(delayMs, signal);
+        if (shouldFail) {
+          throw new ChatProviderError(
+            'PROVIDER_REQUEST_FAILED',
+            'The mock provider was asked to simulate a failure.',
+          );
+        }
+        return { content: buildReplyContent(request) };
       }
 
-      return { content: buildReplyContent(request) };
+      const content = buildReplyContent(request);
+      const chunks = splitIntoChunks(content, MOCK_STREAM_CHUNK_LENGTH);
+      const perChunkDelayMs = chunks.length === 0 ? delayMs : delayMs / chunks.length;
+
+      for (const chunk of chunks) {
+        // Sequential by nature: a stream is ordered, and each fragment waits
+        // its share of the same total delay.
+        await delay(perChunkDelayMs, signal);
+        onChunk(chunk);
+      }
+
+      return { content };
     },
   };
 }

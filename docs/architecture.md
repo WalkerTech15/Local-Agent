@@ -59,12 +59,16 @@ The renderer cannot perform a privileged action. Not "should not" — it has no
 mechanism to. With `sandbox: true`, `contextIsolation: true` and
 `nodeIntegration: false`, a fully compromised renderer gains only the narrow
 preload API: `health`, `settings.get`/`settings.update`,
-`secrets.status`/`secrets.write`/`secrets.clear` as of Milestone 7, and
-`chat.send`/`chat.cancel` as of Phase 2 Milestone 3 — every one of them
-except `chat.cancel` policy-gated and audited before it can perform a
-privileged action (`chat.cancel` has no privileged side effect of its own;
-see `docs/phase-2-real-provider-architecture.md`), and none of them able to
-return a plaintext key.
+`secrets.status`/`secrets.write`/`secrets.clear` as of Milestone 7,
+`chat.send`/`chat.cancel` as of Phase 2 Milestone 3, and `chat.onChunk` as of
+Phase 2 Milestone 4 — every one of them except the last two policy-gated and
+audited before it can perform a privileged action, and none of them able to
+return a plaintext key. The two exceptions carry no authority of their own:
+`chat.cancel` can only ask an already-authorized call to stop early, and
+`chat.onChunk` only subscribes to bounded, validated preview text for a
+`chat.send` the renderer itself initiated — see
+`docs/phase-2-real-provider-architecture.md` and
+`docs/phase-2-provider-completion.md`.
 
 ## Modules
 
@@ -202,13 +206,13 @@ cannot be turned into an unsafe one in memory after loading.
 
 ## Desktop shell (implemented)
 
-| File                               | Describes                                                                                                                                                                   |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/main/index.ts`                | Window creation, CSP, permission-request denial, navigation/window-open/webview hardening, lifecycle, IPC-runtime composition                                               |
-| `src/main/ipc.ts`                  | `ipcMain` handler registration for all seven channels; validates request and response against the shared schema for each                                                    |
-| `src/preload/index.ts`             | The single `contextBridge` API: `localAgent.health()`, `localAgent.settings.{get,update}()`, `localAgent.secrets.{status,write,clear}()`, `localAgent.chat.{send,cancel}()` |
-| `src/renderer/`                    | React shell: `App.tsx` gates on `onboardingCompleted`, `Onboarding.tsx` is the first-run form                                                                               |
-| `src/shared/schemas/ipc.schema.ts` | Every `IPC_*_CHANNEL` constant and its request/response schema, shared by `main` and `preload`                                                                              |
+| File                               | Describes                                                                                                                                                                           |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/main/index.ts`                | Window creation, CSP, permission-request denial, navigation/window-open/webview hardening, lifecycle, IPC-runtime composition                                                       |
+| `src/main/ipc.ts`                  | `ipcMain` handler registration for all eight channels; validates request and response against the shared schema for each, in both directions                                        |
+| `src/preload/index.ts`             | The single `contextBridge` API: `localAgent.health()`, `localAgent.settings.{get,update}()`, `localAgent.secrets.{status,write,clear}()`, `localAgent.chat.{send,cancel,onChunk}()` |
+| `src/renderer/`                    | React shell: `App.tsx` gates on `onboardingCompleted`, `Onboarding.tsx` is the first-run form                                                                                       |
+| `src/shared/schemas/ipc.schema.ts` | Every `IPC_*_CHANNEL` constant and its request/response schema, shared by `main` and `preload`                                                                                      |
 
 Build layout, and why it is not uniform across the three layers:
 
@@ -469,9 +473,14 @@ authorizing verdict, so `main/ipc.ts`'s six action-backed handlers —
 `settings:get`, `settings:update`, `secrets:status`, `secrets:write`,
 `secrets:clear`, `chat:send` — each build an `ActionProposal` and hand it
 to `main/action-runtime.ts`'s `runAction`, which calls this unmodified
-`handleActionProposal`. (`chat:cancel` is the seventh registered channel and
-the one exception: it has no privileged side effect of its own to route
-through this engine — see `docs/phase-2-real-provider-architecture.md`.)
+`handleActionProposal`. (Two registered channels are outside this path and
+neither carries authority: `chat:cancel` has no privileged side effect of
+its own — see `docs/phase-2-real-provider-architecture.md` — and
+`chat:chunk`, added in Phase 2 Milestone 4, is an outbound streaming event
+emitted from inside an already-authorized `chat:send`, never a request the
+renderer can make — see `docs/phase-2-provider-completion.md`. Milestone 4
+adds no new action type at all: every provider call, for every provider,
+is still `chat.send`.)
 There is no code path in `main/ipc.ts` that calls
 `execute`, `main/secrets.ts`, or `writeSettings` directly. `main/index.ts`
 still calls `loadPermissionPolicy` read-only at startup to prove the real
@@ -582,16 +591,16 @@ documented before persistence existed.
 
 ## Secrets and onboarding (implemented)
 
-| File                                   | Describes                                                                                                                                                                             |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/main/secrets.ts`                  | `loadSecretStoreState`, `hasStoredSecret`, `writeSecret`, `clearSecret`, `readSecret` (no IPC channel returns it; called by `chat-provider-registry.ts` since Phase 2 M3)             |
-| `src/main/settings-service.ts`         | `readReconciledSettings`, `writeOnboardingSettings`, `refreshHasApiKeyAfterSecretChange`                                                                                              |
-| `src/main/action-runtime.ts`           | `runAction` — loads policy and emergency state fresh, then calls `handleActionProposal`                                                                                               |
-| `src/main/confirm.ts`                  | `showNativeConfirmation` — the real `dialog.showMessageBox`                                                                                                                           |
-| `src/main/ipc.ts`                      | The seven channel handlers, each: validate → build proposal → `runAction` → validate response (`chat:cancel` is the one exception — see `docs/phase-2-real-provider-architecture.md`) |
-| `src/renderer/Onboarding.tsx`          | First-run form: assistant name, user name, language, provider, model, base URL, optional API key                                                                                      |
-| `src/renderer/App.tsx`                 | Calls `settings:get` on mount; renders `Onboarding` while `onboardingCompleted` is `false`                                                                                            |
-| `src/shared/schemas/secrets.schema.ts` | `secretStoreFileSchema` — the on-disk shape of `secrets.enc`, never a plaintext field                                                                                                 |
+| File                                   | Describes                                                                                                                                                                                                                                                                      |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/main/secrets.ts`                  | `loadSecretStoreState`, `hasStoredSecret`, `writeSecret`, `clearSecret`, `readSecret` (no IPC channel returns it; called by `chat-provider-registry.ts` since Phase 2 M3)                                                                                                      |
+| `src/main/settings-service.ts`         | `readReconciledSettings`, `writeOnboardingSettings`, `refreshHasApiKeyAfterSecretChange`                                                                                                                                                                                       |
+| `src/main/action-runtime.ts`           | `runAction` — loads policy and emergency state fresh, then calls `handleActionProposal`                                                                                                                                                                                        |
+| `src/main/confirm.ts`                  | `showNativeConfirmation` — the real `dialog.showMessageBox`                                                                                                                                                                                                                    |
+| `src/main/ipc.ts`                      | The eight registered channels. Six are action-backed: validate → build proposal → `runAction` → validate response. `chat:cancel` has no side effect to gate, and `chat:chunk` is an outbound streaming event rather than a handler — see `docs/phase-2-provider-completion.md` |
+| `src/renderer/Onboarding.tsx`          | First-run form: assistant name, user name, language, provider, model, base URL, optional API key                                                                                                                                                                               |
+| `src/renderer/App.tsx`                 | Calls `settings:get` on mount; renders `Onboarding` while `onboardingCompleted` is `false`                                                                                                                                                                                     |
+| `src/shared/schemas/secrets.schema.ts` | `secretStoreFileSchema` — the on-disk shape of `secrets.enc`, never a plaintext field                                                                                                                                                                                          |
 
 **`safeStorage` is synchronous, verified against the installed
 `electron@44.1.1` typings rather than assumed from memory or older

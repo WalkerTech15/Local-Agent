@@ -9,6 +9,7 @@
  */
 
 import type {
+  ChatChunkEvent,
   ChatMessage,
   ChatSendResponse,
   HealthCheckResponse,
@@ -38,6 +39,8 @@ declare global {
           messages: readonly ChatMessage[],
         ) => Promise<ChatSendResponse>;
         readonly cancel: (requestId: string) => Promise<void>;
+        /** Subscribe to streaming previews; returns an unsubscribe function. */
+        readonly onChunk: (listener: (event: ChatChunkEvent) => void) => () => void;
       };
     };
   }

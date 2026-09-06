@@ -32,3 +32,5 @@ export type {
 } from './registry';
 
 export { withProviderTimeout } from './timeout';
+
+export { isLocalHttpEndpoint } from './local-endpoint';

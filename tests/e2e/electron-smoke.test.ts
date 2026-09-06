@@ -36,13 +36,15 @@ interface ExposedLocalAgentBridge {
  * Milestone 2 version of this test asserted `['health']` exactly. `settings`
  * and `secrets` were added in Milestone 7 for onboarding, provider settings,
  * and the encrypted secret store; `chat` was added in Phase 2 Milestone 3
- * for the one network-capable action in this codebase. Every one stays a
- * narrow, explicitly named sub-object, never a generic invoke surface.
+ * for the one network-capable action in this codebase, and gained
+ * `onChunk` — a subscription to one fixed, one-way streaming-preview
+ * channel — in Milestone 4. Every one stays a narrow, explicitly named
+ * sub-object, never a generic invoke or listen surface.
  */
 const EXPECTED_BRIDGE_KEYS = ['chat', 'health', 'secrets', 'settings'] as const;
 const EXPECTED_SETTINGS_KEYS = ['get', 'update'] as const;
 const EXPECTED_SECRETS_KEYS = ['clear', 'status', 'write'] as const;
-const EXPECTED_CHAT_KEYS = ['cancel', 'send'] as const;
+const EXPECTED_CHAT_KEYS = ['cancel', 'onChunk', 'send'] as const;
 
 function launchEnv(): Record<string, string> {
   const env: Record<string, string> = {};
@@ -162,6 +164,28 @@ describe('Electron desktop shell — security and health-check smoke test', () =
       );
     });
     expect(hasGenericInvoke).toBe(false);
+  });
+
+  it('has no generic listen-to-any-channel function either, despite exposing one event subscription', async () => {
+    // `chat.onChunk` subscribes to one fixed channel chosen in the preload,
+    // not to a caller-supplied one. Nothing named like a generic emitter API
+    // may appear anywhere on the bridge.
+    const hasGenericListener = await page.evaluate(() => {
+      const w = window as unknown as Record<string, unknown>;
+      const generic = ['on', 'once', 'addListener', 'removeListener', 'off', 'emit'];
+      const localAgent = w.localAgent as
+        | (Record<string, unknown> & {
+            settings?: Record<string, unknown>;
+            secrets?: Record<string, unknown>;
+            chat?: Record<string, unknown>;
+          })
+        | undefined;
+      const surfaces = [localAgent, localAgent?.settings, localAgent?.secrets, localAgent?.chat];
+      return surfaces.some(
+        (surface) => surface !== undefined && generic.some((key) => key in surface),
+      );
+    });
+    expect(hasGenericListener).toBe(false);
   });
 
   // Deliberately no test here calls `settings.*`, `secrets.*`, or `chat.*`

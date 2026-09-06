@@ -19,9 +19,13 @@
 > first action type with real network egress, `chat.send` — routed through
 > the same unmodified permission engine, executor and pipeline once again,
 > and the first caller of `main/secrets.ts`'s `readSecret` outside that
-> module's own tests. Controls below are marked **[implemented]**,
-> **[enforced by schema]** or **[planned, milestone N]**. Nothing here is
-> claimed as working before it exists.
+> module's own tests. Phase 2, Milestone 4 completes the provider layer (GLM
+> and Ollama, the latter refused unless its endpoint is a local address) and
+> adds bounded streaming, introducing `chat:chunk` — the first and only
+> main → renderer _push_ channel — while adding **no** new action type, no
+> new permission decision and no new secret-store access. Controls below are
+> marked **[implemented]**, **[enforced by schema]** or **[planned, milestone
+> N]**. Nothing here is claimed as working before it exists.
 
 ---
 
@@ -64,10 +68,14 @@ asserted by an end-to-end Playwright test against the built application, not
 only declared in source.
 
 A compromised renderer therefore gains only the narrow preload API — as of
-Phase 2 Milestone 3, `health`, `settings.get`, `settings.update`,
-`secrets.status`, `secrets.write`, `secrets.clear`, `chat.send` and
-`chat.cancel`, and nothing else. Every one of those seven privileged
-functions except `chat.cancel` is gated and audited through
+Phase 2 Milestone 4, `health`, `settings.get`, `settings.update`,
+`secrets.status`, `secrets.write`, `secrets.clear`, `chat.send`,
+`chat.cancel` and `chat.onChunk`, and nothing else. `chat.onChunk` is a
+subscription to one fixed, one-way event channel, not a request: it can
+receive bounded, schema-validated preview text for a `chat.send` the
+renderer itself initiated, and can do nothing else. Every one of the
+remaining privileged functions except `chat.cancel` is gated and audited
+through
 `main/action-pipeline.ts`'s unmodified `handleActionProposal`
 (`main/ipc.ts` → `main/action-runtime.ts`'s `runAction` → `handleActionProposal`),
 and none of them can return a plaintext key. `chat.cancel` has no privileged
@@ -150,11 +158,14 @@ this is implemented.
 
 ### Network egress
 
-**[implemented, Phase 2 Milestone 3]** The only network-capable code in this
-codebase is `src/main/openai-compatible-provider.ts`, called only through
-`main/chat-provider-registry.ts`'s `resolveMainChatProvider`, called only
-from `chat.send`'s `perform` callback in `main/ipc.ts`. Three independent
-facts hold this to the main process alone:
+**[implemented, Phase 2 Milestones 3-4]** The only network-capable code in
+this codebase is `src/main/chat-completions-transport.ts` — the one HTTP
+exchange shared by all three real adapters
+(`openai-compatible-provider.ts`, `glm-provider.ts`, `ollama-provider.ts`) —
+called only through `main/chat-provider-registry.ts`'s
+`resolveMainChatProvider`, called only from `chat.send`'s `perform` callback
+in `main/ipc.ts`. Three independent facts hold this to the main process
+alone:
 
 - `src/shared`'s lint-enforced purity boundary (see _Shared-layer purity_
   below) blocks `fetch`/`XMLHttpRequest`/`WebSocket`/`EventSource` as
@@ -166,9 +177,32 @@ facts hold this to the main process alone:
   asserted by an end-to-end test.
 - `src/renderer/chat/ipc-chat-provider.ts` — the only renderer file that
   reaches the real adapter at all — calls only the narrow, typed
-  `chat.send`/`chat.cancel` preload functions, never a network API directly;
-  a source-scan test asserts no file under `src/renderer/chat` references a
-  network-capable global either.
+  `chat.send`/`chat.cancel`/`chat.onChunk` preload functions, never a network
+  API directly; a source-scan test asserts no file under `src/renderer/chat`
+  references a network-capable global either.
+
+**[implemented, Phase 2 Milestone 4]** The `ollama` provider is refused
+unless its endpoint is local. `src/shared/chat/local-endpoint.ts` classifies
+a configured `baseUrl` statically, without DNS — loopback, RFC 1918 private
+and link-local literals plus `localhost`/`*.localhost` are accepted, and
+every other host, **including a name that would resolve to a private
+address**, is refused. A refused endpoint fails closed with
+`PROVIDER_INVALID_CONFIGURATION` and never falls back to the local default,
+because sending the request somewhere the user did not configure would be a
+silent provider substitution. Ollama also reads no credential at all: its
+config type has no key field, and `resolveMainChatProvider` skips the secret
+read entirely for it, so a key stored for another provider cannot reach a
+local endpoint.
+
+**[implemented, Phase 2 Milestone 4]** Streaming adds no authority. A
+streamed fragment is a preview: it is bounded (bytes read, line length,
+delta size, accumulated length, whole-call duration), validated at every
+hop, correlated to the request that asked for it, delivered only to the
+window that made that request, and never committed to conversation state —
+the message that is committed remains the whole reply `chat.send` resolves
+with, validated as one document. Streamed text reaches no audit record, no
+action proposal, no executor, and no privileged API; it is rendered as a
+plain JSX text child, the same escaping every other message gets.
 
 `chat.send` is a genuine privileged action, not a bypass of the model above:
 it is gated by the same, unmodified `decidePermission` → `execute` →
@@ -624,6 +658,11 @@ exposes no way to address one. No generic pass-through channel exists.
 | Plaintext API key reaching the renderer through a real provider call                         | Addressed, Phase 2 M3 — stays inside `resolveMainChatProvider`/`openai-compatible-provider.ts`; never in `ActionProposal.parameters`, `chatSendResponseSchema`, an audit record, or a thrown error; proven by test |
 | A real provider call bypassing the permission engine or the emergency stop                   | Addressed, Phase 2 M3 — reached only through the unmodified `runAction`/`handleActionProposal`; denied while the emergency stop is engaged                                                                         |
 | Message content or a raw provider error leaking into the audit trail                         | Addressed, Phase 2 M3 — the `chat.send` proposal carries only `{provider, messageCount}`; every provider failure normalizes to one of five fixed codes first                                                       |
+| A "local" provider silently reaching a cloud service                                         | Addressed, Phase 2 M4 — an Ollama endpoint must be a loopback, private or link-local literal (or localhost); a name that merely looks local is refused, and a refused endpoint never falls back to the default     |
+| A credential stored for one provider being sent to another                                   | Addressed, Phase 2 M4 — the secret read is skipped entirely for providers outside PROVIDERS_REQUIRING_API_KEY, and the Ollama adapter has no config field that could carry a key                                   |
+| Unbounded memory or output from a hostile streaming endpoint                                 | Addressed, Phase 2 M4 — bytes read, line length, delta size and accumulated content are each capped independently, in the main process and again in the renderer                                                   |
+| Streamed model output treated as a message, or as authorization                              | Addressed, Phase 2 M4 — deltas are previews held outside the message list; the committed reply is the separately validated whole, and no path exists from either to the executor                                   |
+| The renderer subscribing to arbitrary IPC events through the new push channel                | Addressed, Phase 2 M4 — chat.onChunk fixes the channel in the preload, validates every payload, hands back only an unsubscribe function, and never exposes ipcRenderer or the raw event                            |
 | Supply-chain compromise via npm                                                              | Mitigated, not eliminated — see below                                                                                                                                                                              |
 
 ---
