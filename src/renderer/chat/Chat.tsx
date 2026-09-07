@@ -91,7 +91,21 @@ export function Chat({ assistantName, modelProvider }: ChatProps) {
         ) : (
           state.messages.map((message) => <MessageBubble key={message.id} message={message} />)
         )}
-        {state.status === 'awaiting-response' && (
+        {/*
+          The streaming preview (Phase 2, Milestone 4). Rendered exactly like
+          a message bubble and with exactly the same safety: `streamingContent`
+          is a plain JSX text child, which React escapes, so a streamed
+          fragment can no more inject markup than a completed reply can.
+          It is not a member of `state.messages` and never becomes one — the
+          validated reply replaces it wholesale when the request completes.
+        */}
+        {state.streamingContent !== null && (
+          <div className="chat-message chat-message--assistant chat-message--streaming">
+            <span className="chat-message__role">{ROLE_LABELS.assistant}</span>
+            <p className="chat-message__content">{state.streamingContent}</p>
+          </div>
+        )}
+        {state.status === 'awaiting-response' && state.streamingContent === null && (
           <p className="chat__loading" aria-live="polite">
             {assistantName} is thinking…
           </p>

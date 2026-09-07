@@ -171,6 +171,10 @@ main.app-ready {
   background: transparent;
   border: 1px dashed #2a3750;
 }
+/* A reply still streaming in: same bubble, marked as not yet final. */
+.chat-message--streaming {
+  border: 1px dashed #2a3750;
+}
 .chat-message__role {
   font-size: 0.7rem;
   letter-spacing: 0.08em;

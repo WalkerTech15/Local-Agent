@@ -3,8 +3,8 @@
 A local-first, permission-controlled desktop assistant for Windows. The
 assistant is named **JARVIS** by default; the product is **Local Agent**.
 
-> **Status: Phase 1 complete. Phase 2, Milestone 2 (provider-adapter
-> foundation) in progress.**
+> **Status: Phase 1 complete. Phase 2, Milestone 4 (provider completion and
+> streaming) in progress.**
 > Phase 1 delivered the hardened desktop shell, non-secret settings storage,
 > an audit-log foundation, the permission-policy runtime, persisted
 > emergency-stop state, first-run onboarding, an encrypted secret store, and
@@ -12,24 +12,36 @@ assistant is named **JARVIS** by default; the product is **Local Agent**.
 > chat message and conversation model, a provider-independent
 > `ChatProvider` interface, a deterministic mock provider, and a chat surface
 > in the renderer with empty, loading, error and retry states. Milestone 2
-> adds the **provider-adapter foundation** on top of that: bounded provider
+> added the **provider-adapter foundation** on top of that: bounded provider
 > request/response schemas, a normalized five-category error vocabulary, an
-> approved-provider registry that **fails closed for every one of the four
-> approved identifiers** (`none`, `glm`, `openai-compatible`, `ollama` —
-> none of them makes a network request), a composable timeout decorator, and
-> safe provider-status display. **No real model provider is called. No
-> network request is made anywhere in this milestone** — the whole provider
-> layer lives inside `src/shared`, where the same lint boundary that blocks
-> Electron and Node access also blocks `fetch`, `XMLHttpRequest`,
-> `WebSocket` and `EventSource` as globals. Chat still requires **no new IPC
-> channel**: it never calls `window.localAgent`, so nothing a chat message or
-> a provider response contains can reach a privileged API, a file, or the
-> permission engine. See
-> [docs/phase-2-chat-architecture.md](docs/phase-2-chat-architecture.md) and
-> [docs/phase-2-provider-architecture.md](docs/phase-2-provider-architecture.md)
-> for the full design and for what remains explicitly deferred (real
-> providers, tool/action execution from model output, memory, and everything
-> else Phase 2 has not reached yet).
+> approved-provider registry, a composable timeout decorator, and safe
+> provider-status display, with **no real model provider called and no
+> network request made anywhere in that milestone**. Milestone 3 adds the
+> **first real provider**: an OpenAI-compatible chat-completions adapter,
+> living entirely in the privileged main process, reached from the renderer
+> only through two new, narrow, schema-validated IPC channels (`chat.send`,
+> `chat.cancel`). Sending a message is now a genuine permission-controlled
+> action — `chat.send` passes through the same unmodified permission engine,
+> emergency-stop gate and audit writer every other action type does — and the
+> API key it uses is read from the existing encrypted secret store inside the
+> main process and never crosses into the renderer. Milestone 4 **completes
+> the provider layer and adds streaming**: `glm` and `ollama` join it over one
+> shared, audited HTTP transport, and assistant replies now arrive
+> incrementally, bounded at every hop, through a single one-way
+> `chat.onChunk` event. Ollama is **enforced local** — a configured endpoint
+> must be a loopback, private or link-local address, or the request is
+> refused rather than sent — and reads no credential at all. A streamed
+> fragment is a preview, never a message: the reply committed to the
+> conversation is still the whole, separately validated one. `anthropic`,
+> `openai`, `claude` and `gemini` remain absent. See
+> [docs/phase-2-chat-architecture.md](docs/phase-2-chat-architecture.md),
+> [docs/phase-2-provider-architecture.md](docs/phase-2-provider-architecture.md),
+> [docs/phase-2-real-provider-architecture.md](docs/phase-2-real-provider-architecture.md)
+> and
+> [docs/phase-2-provider-completion.md](docs/phase-2-provider-completion.md)
+> for the full design and for what remains explicitly deferred (tool/action
+> execution from model output, memory, and everything else Phase 2 has not
+> reached yet).
 
 All rights reserved. No licence has been granted for this project.
 
@@ -70,8 +82,12 @@ postponed.
 - The Electron main process is the only privileged boundary.
 - The preload bridge exposes only narrow, explicitly named, typed functions —
   `localAgent.health`, `localAgent.settings.{get,update}`,
-  `localAgent.secrets.{status,write,clear}` — never `ipcRenderer` itself and
-  never a generic invoke-any-channel function. None of them can return a
+  `localAgent.secrets.{status,write,clear}`,
+  `localAgent.chat.{send,cancel,onChunk}` — never `ipcRenderer` itself, never
+  a generic invoke-any-channel function, and never a generic
+  listen-to-any-channel one: `chat.onChunk` subscribes to a single fixed,
+  one-way streaming channel whose payloads are schema-validated in the
+  preload before any renderer code sees them. None of them can return a
   plaintext API key.
 - A strict Content-Security-Policy blocks remote script and network access
   outright; navigation, `window.open` and `<webview>` are all denied.
@@ -97,21 +113,35 @@ postponed.
 - `hasApiKey`, the only secret-related value the interface ever sees, is
   reconciled against the encrypted store on every read and write — the store
   is the source of truth, never the cached flag.
-- Chat and its provider layer (Phase 2, Milestones 1–2) make no network
-  request and add no IPC channel. Every provider file lives under
-  `src/shared/chat`, where the same lint boundary that keeps `src/shared`
-  free of Electron and Node access also blocks `fetch`, `XMLHttpRequest`,
-  `WebSocket` and `EventSource` as globals. The provider registry fails
-  closed for every one of the four approved identifiers — none of them, not
-  even `none`, ever resolves a `send()` call. Assistant text is rendered as
-  plain JSX text, never as HTML, and is never treated as authorization for
-  anything — there is no action for it to authorize, since chat never calls
-  `window.localAgent`.
+- Chat's provider-independent layer (Phase 2, Milestones 1–2) still makes no
+  network request itself: every file under `src/shared/chat` is bound by the
+  same lint boundary that keeps `src/shared` free of Electron and Node
+  access and also blocks `fetch`, `XMLHttpRequest`, `WebSocket` and
+  `EventSource` as globals, and its own registry still fails closed for
+  every one of the four approved identifiers, unconditionally. Milestones 3
+  and 4 add the real providers on top of that, entirely in the main process:
+  one audited transport (`src/main/chat-completions-transport.ts`) makes
+  every network request for all three adapters,
+  `src/main/chat-provider-registry.ts` resolves which endpoint and which
+  credential each may use from the existing encrypted secret store, and
+  `chat.send` reaches both only through the unmodified permission engine,
+  emergency-stop gate and audit writer — the same pipeline `secrets.write`
+  already uses. Ollama is enforced local and reads no credential at all.
+  `window.localAgent` is called from exactly one renderer file,
+  `src/renderer/chat/ipc-chat-provider.ts`, asserted by an automated source
+  scan; the API key itself never crosses into the renderer. Assistant text —
+  streamed in fragments or returned whole — is still rendered as plain JSX
+  text, never as HTML, and is still never treated as authorization for
+  anything: there is no path from a chat message, typed, streamed or
+  received, to `main/executor.ts` or to an action proposal.
 
 Full detail, including known limitations, is in
 [docs/security-model.md](docs/security-model.md); the chat-specific design is
-in [docs/phase-2-chat-architecture.md](docs/phase-2-chat-architecture.md) and
-[docs/phase-2-provider-architecture.md](docs/phase-2-provider-architecture.md).
+in [docs/phase-2-chat-architecture.md](docs/phase-2-chat-architecture.md),
+[docs/phase-2-provider-architecture.md](docs/phase-2-provider-architecture.md),
+[docs/phase-2-real-provider-architecture.md](docs/phase-2-real-provider-architecture.md)
+and
+[docs/phase-2-provider-completion.md](docs/phase-2-provider-completion.md).
 
 ## Where your data lives
 
@@ -179,9 +209,10 @@ platform this project does not ship on.
 src/shared/     Pure schemas, types and constants, plus chat/ (the
                 provider-independent ChatProvider interface, the
                 deterministic mock provider, the approved-provider registry
-                with its fail-closed adapters, and the composable timeout
-                decorator). No I/O, no Electron, no network — safe to import
-                from any process, including the renderer.
+                with its fail-closed adapters, the composable timeout
+                decorator, and the local-endpoint classifier that keeps
+                Ollama local). No I/O, no Electron, no network — safe to
+                import from any process, including the renderer.
 src/main/       Privileged Electron main process. Owns the BrowserWindow,
                 the Content-Security-Policy, navigation/window-open/webview
                 hardening, non-secret settings storage (paths.ts,
@@ -194,7 +225,15 @@ src/main/       Privileged Electron main process. Owns the BrowserWindow,
                 store (secrets.ts), settings/secret reconciliation
                 (settings-service.ts), the per-request policy/emergency-state
                 loader (action-runtime.ts), the native confirmation dialog
-                (confirm.ts), and the five registered IPC channels (ipc.ts).
+                (confirm.ts), the one audited HTTP transport every real
+                provider shares (chat-completions-transport.ts) with its three
+                adapters (openai-compatible-provider.ts, glm-provider.ts,
+                ollama-provider.ts — the last enforced local), the
+                main-process provider registry that resolves them from
+                settings and the encrypted secret store
+                (chat-provider-registry.ts), and the eight registered IPC
+                channels (ipc.ts), of which chat:chunk is the only
+                main-to-renderer event.
 src/preload/    The single contextBridge. Exposes a narrow, explicitly
                 enumerated, typed API — never ipcRenderer, never a generic
                 invoke-any-channel function. Bundled into one file: a
@@ -202,11 +241,14 @@ src/preload/    The single contextBridge. Exposes a narrow, explicitly
 src/renderer/   React interface: App.tsx gates on onboardingCompleted,
                 Onboarding.tsx is the first-run form, chat/ is the Phase 2
                 chat surface (Chat.tsx, useConversation.ts, the
-                framework-independent conversation-controller.ts, and
+                framework-independent conversation-controller.ts,
                 useActiveChatProvider.ts — the one place that resolves which
-                provider is active). No Node, no Electron, no filesystem
-                access — only the bridge at window.localAgent, which chat
-                never calls.
+                provider is active — and, since Milestone 3,
+                ipc-chat-provider.ts, the one file in this directory
+                permitted to call window.localAgent, reaching the real
+                provider through chat.send/chat.cancel). No Node, no
+                Electron, no direct filesystem or network access anywhere
+                else in this directory — only the bridge at window.localAgent.
 tests/unit/     Unit tests. `npm test`.
 tests/e2e/      Playwright + Electron smoke test against the built app.
                 `npm run test:e2e`.

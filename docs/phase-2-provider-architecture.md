@@ -8,6 +8,15 @@
 > model and `ConversationController`, both unchanged in shape. **No real
 > provider is implemented. No network request is made anywhere in this
 > milestone, in tests or in normal execution.**
+>
+> Milestone 3 (see
+> [docs/phase-2-real-provider-architecture.md](phase-2-real-provider-architecture.md))
+> adds the first real, network-capable adapter — `openai-compatible` — on top
+> of this same foundation, without changing any of it: `ChatProvider`, the
+> normalized error codes, `withProviderTimeout`, the request/response
+> schemas and `createChatProviderForSelection`'s fail-closed behavior are all
+> unchanged in shape and in this file's description of them. This document
+> is kept as the record of what Milestone 2 built.
 
 ---
 

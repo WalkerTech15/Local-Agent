@@ -1,15 +1,19 @@
 /**
- * Chat provider abstraction (Phase 2, Milestones 1–2).
+ * Chat provider abstraction (Phase 2, Milestones 1–4).
  *
  * A `ChatProvider` turns a validated conversation into assistant reply text.
- * This module defines the shape only. The one working implementation in this
- * codebase is still the deterministic mock (`./mock-provider.ts`) — Milestone
- * 2 adds the registry (`./registry.ts`), request/response schemas
- * (`../schemas/chat.schema.ts`) and a timeout decorator (`./timeout.ts`)
- * around this same interface, but implements no real provider. A future
- * phase adding one (GLM, an OpenAI-compatible endpoint, Ollama) implements
- * this same interface; nothing that consumes a `ChatProvider` needs to
- * change when that happens.
+ * This module defines the shape only, and the shape has not changed since
+ * Milestone 1 apart from one optional, advisory streaming callback added in
+ * Milestone 4 ({@link ChatProviderRequestOptions.onChunk}).
+ *
+ * The only implementation **inside `src/shared`** is still the deterministic
+ * mock (`./mock-provider.ts`); the registry here (`./registry.ts`) fails
+ * closed for every identifier, by construction. The real, network-capable
+ * adapters — `openai-compatible` (Milestone 3), `glm` and `ollama`
+ * (Milestone 4) — all implement this same interface from `src/main`, where
+ * network access and secrets are permitted, and the renderer reaches them
+ * only through the `chat:send` IPC channel. Nothing that consumes a
+ * `ChatProvider` had to change as those arrived.
  *
  * Deliberately provider-independent and inert:
  *
@@ -106,6 +110,23 @@ export class ChatProviderError extends Error {
 export interface ChatProviderRequestOptions {
   /** Abort an in-flight request. See the module doc comment. */
   readonly signal?: AbortSignal;
+  /**
+   * Optional incremental delivery of assistant text as it arrives (Phase 2,
+   * Milestone 4).
+   *
+   * **Advisory only, and never authoritative.** A provider that streams may
+   * call this any number of times with successive fragments; a provider that
+   * does not stream simply never calls it, and every caller must work
+   * identically in both cases. What a caller may finally *trust* is only the
+   * resolved {@link ChatProviderResult}, which is validated as a whole —
+   * a delta passed here has been bounded but is still untrusted text, so a
+   * caller may render it as a live preview and must not commit it to
+   * conversation state as a message.
+   *
+   * A caller's implementation must not throw: a provider is not required to
+   * defend its own protocol loop against a hostile callback.
+   */
+  readonly onChunk?: (delta: string) => void;
 }
 
 /**

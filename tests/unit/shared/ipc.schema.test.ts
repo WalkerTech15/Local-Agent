@@ -1,8 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
-import { API_KEY_MAX_LENGTH, MODEL_PROVIDERS, UI_LANGUAGES } from '../../../src/shared/constants';
+import { CHAT_PROVIDER_ERROR_CODES } from '../../../src/shared/chat/provider';
+import {
+  API_KEY_MAX_LENGTH,
+  CHAT_CONVERSATION_MAX_MESSAGES,
+  CHAT_STREAM_MAX_DELTA_LENGTH,
+  MODEL_PROVIDERS,
+  UI_LANGUAGES,
+} from '../../../src/shared/constants';
 import { createDefaultSettings } from '../../../src/shared/schemas/settings.schema';
 import {
+  chatCancelRequestSchema,
+  chatCancelResponseSchema,
+  chatChunkEventSchema,
+  chatSendRequestSchema,
+  chatSendResponseSchema,
   secretsActionResponseSchema,
   secretsClearRequestSchema,
   secretsStatusRequestSchema,
@@ -212,5 +224,199 @@ describe('secretsActionResponseSchema', () => {
 
   it('accepts an aborted response with neither status nor errorCode', () => {
     expect(secretsActionResponseSchema.safeParse({ outcome: 'aborted' }).success).toBe(true);
+  });
+});
+
+describe('chatSendRequestSchema (Phase 2, Milestone 3)', () => {
+  function validSend() {
+    return {
+      requestId: '11111111-1111-4111-8111-111111111111',
+      messages: [
+        {
+          id: '22222222-2222-4222-8222-222222222222',
+          role: 'user' as const,
+          content: 'hello',
+          createdAt: NOW,
+        },
+      ],
+    };
+  }
+
+  it('accepts a well-formed request', () => {
+    expect(chatSendRequestSchema.safeParse([validSend()]).success).toBe(true);
+  });
+
+  it('accepts an empty message list', () => {
+    expect(chatSendRequestSchema.safeParse([{ ...validSend(), messages: [] }]).success).toBe(true);
+  });
+
+  it('rejects a non-uuid requestId', () => {
+    expect(
+      chatSendRequestSchema.safeParse([{ ...validSend(), requestId: 'not-a-uuid' }]).success,
+    ).toBe(false);
+  });
+
+  it('rejects a conversation over the maximum length', () => {
+    const oversized = {
+      ...validSend(),
+      messages: Array.from({ length: CHAT_CONVERSATION_MAX_MESSAGES + 1 }, (_, index) => ({
+        id: '22222222-2222-4222-8222-222222222222',
+        role: 'user' as const,
+        content: `message ${String(index)}`,
+        createdAt: NOW,
+      })),
+    };
+    expect(chatSendRequestSchema.safeParse([oversized]).success).toBe(false);
+  });
+
+  it('rejects an unknown top-level field — never an apiKey, header, or URL', () => {
+    for (const extra of [
+      { apiKey: 'sk-test' },
+      { baseUrl: 'https://evil.example' },
+      { header: 'x' },
+    ]) {
+      expect(chatSendRequestSchema.safeParse([{ ...validSend(), ...extra }]).success).toBe(false);
+    }
+  });
+
+  it('rejects a malformed message inside the conversation', () => {
+    const invalid = { ...validSend(), messages: [{ role: 'user', content: 'hi' }] };
+    expect(chatSendRequestSchema.safeParse([invalid]).success).toBe(false);
+  });
+});
+
+describe('chatSendResponseSchema', () => {
+  it('accepts a success response carrying content', () => {
+    expect(chatSendResponseSchema.safeParse({ outcome: 'success', content: 'hi' }).success).toBe(
+      true,
+    );
+  });
+
+  it('accepts a denied response with neither content nor errorCode', () => {
+    expect(chatSendResponseSchema.safeParse({ outcome: 'denied' }).success).toBe(true);
+  });
+
+  it('accepts a failure response carrying a normalized provider error code', () => {
+    for (const errorCode of CHAT_PROVIDER_ERROR_CODES) {
+      const result = chatSendResponseSchema.safeParse({ outcome: 'failure', errorCode });
+      expect(result.success).toBe(true);
+    }
+  });
+
+  it('rejects an errorCode outside the normalized vocabulary — never a raw provider error string', () => {
+    const result = chatSendResponseSchema.safeParse({
+      outcome: 'failure',
+      errorCode: 'ECONNREFUSED: connection refused at 10.0.0.5:443',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an unknown field — never a header, a URL, or a raw upstream body', () => {
+    const result = chatSendResponseSchema.safeParse({
+      outcome: 'success',
+      content: 'hi',
+      rawUpstreamResponse: { status: 200 },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects content that fails the shared content-safety schema', () => {
+    const result = chatSendResponseSchema.safeParse({ outcome: 'success', content: '' });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('chatChunkEventSchema (Phase 2, Milestone 4)', () => {
+  const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
+
+  it('accepts a well-formed streaming event', () => {
+    const result = chatChunkEventSchema.safeParse({ requestId: REQUEST_ID, delta: 'hello' });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a non-uuid requestId, so an uncorrelated event cannot be delivered', () => {
+    const result = chatChunkEventSchema.safeParse({ requestId: 'nope', delta: 'hello' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an empty delta', () => {
+    expect(chatChunkEventSchema.safeParse({ requestId: REQUEST_ID, delta: '' }).success).toBe(
+      false,
+    );
+  });
+
+  it('rejects a delta longer than the per-chunk bound', () => {
+    const result = chatChunkEventSchema.safeParse({
+      requestId: REQUEST_ID,
+      delta: 'a'.repeat(CHAT_STREAM_MAX_DELTA_LENGTH + 1),
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts a delta exactly at the per-chunk bound', () => {
+    const result = chatChunkEventSchema.safeParse({
+      requestId: REQUEST_ID,
+      delta: 'a'.repeat(CHAT_STREAM_MAX_DELTA_LENGTH),
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a delta carrying an unsafe control character', () => {
+    const result = chatChunkEventSchema.safeParse({
+      requestId: REQUEST_ID,
+      delta: 'bad' + String.fromCharCode(0) + 'delta',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a delta carrying a bidirectional override', () => {
+    const result = chatChunkEventSchema.safeParse({
+      requestId: REQUEST_ID,
+      delta: 'spoofed‮text',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('allows the newlines and tabs a real reply legitimately contains', () => {
+    const result = chatChunkEventSchema.safeParse({
+      requestId: REQUEST_ID,
+      delta: 'line one\nline two\tindented',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects an unknown field — a chunk carries nothing but its correlation and its text', () => {
+    const result = chatChunkEventSchema.safeParse({
+      requestId: REQUEST_ID,
+      delta: 'hello',
+      apiKey: 'sk-not-real',
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('chatCancelRequestSchema / chatCancelResponseSchema', () => {
+  it('accepts a well-formed cancel request', () => {
+    const result = chatCancelRequestSchema.safeParse([
+      { requestId: '11111111-1111-4111-8111-111111111111' },
+    ]);
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a non-uuid requestId', () => {
+    expect(chatCancelRequestSchema.safeParse([{ requestId: 'nope' }]).success).toBe(false);
+  });
+
+  it('rejects an unexpected field', () => {
+    const result = chatCancelRequestSchema.safeParse([
+      { requestId: '11111111-1111-4111-8111-111111111111', reason: 'because' },
+    ]);
+    expect(result.success).toBe(false);
+  });
+
+  it('the response is always exactly {acknowledged: true}', () => {
+    expect(chatCancelResponseSchema.safeParse({ acknowledged: true }).success).toBe(true);
+    expect(chatCancelResponseSchema.safeParse({ acknowledged: false }).success).toBe(false);
+    expect(chatCancelResponseSchema.safeParse({}).success).toBe(false);
   });
 });

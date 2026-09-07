@@ -3,29 +3,37 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
- * Source-scan regression test (Phase 2, Milestone 2).
+ * Source-scan regression test (Phase 2, Milestones 2-3).
  *
- * The chat and provider layers are already structurally barred from
- * reaching Electron, Node built-ins, the network, or `window.localAgent` —
- * `eslint.config.js`'s purity boundary covers `src/shared/**`, and nothing
- * under `src/renderer/chat` imports the preload bridge. This test makes that
- * guarantee empirical rather than relying solely on lint staying configured
- * correctly forever: it reads the actual source of every file in both
- * directories, strips comments (this codebase's own doc comments freely
- * *describe* what is absent — "never touches `window.localAgent`" — which
+ * `src/shared/chat` is structurally barred from reaching Electron, Node
+ * built-ins, the network, or `window.localAgent` — `eslint.config.js`'s
+ * purity boundary covers `src/shared/**`. `src/renderer/chat` is barred from
+ * all of the same things **except** `window.localAgent`, which exactly one
+ * file — `ipc-chat-provider.ts` — is deliberately permitted to call, since
+ * Milestone 3 needs one seam through which the real, network-capable
+ * adapter in `src/main` is reached. This test makes both guarantees
+ * empirical rather than relying solely on lint staying configured correctly
+ * forever: it reads the actual source of every file in both directories,
+ * strips comments (this codebase's own doc comments freely *describe* what
+ * is absent or narrowly permitted — "never touches `window.localAgent`",
+ * "the one file... permitted to reference `window.localAgent`" — which
  * would otherwise trip a naive substring scan on prose, not code), and
- * asserts none of the forbidden references appear anywhere in what remains.
+ * asserts every forbidden reference is absent, with `window.localAgent`
+ * checked separately against its one named exception.
  */
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
-const SCAN_DIRECTORIES = [
-  join(REPO_ROOT, 'src', 'shared', 'chat'),
-  join(REPO_ROOT, 'src', 'renderer', 'chat'),
-];
+const SHARED_CHAT_DIR = join(REPO_ROOT, 'src', 'shared', 'chat');
+const RENDERER_CHAT_DIR = join(REPO_ROOT, 'src', 'renderer', 'chat');
+const SCAN_DIRECTORIES = [SHARED_CHAT_DIR, RENDERER_CHAT_DIR];
+
+/** The one file under `src/renderer/chat` permitted to reference `window.localAgent`. */
+const IPC_CHAT_PROVIDER_FILE = join(RENDERER_CHAT_DIR, 'ipc-chat-provider.ts');
+
+const WINDOW_LOCAL_AGENT_SUBSTRING = 'window.localAgent';
 
 const FORBIDDEN_PATTERNS: readonly { readonly label: string; readonly pattern: RegExp }[] = [
   { label: 'ipcRenderer', pattern: /ipcRenderer/ },
-  { label: 'window.localAgent', pattern: /window\.localAgent/ },
   { label: "import ... from 'electron'", pattern: /from ['"]electron['"]/ },
   { label: 'require("electron")', pattern: /require\(['"]electron['"]\)/ },
   { label: 'child_process', pattern: /child_process/ },
@@ -88,5 +96,20 @@ describe('chat/provider layer source-scan boundary', () => {
       .filter(([, code]) => pattern.test(code))
       .map(([file]) => file);
     expect(offenders).toEqual([]);
+  });
+
+  it('no code under src/shared/chat references window.localAgent', () => {
+    const offenders = [...codeByFile.entries()]
+      .filter(([file]) => file.startsWith(SHARED_CHAT_DIR))
+      .filter(([, code]) => code.includes(WINDOW_LOCAL_AGENT_SUBSTRING))
+      .map(([file]) => file);
+    expect(offenders).toEqual([]);
+  });
+
+  it('window.localAgent is referenced by exactly, and only, ipc-chat-provider.ts', () => {
+    const offenders = [...codeByFile.entries()]
+      .filter(([, code]) => code.includes(WINDOW_LOCAL_AGENT_SUBSTRING))
+      .map(([file]) => file);
+    expect(offenders).toEqual([IPC_CHAT_PROVIDER_FILE]);
   });
 });

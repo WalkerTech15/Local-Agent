@@ -1,7 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 import {
+  chatCancelResponseSchema,
+  chatChunkEventSchema,
+  chatSendResponseSchema,
   healthCheckResponseSchema,
+  IPC_CHAT_CANCEL_CHANNEL,
+  IPC_CHAT_CHUNK_CHANNEL,
+  IPC_CHAT_SEND_CHANNEL,
   IPC_HEALTH_CHANNEL,
   IPC_SECRETS_CLEAR_CHANNEL,
   IPC_SECRETS_STATUS_CHANNEL,
@@ -13,6 +19,9 @@ import {
   secretsWriteResponseSchema,
   settingsGetResponseSchema,
   settingsUpdateResponseSchema,
+  type ChatChunkEvent,
+  type ChatMessage,
+  type ChatSendResponse,
   type HealthCheckResponse,
   type SecretsActionResponse,
   type SettingsActionResponse,
@@ -37,6 +46,13 @@ import {
  * input is `main/ipc.ts`'s job, the actual trust boundary, not this bridge's
  * — this module's own responsibility is only the channel allowlist and the
  * response shape.
+ *
+ * `chat.onChunk` (Phase 2, Milestone 4) is the single exception to
+ * "everything here is a request": it subscribes to one fixed, one-way event
+ * channel. It is held to the same rules — a fixed channel name, no
+ * `ipcRenderer`, no raw Electron event, a validated payload — and returns an
+ * unsubscribe function so a listener's lifetime is the caller's to end. See
+ * its own doc comment below.
  */
 const bridge = {
   health: async (): Promise<HealthCheckResponse> => {
@@ -65,6 +81,66 @@ const bridge = {
     clear: async (): Promise<SecretsActionResponse> => {
       const result: unknown = await ipcRenderer.invoke(IPC_SECRETS_CLEAR_CHANNEL);
       return secretsClearResponseSchema.parse(result);
+    },
+  },
+  /**
+   * The one network-capable pair of channels (Phase 2, Milestone 3). Neither
+   * accepts or returns an API key, a header, or a provider URL — `send`
+   * takes only the conversation itself; the main process resolves which
+   * provider and which stored credential to use from settings and the
+   * encrypted secret store, never from a renderer-supplied value. `cancel`
+   * is fire-and-forget best effort: it asks the main process to abort a
+   * `send` already in flight, identified by the same `requestId`.
+   */
+  chat: {
+    send: async (
+      requestId: string,
+      messages: readonly ChatMessage[],
+    ): Promise<ChatSendResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_CHAT_SEND_CHANNEL, {
+        requestId,
+        messages,
+      });
+      return chatSendResponseSchema.parse(result);
+    },
+    cancel: async (requestId: string): Promise<void> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_CHAT_CANCEL_CHANNEL, { requestId });
+      chatCancelResponseSchema.parse(result);
+    },
+    /**
+     * Subscribes to streaming previews for in-flight `chat.send` calls
+     * (Phase 2, Milestone 4), returning an unsubscribe function.
+     *
+     * The one place this bridge exposes a main → renderer *event* rather
+     * than a request, and deliberately the narrowest possible form of one:
+     *
+     *  - the channel is fixed here, never a caller-supplied name, so this
+     *    cannot become a generic "listen to any channel" surface any more
+     *    than `send` could become a generic invoke;
+     *  - `ipcRenderer` itself is never handed out, and neither is the raw
+     *    Electron event — the listener receives only a validated
+     *    {@link ChatChunkEvent}, never the `IpcRendererEvent` (which carries
+     *    `sender` and reply handles a renderer has no business holding);
+     *  - a payload that fails {@link chatChunkEventSchema} is dropped
+     *    silently rather than forwarded or thrown, so a malformed or
+     *    hostile event cannot reach renderer code or break its event loop;
+     *  - a listener that throws is contained here, for the same reason.
+     */
+    onChunk: (listener: (event: ChatChunkEvent) => void): (() => void) => {
+      const handler = (_event: unknown, payload: unknown): void => {
+        const parsed = chatChunkEventSchema.safeParse(payload);
+        if (!parsed.success) return;
+        try {
+          listener(parsed.data);
+        } catch {
+          // A failing preview listener must not break the IPC event loop.
+        }
+      };
+
+      ipcRenderer.on(IPC_CHAT_CHUNK_CHANNEL, handler);
+      return () => {
+        ipcRenderer.off(IPC_CHAT_CHUNK_CHANNEL, handler);
+      };
     },
   },
 };

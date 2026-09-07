@@ -196,6 +196,14 @@ export function createDefaultPermissionPolicy(): PermissionPolicy {
         priority: 100,
         reason: 'Exiting is user-visible and interruptive.',
       },
+      {
+        id: 'chat.send',
+        actionType: 'chat.send',
+        decision: 'allow',
+        priority: 100,
+        reason:
+          'Sending a chat message is a direct, per-message user action, not a background or model-initiated one; the send itself is the consent.',
+      },
     ],
   };
 }

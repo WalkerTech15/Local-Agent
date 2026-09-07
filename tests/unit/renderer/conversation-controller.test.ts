@@ -84,7 +84,12 @@ describe('ConversationController', () => {
       provider: instantProvider(() => ({ content: 'unused' })),
       ...makeDeps(),
     });
-    expect(controller.getState()).toEqual({ messages: [], status: 'idle', error: null });
+    expect(controller.getState()).toEqual({
+      messages: [],
+      status: 'idle',
+      error: null,
+      streamingContent: null,
+    });
     expect(controller.canSubmit).toBe(true);
   });
 
@@ -130,7 +135,12 @@ describe('ConversationController', () => {
       ...makeDeps(),
     });
     await controller.submit('    ');
-    expect(controller.getState()).toEqual({ messages: [], status: 'idle', error: null });
+    expect(controller.getState()).toEqual({
+      messages: [],
+      status: 'idle',
+      error: null,
+      streamingContent: null,
+    });
   });
 
   it('prevents a second submission while a response is pending', async () => {
@@ -412,5 +422,201 @@ describe('ConversationController', () => {
       expect(sendA).toHaveBeenCalledTimes(1);
       expect(sendB).not.toHaveBeenCalled();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Streaming previews (Phase 2, Milestone 4)
+// ---------------------------------------------------------------------------
+
+/** A provider that hands the test its `onChunk` callback to drive directly. */
+function streamingProvider(): {
+  provider: ChatProvider;
+  emit: (delta: string) => void;
+  resolve: (result: ChatProviderResult) => void;
+  reject: (error: unknown) => void;
+} {
+  let emitFn: (delta: string) => void = () => undefined;
+  let resolveFn: (result: ChatProviderResult) => void = () => undefined;
+  let rejectFn: (error: unknown) => void = () => undefined;
+
+  const provider: ChatProvider = {
+    id: 'streaming-test-provider',
+    send: (_request, options) => {
+      emitFn = (delta) => options?.onChunk?.(delta);
+      return new Promise<ChatProviderResult>((resolve, reject) => {
+        resolveFn = resolve;
+        rejectFn = reject;
+      });
+    },
+  };
+
+  return {
+    provider,
+    emit: (delta) => {
+      emitFn(delta);
+    },
+    resolve: (result) => {
+      resolveFn(result);
+    },
+    reject: (error) => {
+      rejectFn(error);
+    },
+  };
+}
+
+describe('ConversationController — streaming', () => {
+  it('starts with no streaming content', () => {
+    const controller = new ConversationController({
+      provider: instantProvider(() => ({ content: 'unused' })),
+      ...makeDeps(),
+    });
+    expect(controller.getState().streamingContent).toBeNull();
+  });
+
+  it('exposes accumulated deltas as a preview while awaiting the response', async () => {
+    const { provider, emit, resolve } = streamingProvider();
+    const controller = new ConversationController({ provider, ...makeDeps() });
+
+    const pending = controller.submit('hello');
+    emit('Hel');
+    expect(controller.getState().streamingContent).toBe('Hel');
+    emit('lo there');
+    expect(controller.getState().streamingContent).toBe('Hello there');
+    expect(controller.getState().status).toBe('awaiting-response');
+
+    resolve({ content: 'Hello there' });
+    await pending;
+  });
+
+  it('never adds a streamed preview to the message list', async () => {
+    const { provider, emit, resolve } = streamingProvider();
+    const controller = new ConversationController({ provider, ...makeDeps() });
+
+    const pending = controller.submit('hello');
+    emit('partial preview');
+    expect(controller.getState().messages).toHaveLength(1);
+    expect(controller.getState().messages[0]?.role).toBe('user');
+
+    resolve({ content: 'the real reply' });
+    await pending;
+
+    const { messages, streamingContent } = controller.getState();
+    expect(messages).toHaveLength(2);
+    expect(messages[1]?.content).toBe('the real reply');
+    expect(streamingContent).toBeNull();
+  });
+
+  it('commits the validated response, not the accumulated deltas', async () => {
+    const { provider, emit, resolve } = streamingProvider();
+    const controller = new ConversationController({ provider, ...makeDeps() });
+
+    const pending = controller.submit('hello');
+    emit('deltas that disagree');
+    resolve({ content: 'authoritative reply' });
+    await pending;
+
+    expect(controller.getState().messages[1]?.content).toBe('authoritative reply');
+  });
+
+  it('discards the preview when the request fails, keeping the user message', async () => {
+    const { provider, emit, reject } = streamingProvider();
+    const controller = new ConversationController({ provider, ...makeDeps() });
+
+    const pending = controller.submit('hello');
+    emit('half an answer');
+    reject(new ChatProviderError('PROVIDER_REQUEST_FAILED', 'nope'));
+    await pending;
+
+    const state = controller.getState();
+    expect(state.streamingContent).toBeNull();
+    expect(state.messages).toHaveLength(1);
+    expect(state.error).not.toBeNull();
+  });
+
+  it('bounds the preview at the maximum message length', async () => {
+    const { provider, emit, resolve } = streamingProvider();
+    const controller = new ConversationController({ provider, ...makeDeps() });
+
+    const pending = controller.submit('hello');
+    for (let index = 0; index < 20; index += 1) {
+      emit('z'.repeat(1000));
+    }
+
+    const preview = controller.getState().streamingContent ?? '';
+    expect(preview.length).toBe(CHAT_MESSAGE_CONTENT_MAX_LENGTH);
+
+    resolve({ content: 'done' });
+    await pending;
+  });
+
+  it('ignores deltas from a request that was superseded by a provider switch', async () => {
+    const stale = streamingProvider();
+    const controller = new ConversationController({ provider: stale.provider, ...makeDeps() });
+
+    const pending = controller.submit('hello');
+    stale.emit('early');
+    expect(controller.getState().streamingContent).toBe('early');
+
+    controller.setProvider(instantProvider(() => ({ content: 'from the new provider' })));
+    expect(controller.getState().streamingContent).toBeNull();
+
+    stale.emit('late delta from the old provider');
+    expect(controller.getState().streamingContent).toBeNull();
+
+    stale.resolve({ content: 'stale reply' });
+    await pending;
+    expect(controller.getState().messages).toHaveLength(1);
+  });
+
+  it('clears the preview between two consecutive submissions', async () => {
+    const first = streamingProvider();
+    const controller = new ConversationController({ provider: first.provider, ...makeDeps() });
+
+    const firstPending = controller.submit('one');
+    first.emit('first preview');
+    first.resolve({ content: 'first reply' });
+    await firstPending;
+    expect(controller.getState().streamingContent).toBeNull();
+
+    const second = streamingProvider();
+    controller.setProvider(second.provider);
+    const secondPending = controller.submit('two');
+    expect(controller.getState().streamingContent).toBeNull();
+    second.emit('second preview');
+    expect(controller.getState().streamingContent).toBe('second preview');
+
+    second.resolve({ content: 'second reply' });
+    await secondPending;
+  });
+
+  it('notifies subscribers as the preview grows', async () => {
+    const { provider, emit, resolve } = streamingProvider();
+    const controller = new ConversationController({ provider, ...makeDeps() });
+    const previews: (string | null)[] = [];
+    controller.subscribe((state) => previews.push(state.streamingContent));
+
+    const pending = controller.submit('hello');
+    emit('a');
+    emit('b');
+    resolve({ content: 'ab' });
+    await pending;
+
+    expect(previews).toContain('a');
+    expect(previews).toContain('ab');
+    expect(previews.at(-1)).toBeNull();
+  });
+
+  it('works unchanged with a provider that never streams', async () => {
+    const controller = new ConversationController({
+      provider: instantProvider(() => ({ content: 'no streaming here' })),
+      ...makeDeps(),
+    });
+
+    await controller.submit('hello');
+
+    const state = controller.getState();
+    expect(state.streamingContent).toBeNull();
+    expect(state.messages[1]?.content).toBe('no streaming here');
   });
 });

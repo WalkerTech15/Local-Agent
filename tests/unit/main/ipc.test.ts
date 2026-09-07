@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,26 +14,49 @@ import {
 } from '../../../src/main/ipc';
 import type { IpcHandlerRuntime } from '../../../src/main/ipc';
 import type { UserDataPaths } from '../../../src/main/paths';
-import { hasStoredSecret } from '../../../src/main/secrets';
+import { hasStoredSecret, writeSecret } from '../../../src/main/secrets';
 import { loadSettings, writeSettings } from '../../../src/main/settings';
-import { AUDIT_LOG_FILE_EXTENSION, AUDIT_LOG_FILE_PREFIX } from '../../../src/shared/constants';
 import {
+  AUDIT_LOG_FILE_EXTENSION,
+  AUDIT_LOG_FILE_PREFIX,
+  CHAT_STREAM_MAX_DELTA_LENGTH,
+} from '../../../src/shared/constants';
+import {
+  createChatMessage,
   createDefaultSettings,
+  IPC_CHAT_CANCEL_CHANNEL,
+  IPC_CHAT_CHUNK_CHANNEL,
+  IPC_CHAT_SEND_CHANNEL,
   IPC_SECRETS_CLEAR_CHANNEL,
   IPC_SECRETS_STATUS_CHANNEL,
   IPC_SECRETS_WRITE_CHANNEL,
   IPC_SETTINGS_GET_CHANNEL,
   IPC_SETTINGS_UPDATE_CHANNEL,
 } from '../../../src/shared/schemas';
-import type { SecretsActionResponse, SettingsActionResponse } from '../../../src/shared/schemas';
+import type {
+  ChatCancelResponse,
+  ChatSendResponse,
+  SecretsActionResponse,
+  SettingsActionResponse,
+} from '../../../src/shared/schemas';
 import type { ConfirmationResult } from '../../../src/shared/types';
 
 const NOW = '2026-08-07T00:00:00.000Z';
 const PLAINTEXT_KEY = 'sk-super-secret-onboarding-key';
 
+/** One main → renderer event the fake `WebContents` was asked to send. */
+interface SentEvent {
+  readonly channel: string;
+  readonly payload: unknown;
+}
+
 function createFakeIpcMain(): {
   ipcMain: IpcMain;
   invoke: (channel: string, ...args: unknown[]) => Promise<unknown>;
+  /** Everything pushed to the invoking renderer, in order. */
+  sentEvents: SentEvent[];
+  /** Simulates the window closing mid-request. */
+  destroySender: () => void;
 } {
   const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
   const ipcMain = {
@@ -41,14 +65,40 @@ function createFakeIpcMain(): {
     },
   } as unknown as IpcMain;
 
+  // Stands in for the `IpcMainInvokeEvent.sender` `WebContents` that real
+  // Electron hands a handler: the only way a handler can push an event back
+  // to the renderer that invoked it.
+  const sentEvents: SentEvent[] = [];
+  let senderDestroyed = false;
+  const event = {
+    sender: {
+      isDestroyed: () => senderDestroyed,
+      send: (channel: string, payload: unknown) => {
+        sentEvents.push({ channel, payload });
+      },
+    },
+  };
+
   return {
     ipcMain,
+    sentEvents,
+    destroySender: () => {
+      senderDestroyed = true;
+    },
     invoke: (channel: string, ...args: unknown[]) => {
       const handler = handlers.get(channel);
       if (!handler) {
         return Promise.reject(new Error(`no handler registered for channel: ${channel}`));
       }
-      return Promise.resolve(handler({}, ...args));
+      // Mirrors real Electron: a handler that throws synchronously (never
+      // awaiting anything, so validation failure is not itself wrapped in a
+      // promise) still rejects `ipcRenderer.invoke`'s promise, exactly as one
+      // that returns a rejected promise does.
+      try {
+        return Promise.resolve(handler(event, ...args));
+      } catch (error) {
+        return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+      }
     },
   };
 }
@@ -103,6 +153,13 @@ function setUp(overrides: Partial<IpcHandlerRuntime> = {}) {
   const { ipcMain, invoke } = createFakeIpcMain();
   registerIpcHandlers(ipcMain, buildRuntime(overrides));
   return invoke;
+}
+
+/** Like {@link setUp}, but also exposes what was pushed back to the renderer. */
+function setUpWithEvents(overrides: Partial<IpcHandlerRuntime> = {}) {
+  const fake = createFakeIpcMain();
+  registerIpcHandlers(fake.ipcMain, buildRuntime(overrides));
+  return fake;
 }
 
 async function readAuditLines(): Promise<Record<string, unknown>[]> {
@@ -498,5 +555,380 @@ describe('a corrupt settings.json falls back safely rather than trusting partial
 
     expect(response.outcome).toBe('success');
     expect(response.settings?.onboardingCompleted).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// chat:send / chat:cancel (Phase 2, Milestone 3)
+// ---------------------------------------------------------------------------
+
+function userMessage(content: string) {
+  return createChatMessage({ id: randomUUID(), role: 'user', content, createdAt: NOW });
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+async function configureOpenAiCompatible(): Promise<void> {
+  await writeSettings(paths.settingsFile, {
+    ...createDefaultSettings(NOW),
+    modelProvider: {
+      provider: 'openai-compatible',
+      model: 'gpt-test',
+      baseUrl: 'https://api.example.test/v1',
+      hasApiKey: false,
+    },
+  });
+  await writeSecret(paths.secretsFile, PLAINTEXT_KEY, fakeSafeStorage(true));
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe('chat:send — provider none (default settings)', () => {
+  it('fails closed with PROVIDER_UNAVAILABLE and never calls fetch', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const invoke = setUp();
+    const response = (await invoke(IPC_CHAT_SEND_CHANNEL, {
+      requestId: randomUUID(),
+      messages: [userMessage('hello')],
+    })) as ChatSendResponse;
+
+    expect(response.outcome).toBe('failure');
+    expect(response.errorCode).toBe('PROVIDER_UNAVAILABLE');
+    expect(response.content).toBeUndefined();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not require confirmation (chat.send is allow by default policy)', async () => {
+    const requestConfirmation = vi.fn<() => Promise<ConfirmationResult>>();
+    const invoke = setUp({ requestConfirmation });
+    await invoke(IPC_CHAT_SEND_CHANNEL, { requestId: randomUUID(), messages: [userMessage('hi')] });
+    expect(requestConfirmation).not.toHaveBeenCalled();
+  });
+
+  it('is denied while the emergency stop is engaged, and never resolves a provider', async () => {
+    await engageEmergencyStop(paths.emergencyStateFile, NOW);
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const requestConfirmation = vi.fn<() => Promise<ConfirmationResult>>();
+
+    const invoke = setUp({ requestConfirmation });
+    const response = (await invoke(IPC_CHAT_SEND_CHANNEL, {
+      requestId: randomUUID(),
+      messages: [userMessage('hi')],
+    })) as ChatSendResponse;
+
+    expect(response.outcome).toBe('denied');
+    expect(requestConfirmation).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed request before any proposal is built (no audit record)', async () => {
+    const invoke = setUp();
+    await expect(
+      invoke(IPC_CHAT_SEND_CHANNEL, { requestId: 'not-a-uuid', messages: [] }),
+    ).rejects.toThrow();
+    await expect(readdir(paths.auditLogDir)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('rejects a request carrying an unexpected field', async () => {
+    const invoke = setUp();
+    await expect(
+      invoke(IPC_CHAT_SEND_CHANNEL, {
+        requestId: randomUUID(),
+        messages: [userMessage('hi')],
+        apiKey: 'sk-not-real',
+      }),
+    ).rejects.toThrow();
+  });
+});
+
+describe('chat:send — audit trail', () => {
+  it('records provider and messageCount only, never message content', async () => {
+    const invoke = setUp();
+    await invoke(IPC_CHAT_SEND_CHANNEL, {
+      requestId: randomUUID(),
+      messages: [userMessage('a secret-shaped message nobody should log')],
+    });
+
+    const lines = await readAuditLines();
+    const record = lines.find((line) => line.actionType === 'chat.send');
+    expect(record?.parameters).toEqual({ provider: 'none', messageCount: 1 });
+    expect(JSON.stringify(lines)).not.toContain('a secret-shaped message nobody should log');
+  });
+});
+
+describe('chat:send — openai-compatible, fully configured', () => {
+  it('returns the assistant content on a successful call', async () => {
+    await configureOpenAiCompatible();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse({ choices: [{ message: { content: 'hi there' } }] })),
+    );
+
+    const invoke = setUp();
+    const response = (await invoke(IPC_CHAT_SEND_CHANNEL, {
+      requestId: randomUUID(),
+      messages: [userMessage('hello')],
+    })) as ChatSendResponse;
+
+    expect(response.outcome).toBe('success');
+    expect(response.content).toBe('hi there');
+  });
+
+  it('never includes the API key anywhere in the response', async () => {
+    await configureOpenAiCompatible();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse({ choices: [{ message: { content: 'hi there' } }] })),
+    );
+
+    const invoke = setUp();
+    const response = await invoke(IPC_CHAT_SEND_CHANNEL, {
+      requestId: randomUUID(),
+      messages: [userMessage('hello')],
+    });
+    expect(JSON.stringify(response)).not.toContain(PLAINTEXT_KEY);
+  });
+
+  it('never includes the API key anywhere in the audit trail', async () => {
+    await configureOpenAiCompatible();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse({ choices: [{ message: { content: 'hi there' } }] })),
+    );
+
+    const invoke = setUp();
+    await invoke(IPC_CHAT_SEND_CHANNEL, {
+      requestId: randomUUID(),
+      messages: [userMessage('hello')],
+    });
+    const lines = await readAuditLines();
+    expect(JSON.stringify(lines)).not.toContain(PLAINTEXT_KEY);
+  });
+
+  it('reports PROVIDER_INVALID_CONFIGURATION when the endpoint rejects the credentials', async () => {
+    await configureOpenAiCompatible();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('unauthorized', { status: 401 })),
+    );
+
+    const invoke = setUp();
+    const response = (await invoke(IPC_CHAT_SEND_CHANNEL, {
+      requestId: randomUUID(),
+      messages: [userMessage('hello')],
+    })) as ChatSendResponse;
+
+    expect(response.outcome).toBe('failure');
+    expect(response.errorCode).toBe('PROVIDER_INVALID_CONFIGURATION');
+  });
+
+  it('reports PROVIDER_INVALID_CONFIGURATION when no key is stored yet', async () => {
+    await writeSettings(paths.settingsFile, {
+      ...createDefaultSettings(NOW),
+      modelProvider: {
+        provider: 'openai-compatible',
+        model: 'gpt-test',
+        baseUrl: 'https://api.example.test/v1',
+        hasApiKey: false,
+      },
+    });
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const invoke = setUp();
+    const response = (await invoke(IPC_CHAT_SEND_CHANNEL, {
+      requestId: randomUUID(),
+      messages: [userMessage('hello')],
+    })) as ChatSendResponse;
+
+    expect(response.outcome).toBe('failure');
+    expect(response.errorCode).toBe('PROVIDER_INVALID_CONFIGURATION');
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('chat:send — streaming previews (chat:chunk)', () => {
+  function sseResponse(...contents: string[]): Response {
+    const body =
+      contents
+        .map((content) => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`)
+        .join('') + 'data: [DONE]\n\n';
+    return new Response(body, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    });
+  }
+
+  it('pushes one chat:chunk event per streamed fragment, correlated by requestId', async () => {
+    await configureOpenAiCompatible();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse('Hel', 'lo')));
+
+    const { invoke, sentEvents } = setUpWithEvents();
+    const requestId = randomUUID();
+    const response = (await invoke(IPC_CHAT_SEND_CHANNEL, {
+      requestId,
+      messages: [userMessage('hi')],
+    })) as ChatSendResponse;
+
+    expect(response.outcome).toBe('success');
+    expect(response.content).toBe('Hello');
+    expect(sentEvents).toEqual([
+      { channel: IPC_CHAT_CHUNK_CHANNEL, payload: { requestId, delta: 'Hel' } },
+      { channel: IPC_CHAT_CHUNK_CHANNEL, payload: { requestId, delta: 'lo' } },
+    ]);
+  });
+
+  it('sends no chunk event for a non-streamed response', async () => {
+    await configureOpenAiCompatible();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse({ choices: [{ message: { content: 'whole' } }] })),
+    );
+
+    const { invoke, sentEvents } = setUpWithEvents();
+    await invoke(IPC_CHAT_SEND_CHANNEL, { requestId: randomUUID(), messages: [userMessage('hi')] });
+
+    expect(sentEvents).toEqual([]);
+  });
+
+  it('sends no chunk event when the action is denied by the emergency stop', async () => {
+    await configureOpenAiCompatible();
+    await engageEmergencyStop(paths.emergencyStateFile, NOW);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse('never')));
+
+    const { invoke, sentEvents } = setUpWithEvents();
+    const response = (await invoke(IPC_CHAT_SEND_CHANNEL, {
+      requestId: randomUUID(),
+      messages: [userMessage('hi')],
+    })) as ChatSendResponse;
+
+    expect(response.outcome).toBe('denied');
+    expect(sentEvents).toEqual([]);
+  });
+
+  it('splits an oversized fragment across several bounded events rather than dropping it', async () => {
+    await configureOpenAiCompatible();
+    const long = 'x'.repeat(CHAT_STREAM_MAX_DELTA_LENGTH + 500);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse(long)));
+
+    const { invoke, sentEvents } = setUpWithEvents();
+    await invoke(IPC_CHAT_SEND_CHANNEL, { requestId: randomUUID(), messages: [userMessage('hi')] });
+
+    expect(sentEvents.length).toBe(2);
+    for (const event of sentEvents) {
+      const { delta } = event.payload as { delta: string };
+      expect(delta.length).toBeLessThanOrEqual(CHAT_STREAM_MAX_DELTA_LENGTH);
+    }
+    const rejoined = sentEvents.map((event) => (event.payload as { delta: string }).delta).join('');
+    expect(rejoined).toBe(long);
+  });
+
+  it('never sends a chunk event to a destroyed renderer', async () => {
+    await configureOpenAiCompatible();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse('gone')));
+
+    const fake = setUpWithEvents();
+    fake.destroySender();
+    const response = (await fake.invoke(IPC_CHAT_SEND_CHANNEL, {
+      requestId: randomUUID(),
+      messages: [userMessage('hi')],
+    })) as ChatSendResponse;
+
+    // The request itself still completes; only the preview is skipped.
+    expect(response.outcome).toBe('success');
+    expect(fake.sentEvents).toEqual([]);
+  });
+
+  it('never includes the API key or the conversation in a chunk event', async () => {
+    await configureOpenAiCompatible();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse('safe reply')));
+
+    const { invoke, sentEvents } = setUpWithEvents();
+    await invoke(IPC_CHAT_SEND_CHANNEL, {
+      requestId: randomUUID(),
+      messages: [userMessage('a private question nobody should echo')],
+    });
+
+    const serialized = JSON.stringify(sentEvents);
+    expect(serialized).not.toContain(PLAINTEXT_KEY);
+    expect(serialized).not.toContain('a private question nobody should echo');
+  });
+
+  it('records nothing about streamed content in the audit trail', async () => {
+    await configureOpenAiCompatible();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse('audited nowhere')));
+
+    const { invoke } = setUpWithEvents();
+    await invoke(IPC_CHAT_SEND_CHANNEL, { requestId: randomUUID(), messages: [userMessage('hi')] });
+
+    const lines = await readAuditLines();
+    const record = lines.find((line) => line.actionType === 'chat.send');
+    expect(record?.parameters).toEqual({ provider: 'openai-compatible', messageCount: 1 });
+    expect(JSON.stringify(lines)).not.toContain('audited nowhere');
+  });
+});
+
+describe('chat:cancel', () => {
+  it('aborts a matching in-flight chat:send call', async () => {
+    await configureOpenAiCompatible();
+
+    // Resolves once `fetch` is actually reached, which can only happen after
+    // the handler has already registered the in-flight `AbortController` —
+    // deterministic synchronization instead of a fixed delay.
+    let notifyFetchCalled: () => void = () => undefined;
+    const fetchCalled = new Promise<void>((resolve) => {
+      notifyFetchCalled = resolve;
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((_url: string, init: { signal?: AbortSignal }) => {
+        notifyFetchCalled();
+        return new Promise((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => {
+            reject(new DOMException('The operation was aborted.', 'AbortError'));
+          });
+        });
+      }),
+    );
+
+    const invoke = setUp();
+    const requestId = randomUUID();
+    const pending = invoke(IPC_CHAT_SEND_CHANNEL, {
+      requestId,
+      messages: [userMessage('hello')],
+    }) as Promise<ChatSendResponse>;
+
+    await fetchCalled;
+    const cancelResponse = (await invoke(IPC_CHAT_CANCEL_CHANNEL, {
+      requestId,
+    })) as ChatCancelResponse;
+    expect(cancelResponse).toEqual({ acknowledged: true });
+
+    const response = await pending;
+    expect(response.outcome).toBe('failure');
+    expect(response.errorCode).toBe('PROVIDER_ABORTED');
+  });
+
+  it('is a harmless no-op for an unknown or already-completed requestId', async () => {
+    const invoke = setUp();
+    const response = (await invoke(IPC_CHAT_CANCEL_CHANNEL, {
+      requestId: randomUUID(),
+    })) as ChatCancelResponse;
+    expect(response).toEqual({ acknowledged: true });
+  });
+
+  it('rejects a malformed request', async () => {
+    const invoke = setUp();
+    await expect(invoke(IPC_CHAT_CANCEL_CHANNEL, { requestId: 'not-a-uuid' })).rejects.toThrow();
   });
 });

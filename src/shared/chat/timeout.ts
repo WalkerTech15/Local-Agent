@@ -82,7 +82,14 @@ export function withProviderTimeout(provider: ChatProvider, timeoutMs: number): 
       }, timeoutMs);
 
       try {
-        return await provider.send(request, { signal: combined.signal });
+        // Every option except `signal` is forwarded untouched: this
+        // decorator owns cancellation and nothing else, so an option it does
+        // not understand — `onChunk` since Milestone 4, whatever a later
+        // milestone adds — must reach the wrapped provider unchanged.
+        // Constructing a fresh options object with only `signal` silently
+        // disabled streaming when `onChunk` arrived, which is exactly the
+        // failure this spread prevents from recurring.
+        return await provider.send(request, { ...options, signal: combined.signal });
       } catch (error) {
         if (combined.signal.reason === TIMEOUT_REASON) {
           throw new ChatProviderError(

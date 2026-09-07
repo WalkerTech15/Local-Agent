@@ -128,6 +128,26 @@ describe('withProviderTimeout', () => {
     expect(receivedSignals[0]).not.toBe(external.signal);
   });
 
+  it('forwards options it does not own, such as onChunk, to the wrapped provider', async () => {
+    // Regression guard: an earlier version built a fresh options object
+    // carrying only `signal`, which silently disabled streaming for every
+    // provider this decorator wraps.
+    const receivedOptions: (ChatProviderRequestOptions | undefined)[] = [];
+    const provider: ChatProvider = {
+      id: 'option-recording-provider',
+      send: (_request: ChatProviderRequest, options?: ChatProviderRequestOptions) => {
+        receivedOptions.push(options);
+        return Promise.resolve({ content: 'ok' });
+      },
+    };
+    const onChunk = vi.fn();
+
+    await withProviderTimeout(provider, 1000).send(EMPTY_REQUEST, { onChunk });
+
+    expect(receivedOptions[0]?.onChunk).toBe(onChunk);
+    expect(receivedOptions[0]?.signal).toBeInstanceOf(AbortSignal);
+  });
+
   it('never calls the global fetch function', async () => {
     if (typeof globalThis.fetch !== 'function') return;
     const fetchSpy = vi.spyOn(globalThis, 'fetch');

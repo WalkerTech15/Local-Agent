@@ -30,17 +30,21 @@ interface ExposedLocalAgentBridge {
 }
 
 /**
- * The complete, narrow bridge surface as of Milestone 7. Asserted by exact
- * key list rather than "at least these" so that a future channel added
- * without updating this test fails loudly here — the same reason the
+ * The complete, narrow bridge surface as of Phase 2, Milestone 3. Asserted
+ * by exact key list rather than "at least these" so that a future channel
+ * added without updating this test fails loudly here — the same reason the
  * Milestone 2 version of this test asserted `['health']` exactly. `settings`
  * and `secrets` were added in Milestone 7 for onboarding, provider settings,
- * and the encrypted secret store; both stay two narrow, explicitly named
- * sub-objects, never a generic invoke surface.
+ * and the encrypted secret store; `chat` was added in Phase 2 Milestone 3
+ * for the one network-capable action in this codebase, and gained
+ * `onChunk` — a subscription to one fixed, one-way streaming-preview
+ * channel — in Milestone 4. Every one stays a narrow, explicitly named
+ * sub-object, never a generic invoke or listen surface.
  */
-const EXPECTED_BRIDGE_KEYS = ['health', 'secrets', 'settings'] as const;
+const EXPECTED_BRIDGE_KEYS = ['chat', 'health', 'secrets', 'settings'] as const;
 const EXPECTED_SETTINGS_KEYS = ['get', 'update'] as const;
 const EXPECTED_SECRETS_KEYS = ['clear', 'status', 'write'] as const;
+const EXPECTED_CHAT_KEYS = ['cancel', 'onChunk', 'send'] as const;
 
 function launchEnv(): Record<string, string> {
   const env: Record<string, string> = {};
@@ -113,10 +117,13 @@ describe('Electron desktop shell — security and health-check smoke test', () =
     expect(hasIpcRenderer).toBe(false);
   });
 
-  it('exposes exactly one bridge object with exactly the narrow, named functions of Milestone 7', async () => {
+  it('exposes exactly one bridge object with exactly the narrow, named functions of Phase 2 Milestone 3', async () => {
     const bridgeShape = await page.evaluate(() => {
       const w = window as unknown as {
-        localAgent?: { settings?: object; secrets?: object } & Record<string, unknown>;
+        localAgent?: { settings?: object; secrets?: object; chat?: object } & Record<
+          string,
+          unknown
+        >;
       };
       const localAgent = w.localAgent;
       return {
@@ -124,6 +131,7 @@ describe('Electron desktop shell — security and health-check smoke test', () =
         keys: localAgent ? Object.keys(localAgent).sort() : [],
         settingsKeys: localAgent?.settings ? Object.keys(localAgent.settings).sort() : [],
         secretsKeys: localAgent?.secrets ? Object.keys(localAgent.secrets).sort() : [],
+        chatKeys: localAgent?.chat ? Object.keys(localAgent.chat).sort() : [],
       };
     });
     expect(bridgeShape).toEqual({
@@ -131,6 +139,7 @@ describe('Electron desktop shell — security and health-check smoke test', () =
       keys: [...EXPECTED_BRIDGE_KEYS],
       settingsKeys: [...EXPECTED_SETTINGS_KEYS],
       secretsKeys: [...EXPECTED_SECRETS_KEYS],
+      chatKeys: [...EXPECTED_CHAT_KEYS],
     });
   });
 
@@ -142,9 +151,10 @@ describe('Electron desktop shell — security and health-check smoke test', () =
         | (Record<string, unknown> & {
             settings?: Record<string, unknown>;
             secrets?: Record<string, unknown>;
+            chat?: Record<string, unknown>;
           })
         | undefined;
-      const nested = [localAgent?.settings, localAgent?.secrets].filter(
+      const nested = [localAgent?.settings, localAgent?.secrets, localAgent?.chat].filter(
         (value): value is Record<string, unknown> => value !== undefined,
       );
       return (
@@ -156,12 +166,37 @@ describe('Electron desktop shell — security and health-check smoke test', () =
     expect(hasGenericInvoke).toBe(false);
   });
 
-  // Deliberately no test here calls `settings.*` or `secrets.*` against the
-  // real running app: unlike `health`, both have real side effects (an audit
-  // write, a settings read/write) against the *real* `%APPDATA%\Local-Agent\`
-  // — this suite never overrides that path, so exercising them belongs to
-  // `tests/unit/main/ipc.test.ts`, which does so against a temporary
-  // directory. This suite only inspects the bridge's static shape.
+  it('has no generic listen-to-any-channel function either, despite exposing one event subscription', async () => {
+    // `chat.onChunk` subscribes to one fixed channel chosen in the preload,
+    // not to a caller-supplied one. Nothing named like a generic emitter API
+    // may appear anywhere on the bridge.
+    const hasGenericListener = await page.evaluate(() => {
+      const w = window as unknown as Record<string, unknown>;
+      const generic = ['on', 'once', 'addListener', 'removeListener', 'off', 'emit'];
+      const localAgent = w.localAgent as
+        | (Record<string, unknown> & {
+            settings?: Record<string, unknown>;
+            secrets?: Record<string, unknown>;
+            chat?: Record<string, unknown>;
+          })
+        | undefined;
+      const surfaces = [localAgent, localAgent?.settings, localAgent?.secrets, localAgent?.chat];
+      return surfaces.some(
+        (surface) => surface !== undefined && generic.some((key) => key in surface),
+      );
+    });
+    expect(hasGenericListener).toBe(false);
+  });
+
+  // Deliberately no test here calls `settings.*`, `secrets.*`, or `chat.*`
+  // against the real running app: unlike `health`, all three have real side
+  // effects (an audit write, a settings read/write, and — for `chat.send` —
+  // an actual network request to whatever provider is configured) against
+  // the *real* `%APPDATA%\Local-Agent\` — this suite never overrides that
+  // path and must never make a real network call in a test, so exercising
+  // them belongs to `tests/unit/main/ipc.test.ts`, which does so against a
+  // temporary directory and a mocked `fetch`. This suite only inspects the
+  // bridge's static shape.
 
   it('answers the named, schema-validated health-check channel', async () => {
     const result = await page.evaluate(async () => {

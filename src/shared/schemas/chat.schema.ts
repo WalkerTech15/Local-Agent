@@ -23,17 +23,20 @@ import {
   CHAT_MESSAGE_CONTENT_MIN_LENGTH,
   CHAT_MESSAGE_ROLES,
   CHAT_MESSAGE_STATUSES,
+  CHAT_STREAM_MAX_DELTA_LENGTH,
 } from '../constants';
 import { auditParametersSchema } from './audit-parameters.schema';
 import type { AuditParameters } from './audit-parameters.schema';
 
 /**
  * Bounded, control-character- and bidi-safe text, shared by a message's own
- * `content` and by {@link chatProviderResultSchema}'s `content` — the same
+ * `content`, by {@link chatProviderResultSchema}'s `content`, and by
+ * `chatSendResponseSchema` (`ipc.schema.ts`, Phase 2 Milestone 3) — the same
  * safety rules apply the moment either crosses a validation boundary,
- * whether that text was typed by the user or returned by a provider.
+ * whether that text was typed by the user, returned by a provider, or
+ * crossed the IPC boundary from the main process's real adapter.
  */
-const chatContentSchema = z
+export const chatContentSchema = z
   .string()
   .min(CHAT_MESSAGE_CONTENT_MIN_LENGTH)
   .max(CHAT_MESSAGE_CONTENT_MAX_LENGTH)
@@ -124,3 +127,27 @@ export const chatProviderResultSchema = z.strictObject({
   content: chatContentSchema,
 });
 export type ChatProviderResultPayload = z.infer<typeof chatProviderResultSchema>;
+
+/**
+ * One fragment of a streamed assistant reply (Phase 2, Milestone 4).
+ *
+ * Held to the same content-safety rules as a whole message — no unsafe
+ * control characters, no bidirectional overrides — and separately bounded by
+ * {@link CHAT_STREAM_MAX_DELTA_LENGTH}, which is far smaller than a full
+ * message: a delta is one piece of an answer, not an answer.
+ *
+ * A delta is a **preview**, never a message. Failing this schema drops that
+ * one fragment from the preview and nothing more; whether the reply as a
+ * whole is acceptable is decided separately, and authoritatively, by
+ * {@link chatProviderResultSchema} once the stream completes.
+ */
+export const chatStreamDeltaSchema = z
+  .string()
+  .min(1)
+  .max(CHAT_STREAM_MAX_DELTA_LENGTH)
+  .refine((value) => !CHAT_CONTROL_CHARACTER_PATTERN.test(value), {
+    message: 'must not contain unsafe control characters',
+  })
+  .refine((value) => !BIDI_CONTROL_PATTERN.test(value), {
+    message: 'must not contain bidirectional control characters',
+  });

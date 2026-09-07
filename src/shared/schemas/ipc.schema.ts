@@ -36,12 +36,15 @@
 
 import { z } from 'zod';
 
+import { CHAT_PROVIDER_ERROR_CODES } from '../chat/provider';
 import {
   API_KEY_MAX_LENGTH,
   API_KEY_MIN_LENGTH,
   AUDIT_OUTCOMES,
+  CHAT_CONVERSATION_MAX_MESSAGES,
   CONTROL_CHARACTER_PATTERN,
 } from '../constants';
+import { chatContentSchema, chatMessageSchema, chatStreamDeltaSchema } from './chat.schema';
 import {
   assistantSettingsSchema,
   languageSettingsSchema,
@@ -165,3 +168,97 @@ export const secretsWriteResponseSchema = secretsActionResponseSchema;
 export const secretsClearResponseSchema = secretsActionResponseSchema;
 
 export type SecretsActionResponse = z.infer<typeof secretsActionResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Chat: chat.send (Phase 2, Milestone 3)
+//
+// The one network-capable action in this codebase. `chat:send` routes
+// through the same `handleActionProposal` pipeline as every channel above —
+// see `main/ipc.ts` — so a real provider call is permission-gated,
+// emergency-stop-gated and audited exactly like `secrets.write` is, never
+// reached directly from this IPC handler. `chat:cancel` has no side effect
+// of its own: it only asks the main process to abort a `chat:send` call
+// already in flight and already authorized, so it is not routed through the
+// permission engine — see `main/ipc.ts`'s handler for the reasoning.
+//
+// Neither request schema below accepts an API key, a header, or a provider
+// URL: the request carries only the conversation itself. `main/ipc.ts`
+// resolves which provider to call, and with which stored credential, from
+// settings and the encrypted secret store — never from renderer input.
+// ---------------------------------------------------------------------------
+
+export const IPC_CHAT_SEND_CHANNEL = 'chat:send';
+export const IPC_CHAT_CANCEL_CHANNEL = 'chat:cancel';
+
+export const chatSendRequestSchema = z.tuple([
+  z.strictObject({
+    /** Correlates a later `chat:cancel` call to this specific in-flight request. */
+    requestId: z.uuid(),
+    messages: z.array(chatMessageSchema).max(CHAT_CONVERSATION_MAX_MESSAGES),
+  }),
+]);
+
+export type ChatSendRequestInput = z.infer<typeof chatSendRequestSchema>[0];
+
+/**
+ * `content` is present only on `outcome: 'success'`; `errorCode` is present
+ * only otherwise, and is always one of {@link CHAT_PROVIDER_ERROR_CODES} —
+ * the same normalized vocabulary `ChatProvider` implementations already
+ * throw, reused rather than re-invented at this boundary. Never a raw
+ * provider error message, a URL, a header, or a credential.
+ */
+export const chatSendResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  content: chatContentSchema.optional(),
+  errorCode: z.enum(CHAT_PROVIDER_ERROR_CODES).optional(),
+});
+
+export type ChatSendResponse = z.infer<typeof chatSendResponseSchema>;
+
+export const chatCancelRequestSchema = z.tuple([
+  z.strictObject({
+    requestId: z.uuid(),
+  }),
+]);
+
+/**
+ * Always `{ acknowledged: true }`. Cancellation is best-effort and
+ * idempotent — asking to cancel a request that already finished, or one that
+ * never existed, is not an error; there is simply nothing left to abort.
+ */
+export const chatCancelResponseSchema = z.strictObject({
+  acknowledged: z.literal(true),
+});
+
+export type ChatCancelResponse = z.infer<typeof chatCancelResponseSchema>;
+
+/**
+ * The one main → renderer push channel in this codebase (Phase 2, Milestone
+ * 4), carrying streaming previews for an in-flight `chat:send`.
+ *
+ * Deliberately narrow, in every dimension:
+ *
+ *  - **One direction, one purpose.** The renderer can only listen; there is
+ *    no request it can make on this channel and no reply it can send back.
+ *  - **Correlated.** `requestId` matches the `chat:send` call this delta
+ *    belongs to, so a listener discards anything that is not its own
+ *    request rather than trusting whatever arrives.
+ *  - **Bounded and content-safe.** `delta` is {@link chatStreamDeltaSchema}:
+ *    short, control-character-free, bidi-free. A larger fragment is split by
+ *    the sender into several events rather than sent whole.
+ *  - **Advisory.** A delta is a preview to render, never a message to
+ *    commit. The authoritative reply is still the one `chat:send` resolves
+ *    with, validated as a whole. Dropping every event on this channel would
+ *    cost the live preview and change nothing about the final conversation.
+ *
+ * Validated by `main/ipc.ts` before it is sent and again by
+ * `src/preload/index.ts` before any renderer listener sees it.
+ */
+export const IPC_CHAT_CHUNK_CHANNEL = 'chat:chunk';
+
+export const chatChunkEventSchema = z.strictObject({
+  requestId: z.uuid(),
+  delta: chatStreamDeltaSchema,
+});
+
+export type ChatChunkEvent = z.infer<typeof chatChunkEventSchema>;

@@ -84,6 +84,29 @@ export const PROVIDERS_REQUIRING_API_KEY: readonly ModelProvider[] = [
   'openai-compatible',
 ] as const;
 
+/**
+ * Endpoint used for `glm` when the user has not configured one (Phase 2,
+ * Milestone 4). GLM's public API speaks the OpenAI chat-completions wire
+ * format, so `/chat/completions` is appended to this base exactly as it is
+ * for `openai-compatible`. A user-configured `baseUrl` always wins — this is
+ * only the fallback, so a mirror or a corporate proxy stays configurable.
+ */
+export const GLM_DEFAULT_BASE_URL = 'https://open.bigmodel.cn/api/paas/v4';
+
+/**
+ * Endpoint used for `ollama` when the user has not configured one (Phase 2,
+ * Milestone 4). Ollama serves an OpenAI-compatible API under `/v1`, which is
+ * what this codebase talks to, so one wire protocol and one parser serve
+ * every real provider.
+ *
+ * Loopback by default, and — unlike every other provider — a configured
+ * `baseUrl` for `ollama` must *also* resolve to a local address, enforced by
+ * `src/shared/chat/local-endpoint.ts`. Ollama is a local runtime; a
+ * mistyped or hostile endpoint must never silently ship a conversation to a
+ * cloud service under the label "local".
+ */
+export const OLLAMA_DEFAULT_BASE_URL = 'http://127.0.0.1:11434/v1';
+
 // ---------------------------------------------------------------------------
 // Field limits
 // ---------------------------------------------------------------------------
@@ -136,12 +159,16 @@ export const BIDI_CONTROL_PATTERN = /[\u202A-\u202E\u2066-\u2069]/;
 // ---------------------------------------------------------------------------
 
 /**
- * Every privileged operation available in Phase 1.
+ * Every privileged operation available so far.
  *
- * Phase 1 deliberately contains no filesystem tool, no shell execution and no
- * network action. The list stays this short until a later phase adds one, and
- * every addition needs a matching policy rule because unmatched actions are
- * denied.
+ * Phase 1 contained no filesystem tool, no shell execution and no network
+ * action. Phase 2, Milestone 3 adds exactly one network-capable action,
+ * `chat.send` — sending the current conversation to the provider the user
+ * selected in settings, through the permission engine like every other
+ * action here, never directly from an IPC handler. It remains the only
+ * network-capable action: no filesystem tool, no shell execution, and no
+ * generic "make a request" action exist. Every addition needs a matching
+ * policy rule because unmatched actions are denied.
  */
 export const ACTION_TYPES = [
   'settings.read',
@@ -153,6 +180,7 @@ export const ACTION_TYPES = [
   'emergency.engage',
   'emergency.reset',
   'app.exit',
+  'chat.send',
 ] as const;
 export type ActionType = (typeof ACTION_TYPES)[number];
 
@@ -430,7 +458,53 @@ export const CHAT_CONVERSATION_MAX_MESSAGES = 200;
 // eslint-disable-next-line no-control-regex
 export const CHAT_CONTROL_CHARACTER_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
 
-/** The only provider implemented in this milestone. */
+// ---------------------------------------------------------------------------
+// Streaming bounds (Phase 2, Milestone 4)
+//
+// A streamed response arrives as many small pieces from an endpoint this
+// codebase does not control, so every dimension of it is bounded: the bytes
+// read from the socket, the length of a single unterminated protocol line,
+// the size of one delta forwarded to the renderer, and — through
+// CHAT_MESSAGE_CONTENT_MAX_LENGTH, reused rather than duplicated — the total
+// accumulated assistant output. Nothing accumulates without a cap.
+// ---------------------------------------------------------------------------
+
+/**
+ * Maximum bytes read from a streamed response body.
+ *
+ * Deliberately larger than {@link CHAT_MESSAGE_CONTENT_MAX_LENGTH} allows as
+ * *content*: server-sent-events framing wraps every delta in its own JSON
+ * envelope, so a provider streaming one character at a time spends far more
+ * bytes on the wire than the reply itself contains. The real bound on output
+ * is the accumulated-content cap, which trips first for any well-behaved
+ * stream; this is the backstop that keeps a pathological one from being read
+ * indefinitely.
+ */
+export const CHAT_STREAM_MAX_RESPONSE_BYTES = 4_000_000;
+
+/**
+ * Maximum length of a single unterminated line while parsing a streamed
+ * response. A stream that never emits a newline would otherwise grow the
+ * line buffer without limit, which is exactly the unbounded buffering the
+ * byte cap above exists to prevent — enforced separately because the two
+ * fail for different reasons and a reviewer should be able to tell them
+ * apart.
+ */
+export const CHAT_STREAM_MAX_LINE_LENGTH = 64_000;
+
+/**
+ * Maximum length of one delta forwarded to the renderer as a streaming
+ * preview. A larger delta is split across several events rather than
+ * dropped or truncated, so this bounds the size of a single IPC message
+ * without ever losing text.
+ */
+export const CHAT_STREAM_MAX_DELTA_LENGTH = 4_000;
+
+/**
+ * The deterministic mock provider's identifier. Still the only `ChatProvider`
+ * implemented inside `src/shared`; the real adapters live in `src/main` and
+ * are reached only through IPC.
+ */
 export const MOCK_CHAT_PROVIDER_ID = 'mock';
 
 /**
