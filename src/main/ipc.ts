@@ -34,6 +34,14 @@ import { resolveMainChatProvider } from './chat-provider-registry';
 import { ActionExecutionError } from './executor';
 import type { UserDataPaths } from './paths';
 import { clearSecret, SecretStoreUnavailableError, writeSecret } from './secrets';
+import { listProjectTree, readProjectFile, searchProject } from './workspace-inspector';
+import { createCodingPlan } from './workspace-planner';
+import {
+  adoptProjectDirectory,
+  createWorkspaceSession,
+  requireApprovedProject,
+  toProjectSummary,
+} from './workspace-session';
 import {
   readReconciledSettings,
   refreshHasApiKeyAfterSecretChange,
@@ -70,14 +78,44 @@ import {
   settingsGetResponseSchema,
   settingsUpdateRequestSchema,
   settingsUpdateResponseSchema,
+  IPC_WORKSPACE_FILE_CHANNEL,
+  IPC_WORKSPACE_PLAN_CHANNEL,
+  IPC_WORKSPACE_SEARCH_CHANNEL,
+  IPC_WORKSPACE_SELECT_CHANNEL,
+  IPC_WORKSPACE_STATUS_CHANNEL,
+  IPC_WORKSPACE_TREE_CHANNEL,
+  workspaceFileRequestSchema,
+  workspaceFileResponseSchema,
+  workspacePlanRequestSchema,
+  workspacePlanResponseSchema,
+  workspaceSearchRequestSchema,
+  workspaceSearchResponseSchema,
+  workspaceSelectRequestSchema,
+  workspaceSelectResponseSchema,
+  workspaceStatusRequestSchema,
+  workspaceStatusResponseSchema,
+  workspaceTreeRequestSchema,
+  workspaceTreeResponseSchema,
 } from '../shared/schemas';
 import type {
   ChatSendResponse,
+  CodingPlan,
   SecretsActionResponse,
   SecretStatusResult,
   SettingsActionResponse,
   Settings,
+  WorkspaceFile,
+  WorkspaceFileResponse,
+  WorkspacePlanResponse,
+  WorkspaceProjectResponse,
+  WorkspaceProjectSummary,
+  WorkspaceSearchResponse,
+  WorkspaceSearchResult,
+  WorkspaceTree,
+  WorkspaceTreeResponse,
 } from '../shared/schemas';
+import { isWorkspaceErrorCode, WorkspaceError } from '../shared/workspace/errors';
+import type { WorkspaceErrorCode } from '../shared/workspace/errors';
 import type { ActionProposal, ActionResult, ActionType, ConfirmationResult } from '../shared/types';
 
 /** `ActionResult.errorCode` values `secrets.write`'s `perform` may throw. */
@@ -114,6 +152,20 @@ export interface IpcHandlerRuntime {
   readonly requestConfirmation: (message: string) => Promise<ConfirmationResult>;
   /** UTC ISO-8601. Injected so this stays testable with a fixed clock. */
   readonly nowFn: () => string;
+  /**
+   * Shows the native project-directory picker and resolves to what the user
+   * chose, or `null` if they dismissed it (Phase 2, Milestone 5).
+   *
+   * Injected for exactly the reason `requestConfirmation` is: the real
+   * implementation calls `electron`'s `dialog`, which exists only inside a
+   * running Electron process, so keeping the dependency at the boundary —
+   * built once in `main/index.ts` — is what lets this module's own tests run
+   * under plain Node while still exercising the real selection path.
+   *
+   * Note what this signature does *not* have: a parameter. Nothing the
+   * renderer sends can influence which directory is offered or chosen.
+   */
+  readonly selectProjectDirectory: () => Promise<string | null>;
 }
 
 /**
@@ -201,6 +253,72 @@ function toChatSendResponse(result: ActionResult<ChatProviderResult>): ChatSendR
   return {
     outcome: result.outcome,
     ...(result.value === undefined ? {} : { content: result.value.content }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+/**
+ * Normalizes whatever code a workspace action failed with.
+ *
+ * `perform` below only ever throws a `WorkspaceError`, translated to an
+ * `ActionExecutionError` carrying the same code — but `execute` also has its
+ * own generic `EXECUTION_FAILED` for an unexpected throw, and that is not a
+ * member of the workspace vocabulary. Degrading it to `WORKSPACE_READ_FAILED`
+ * keeps a response schema-valid rather than letting an internal code fail
+ * validation on the way out, exactly as `toChatSendResponse` already does for
+ * the provider vocabulary. Defence in depth for a path that should not be
+ * reachable, not a substitute for `perform` normalizing its own failures.
+ */
+function toWorkspaceErrorCode(result: ActionResult): WorkspaceErrorCode | undefined {
+  if (result.errorCode === undefined) return undefined;
+  return isWorkspaceErrorCode(result.errorCode) ? result.errorCode : 'WORKSPACE_READ_FAILED';
+}
+
+function toWorkspaceProjectResponse(
+  result: ActionResult<WorkspaceProjectSummary | null>,
+): WorkspaceProjectResponse {
+  const errorCode = toWorkspaceErrorCode(result);
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { project: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function toWorkspaceTreeResponse(result: ActionResult<WorkspaceTree>): WorkspaceTreeResponse {
+  const errorCode = toWorkspaceErrorCode(result);
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { tree: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function toWorkspaceFileResponse(result: ActionResult<WorkspaceFile>): WorkspaceFileResponse {
+  const errorCode = toWorkspaceErrorCode(result);
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { file: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function toWorkspaceSearchResponse(
+  result: ActionResult<WorkspaceSearchResult>,
+): WorkspaceSearchResponse {
+  const errorCode = toWorkspaceErrorCode(result);
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { results: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function toWorkspacePlanResponse(result: ActionResult<CodingPlan>): WorkspacePlanResponse {
+  const errorCode = toWorkspaceErrorCode(result);
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { plan: result.value }),
     ...(errorCode === undefined ? {} : { errorCode }),
   };
 }
@@ -406,5 +524,155 @@ export function registerIpcHandlers(ipcMain: IpcMain, runtime: IpcHandlerRuntime
     // already in flight to stop early.
     inFlightChatRequests.get(requestId)?.abort();
     return chatCancelResponseSchema.parse({ acknowledged: true });
+  });
+
+  // -------------------------------------------------------------------------
+  // Coding workspace (Phase 2, Milestone 5)
+  //
+  // Six channels, all read-only, all routed through the same unmodified
+  // `runAction` -> `handleActionProposal` pipeline every other action-backed
+  // channel above uses. There is no seventh channel that writes.
+  // -------------------------------------------------------------------------
+
+  /**
+   * The project the user approved during *this* run.
+   *
+   * Created per `registerIpcHandlers` call, exactly like
+   * {@link inFlightChatRequests} above and for the same reason: one test's
+   * approved project can never leak into another's, and one application run's
+   * grant never survives into the next. Nothing persists it to disk.
+   */
+  const workspaceSession = createWorkspaceSession();
+
+  /**
+   * Runs one workspace operation as a permission-gated, audited action.
+   *
+   * The `parameters` every caller passes below are deliberately thin —
+   * `operation`, and at most a *length*. No path, no project name, no query
+   * text and no file content ever enters an audit record: the milestone brief
+   * requires sensitive paths and contents to be kept out of logs, and this is
+   * the same discipline `chat.send` already applies by recording only
+   * `{provider, messageCount}` rather than the conversation.
+   *
+   * A thrown {@link WorkspaceError} becomes an `ActionExecutionError` carrying
+   * its normalized code, which is what `execute` already extracts into
+   * `ActionResult.errorCode` — the same translation `secrets.write` performs
+   * for `SecretStoreUnavailableError`.
+   */
+  async function runWorkspaceAction<TValue>(
+    actionType: ActionType,
+    parameters: Record<string, unknown>,
+    perform: (now: string) => TValue | Promise<TValue>,
+  ): Promise<ActionResult<TValue>> {
+    const now = runtime.nowFn();
+    const actionRuntime = buildActionRuntime(runtime, now);
+
+    return runAction(actionRuntime, newProposal(actionType, parameters), null, async () => {
+      try {
+        return await perform(now);
+      } catch (error) {
+        if (error instanceof WorkspaceError) {
+          throw new ActionExecutionError(error.code, error.message);
+        }
+        throw error;
+      }
+    });
+  }
+
+  ipcMain.handle(IPC_WORKSPACE_STATUS_CHANNEL, async (_event, ...args: unknown[]) => {
+    workspaceStatusRequestSchema.parse(args);
+
+    const result = await runWorkspaceAction<WorkspaceProjectSummary | null>(
+      'workspace.read',
+      { operation: 'status' },
+      () => {
+        const project = workspaceSession.get();
+        return project === null ? null : toProjectSummary(project);
+      },
+    );
+
+    return workspaceStatusResponseSchema.parse(toWorkspaceProjectResponse(result));
+  });
+
+  ipcMain.handle(IPC_WORKSPACE_SELECT_CHANNEL, async (_event, ...args: unknown[]) => {
+    workspaceSelectRequestSchema.parse(args);
+
+    const result = await runWorkspaceAction<WorkspaceProjectSummary | null>(
+      'workspace.select',
+      { operation: 'select' },
+      async (now) => {
+        // The renderer contributed nothing to this call. The user chooses in
+        // a native dialog the main process owns; a compromised renderer can
+        // ask that the question be put, and nothing more.
+        const chosenPath = await runtime.selectProjectDirectory();
+        if (chosenPath === null) {
+          // Dismissing the picker is the user declining, so it gets its own
+          // code rather than a generic failure — the interface shows no
+          // error for it, and the audit trail still records honestly that
+          // the action did not complete.
+          throw new WorkspaceError('WORKSPACE_SELECTION_CANCELLED');
+        }
+
+        const project = await adoptProjectDirectory({
+          chosenPath,
+          now,
+          userDataDir: runtime.userDataPaths.userDataDir,
+        });
+        workspaceSession.set(project);
+        return toProjectSummary(project);
+      },
+    );
+
+    return workspaceSelectResponseSchema.parse(toWorkspaceProjectResponse(result));
+  });
+
+  ipcMain.handle(IPC_WORKSPACE_TREE_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ path }] = workspaceTreeRequestSchema.parse(args);
+
+    const result = await runWorkspaceAction<WorkspaceTree>(
+      'workspace.read',
+      { operation: 'tree' },
+      () => listProjectTree(requireApprovedProject(workspaceSession), path),
+    );
+
+    return workspaceTreeResponseSchema.parse(toWorkspaceTreeResponse(result));
+  });
+
+  ipcMain.handle(IPC_WORKSPACE_FILE_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ path }] = workspaceFileRequestSchema.parse(args);
+
+    const result = await runWorkspaceAction<WorkspaceFile>(
+      'workspace.read',
+      { operation: 'file' },
+      () => readProjectFile(requireApprovedProject(workspaceSession), path),
+    );
+
+    return workspaceFileResponseSchema.parse(toWorkspaceFileResponse(result));
+  });
+
+  ipcMain.handle(IPC_WORKSPACE_SEARCH_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ query, path }] = workspaceSearchRequestSchema.parse(args);
+
+    const result = await runWorkspaceAction<WorkspaceSearchResult>(
+      'workspace.read',
+      // The query's *length*, never the query itself: a search term is user
+      // content, and user content does not belong in a security log.
+      { operation: 'search', queryLength: query.length },
+      () => searchProject(requireApprovedProject(workspaceSession), query, path),
+    );
+
+    return workspaceSearchResponseSchema.parse(toWorkspaceSearchResponse(result));
+  });
+
+  ipcMain.handle(IPC_WORKSPACE_PLAN_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ objective }] = workspacePlanRequestSchema.parse(args);
+
+    const result = await runWorkspaceAction<CodingPlan>(
+      'workspace.plan',
+      { operation: 'plan', objectiveLength: objective.length },
+      (now) => createCodingPlan(requireApprovedProject(workspaceSession), objective, now),
+    );
+
+    return workspacePlanResponseSchema.parse(toWorkspacePlanResponse(result));
   });
 }

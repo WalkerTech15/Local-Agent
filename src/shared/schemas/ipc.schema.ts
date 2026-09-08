@@ -46,6 +46,18 @@ import {
 } from '../constants';
 import { chatContentSchema, chatMessageSchema, chatStreamDeltaSchema } from './chat.schema';
 import {
+  codingPlanSchema,
+  workspaceEntryPathSchema,
+  workspaceFileSchema,
+  workspaceObjectiveSchema,
+  workspaceProjectSummarySchema,
+  workspaceRelativePathSchema,
+  workspaceSearchQuerySchema,
+  workspaceSearchResultSchema,
+  workspaceTreeSchema,
+} from './workspace.schema';
+import { WORKSPACE_ERROR_CODES } from '../workspace/errors';
+import {
   assistantSettingsSchema,
   languageSettingsSchema,
   modelProviderInputSchema,
@@ -262,3 +274,134 @@ export const chatChunkEventSchema = z.strictObject({
 });
 
 export type ChatChunkEvent = z.infer<typeof chatChunkEventSchema>;
+
+// ---------------------------------------------------------------------------
+// Coding workspace: workspace.select / workspace.read / workspace.plan
+// (Phase 2, Milestone 5)
+//
+// The first channels in this codebase that read the user's own filesystem.
+// Three properties are worth stating before the shapes, because they are what
+// keep "read-only workspace" a structural claim rather than a promise:
+//
+//  - **No request carries a project path.** `workspace:select` takes no
+//    arguments at all: the main process opens a native directory picker and
+//    the *user* chooses. A renderer — or anything that has compromised one —
+//    therefore cannot name a directory to open, only ask that the user be
+//    asked. Every other request carries a path *relative* to whatever the
+//    user already approved, validated by `workspaceRelativePathSchema` before
+//    it reaches the filesystem and re-checked for containment after
+//    resolution.
+//  - **No request can modify anything.** There is no content field, no
+//    destination, no patch and no write channel. The absence is the control.
+//  - **Every response is bounded.** Trees, matches, file text and generated
+//    plans are all capped by `workspace.schema.ts`, so a project with a
+//    million files produces a truncated response or an error, never an
+//    unbounded one.
+//
+// All six channels are routed through `main/action-runtime.ts`'s `runAction`
+// and the unmodified `handleActionProposal`, so each is permission-gated,
+// blocked by an engaged emergency stop, and audited — see `main/ipc.ts`.
+// ---------------------------------------------------------------------------
+
+export const IPC_WORKSPACE_STATUS_CHANNEL = 'workspace:status';
+export const IPC_WORKSPACE_SELECT_CHANNEL = 'workspace:select';
+export const IPC_WORKSPACE_TREE_CHANNEL = 'workspace:tree';
+export const IPC_WORKSPACE_FILE_CHANNEL = 'workspace:file';
+export const IPC_WORKSPACE_SEARCH_CHANNEL = 'workspace:search';
+export const IPC_WORKSPACE_PLAN_CHANNEL = 'workspace:plan';
+
+export const workspaceStatusRequestSchema = z.tuple([]);
+
+/**
+ * Takes no arguments on purpose. The directory is chosen by the user in a
+ * native dialog the main process owns and the renderer cannot see, forge or
+ * dismiss — the same reasoning that makes `main/confirm.ts`'s confirmation
+ * dialog native rather than HTML.
+ */
+export const workspaceSelectRequestSchema = z.tuple([]);
+
+export const workspaceTreeRequestSchema = z.tuple([
+  z.strictObject({
+    /** `''` lists the project root. */
+    path: workspaceRelativePathSchema,
+  }),
+]);
+
+export const workspaceFileRequestSchema = z.tuple([
+  z.strictObject({
+    path: workspaceEntryPathSchema,
+  }),
+]);
+
+export const workspaceSearchRequestSchema = z.tuple([
+  z.strictObject({
+    query: workspaceSearchQuerySchema,
+    /** The subtree to search; `''` searches the whole approved project. */
+    path: workspaceRelativePathSchema,
+  }),
+]);
+
+export const workspacePlanRequestSchema = z.tuple([
+  z.strictObject({
+    objective: workspaceObjectiveSchema,
+  }),
+]);
+
+export type WorkspaceTreeRequestInput = z.infer<typeof workspaceTreeRequestSchema>[0];
+export type WorkspaceFileRequestInput = z.infer<typeof workspaceFileRequestSchema>[0];
+export type WorkspaceSearchRequestInput = z.infer<typeof workspaceSearchRequestSchema>[0];
+export type WorkspacePlanRequestInput = z.infer<typeof workspacePlanRequestSchema>[0];
+
+/**
+ * `errorCode` is always one of {@link WORKSPACE_ERROR_CODES} — the same
+ * normalized vocabulary the workspace layer already throws, reused rather
+ * than re-invented at this boundary, exactly as `chatSendResponseSchema`
+ * reuses the provider vocabulary. Never a raw error, an `errno`, or a
+ * filesystem path.
+ */
+const workspaceErrorCodeSchema = z.enum(WORKSPACE_ERROR_CODES);
+
+/** Response for the two channels that answer with the approved project. */
+export const workspaceProjectResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  /** `null` means "no project approved", which is a success, not a failure. */
+  project: workspaceProjectSummarySchema.nullable().optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export const workspaceStatusResponseSchema = workspaceProjectResponseSchema;
+export const workspaceSelectResponseSchema = workspaceProjectResponseSchema;
+
+export type WorkspaceProjectResponse = z.infer<typeof workspaceProjectResponseSchema>;
+
+export const workspaceTreeResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  tree: workspaceTreeSchema.optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export type WorkspaceTreeResponse = z.infer<typeof workspaceTreeResponseSchema>;
+
+export const workspaceFileResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  file: workspaceFileSchema.optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export type WorkspaceFileResponse = z.infer<typeof workspaceFileResponseSchema>;
+
+export const workspaceSearchResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  results: workspaceSearchResultSchema.optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export type WorkspaceSearchResponse = z.infer<typeof workspaceSearchResponseSchema>;
+
+export const workspacePlanResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  plan: codingPlanSchema.optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export type WorkspacePlanResponse = z.infer<typeof workspacePlanResponseSchema>;

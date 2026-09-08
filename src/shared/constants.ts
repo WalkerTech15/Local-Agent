@@ -166,9 +166,19 @@ export const BIDI_CONTROL_PATTERN = /[\u202A-\u202E\u2066-\u2069]/;
  * `chat.send` — sending the current conversation to the provider the user
  * selected in settings, through the permission engine like every other
  * action here, never directly from an IPC handler. It remains the only
- * network-capable action: no filesystem tool, no shell execution, and no
- * generic "make a request" action exist. Every addition needs a matching
- * policy rule because unmatched actions are denied.
+ * network-capable action: no shell execution and no generic "make a
+ * request" action exist. Every addition needs a matching policy rule
+ * because unmatched actions are denied.
+ *
+ * Phase 2, Milestone 5 adds the first three filesystem-reading actions —
+ * and they are deliberately not a filesystem *tool*. None of them can name
+ * a location: `workspace.select` opens a native directory picker the main
+ * process owns, so the user, not the renderer and not a model, chooses what
+ * may be read; `workspace.read` and `workspace.plan` operate only inside
+ * that already-approved root, on a path validated for containment first.
+ * There is still no `fs.read`, no `fs.write`, no `shell.execute`, and
+ * nothing here writes: the whole workspace surface is read-only, and a
+ * proposal that would modify a file has no action type to be expressed as.
  */
 export const ACTION_TYPES = [
   'settings.read',
@@ -181,6 +191,9 @@ export const ACTION_TYPES = [
   'emergency.reset',
   'app.exit',
   'chat.send',
+  'workspace.select',
+  'workspace.read',
+  'workspace.plan',
 ] as const;
 export type ActionType = (typeof ACTION_TYPES)[number];
 
@@ -514,3 +527,92 @@ export const MOCK_CHAT_PROVIDER_ID = 'mock';
  * and available during manual review of the failure and retry UI.
  */
 export const MOCK_CHAT_PROVIDER_FAILURE_TRIGGER = '/mock-fail';
+
+// ---------------------------------------------------------------------------
+// Coding workspace (Phase 2, Milestone 5)
+//
+// A read-only view of one directory tree the user explicitly approved through
+// a native picker owned by the main process. Every dimension of every
+// operation is bounded here: how deep a tree may go, how many entries it may
+// carry, how large a file may be before it is refused, how many search
+// results may come back, and how long an objective may be. A project is
+// someone else's source tree — untrusted input in exactly the sense
+// `AGENTS.md` §5 means — so nothing about it is read without a cap.
+//
+// The name lists that decide *which* paths are excluded, secret-bearing or
+// binary live in `src/shared/workspace/exclusions.ts` alongside the
+// predicates that use them; only the numeric bounds are here, matching how
+// the CHAT_* bounds above are laid out.
+// ---------------------------------------------------------------------------
+
+/**
+ * Maximum length of a renderer-supplied path *relative to the approved
+ * project root*. The renderer never supplies an absolute path — see
+ * `src/shared/workspace/path-safety.ts`, which rejects one outright.
+ */
+export const WORKSPACE_MAX_RELATIVE_PATH_LENGTH = 512;
+/** Maximum number of `/`-separated segments in a relative path. */
+export const WORKSPACE_MAX_PATH_SEGMENTS = 32;
+/** Maximum length of one path segment. Matches the common filesystem limit. */
+export const WORKSPACE_MAX_PATH_SEGMENT_LENGTH = 255;
+/** Maximum length of the absolute project path echoed back for display. */
+export const WORKSPACE_MAX_PROJECT_PATH_LENGTH = 4_096;
+
+/** Maximum directory depth the tree walk descends below its starting point. */
+export const WORKSPACE_MAX_TREE_DEPTH = 8;
+/** Maximum entries one tree response may carry, across every directory. */
+export const WORKSPACE_MAX_TREE_ENTRIES = 2_000;
+/** Maximum entries read from any single directory before the rest are skipped. */
+export const WORKSPACE_MAX_DIRECTORY_ENTRIES = 500;
+
+/**
+ * Maximum size of a file the viewer will open, in bytes.
+ *
+ * Exceeding it is **refused**, not truncated: a partially shown source file
+ * invites a reader to draw a conclusion from text that was silently cut off,
+ * which is the same reasoning `AUDIT_PARAM_MAX_*` uses for rejecting an
+ * oversized audit record rather than trimming it.
+ */
+export const WORKSPACE_MAX_FILE_BYTES = 512_000;
+/** Maximum decoded length of a file's text, in UTF-16 code units. */
+export const WORKSPACE_MAX_FILE_CONTENT_LENGTH = 512_000;
+/**
+ * Bytes sampled from the head of a file to decide whether it is binary. A
+ * NUL byte anywhere in the sample means "not text" — the cheap, standard
+ * heuristic, applied in addition to the extension list.
+ */
+export const WORKSPACE_BINARY_SNIFF_BYTES = 8_192;
+
+/** Bounds on a search query. Substring matching only — never a regular expression. */
+export const WORKSPACE_SEARCH_QUERY_MIN_LENGTH = 2;
+export const WORKSPACE_SEARCH_QUERY_MAX_LENGTH = 200;
+/** Maximum matches returned by one search before the result is marked truncated. */
+export const WORKSPACE_MAX_SEARCH_RESULTS = 200;
+/** Maximum files opened by one search, however few of them match. */
+export const WORKSPACE_MAX_SEARCH_FILES = 1_000;
+/** Files larger than this are skipped by search rather than read into memory. */
+export const WORKSPACE_SEARCH_MAX_FILE_BYTES = 256_000;
+/** Maximum length of the single-line excerpt shown for one match. */
+export const WORKSPACE_SEARCH_EXCERPT_MAX_LENGTH = 240;
+
+/** Bounds on the free-text coding request a plan is derived from. */
+export const WORKSPACE_OBJECTIVE_MIN_LENGTH = 4;
+export const WORKSPACE_OBJECTIVE_MAX_LENGTH = 2_000;
+/** Maximum keywords extracted from an objective. */
+export const WORKSPACE_OBJECTIVE_MAX_KEYWORDS = 8;
+/** Bounds on a generated plan, so a plan is never itself an unbounded payload. */
+export const WORKSPACE_PLAN_MAX_STEPS = 12;
+export const WORKSPACE_PLAN_MAX_FILES = 20;
+export const WORKSPACE_PLAN_MAX_RISKS = 12;
+export const WORKSPACE_PLAN_MAX_ASSUMPTIONS = 12;
+/** Maximum length of any single generated plan string. */
+export const WORKSPACE_PLAN_MAX_TEXT_LENGTH = 500;
+/**
+ * Maximum objective keywords the planner actually searches for.
+ *
+ * Each search opens up to {@link WORKSPACE_MAX_SEARCH_FILES} files, so this
+ * multiplies directly into how much reading one plan costs. Keywords arrive
+ * ordered longest-first — the more specific ones — so truncating the list
+ * keeps the searches that discriminate best.
+ */
+export const WORKSPACE_PLAN_MAX_SEARCH_TERMS = 3;

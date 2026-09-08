@@ -204,6 +204,30 @@ export function createDefaultPermissionPolicy(): PermissionPolicy {
         reason:
           'Sending a chat message is a direct, per-message user action, not a background or model-initiated one; the send itself is the consent.',
       },
+      {
+        id: 'workspace.select',
+        actionType: 'workspace.select',
+        decision: 'allow',
+        priority: 100,
+        reason:
+          'The native directory picker is itself the consent: the user chooses which directory becomes readable, in a dialog the main process owns and no renderer can forge.',
+      },
+      {
+        id: 'workspace.read',
+        actionType: 'workspace.read',
+        decision: 'allow',
+        priority: 100,
+        reason:
+          'Reading inside an already-approved project is bounded, read-only, and confined to the directory the user selected.',
+      },
+      {
+        id: 'workspace.plan',
+        actionType: 'workspace.plan',
+        decision: 'allow',
+        priority: 100,
+        reason:
+          'Producing a coding plan only reads the approved project; the plan itself is inert and cannot be applied.',
+      },
     ],
   };
 }

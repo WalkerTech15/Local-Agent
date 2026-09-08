@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -32,17 +32,34 @@ import {
   IPC_SECRETS_WRITE_CHANNEL,
   IPC_SETTINGS_GET_CHANNEL,
   IPC_SETTINGS_UPDATE_CHANNEL,
+  IPC_WORKSPACE_FILE_CHANNEL,
+  IPC_WORKSPACE_PLAN_CHANNEL,
+  IPC_WORKSPACE_SEARCH_CHANNEL,
+  IPC_WORKSPACE_SELECT_CHANNEL,
+  IPC_WORKSPACE_STATUS_CHANNEL,
+  IPC_WORKSPACE_TREE_CHANNEL,
 } from '../../../src/shared/schemas';
 import type {
   ChatCancelResponse,
   ChatSendResponse,
   SecretsActionResponse,
   SettingsActionResponse,
+  WorkspaceFileResponse,
+  WorkspacePlanResponse,
+  WorkspaceProjectResponse,
+  WorkspaceSearchResponse,
+  WorkspaceTreeResponse,
 } from '../../../src/shared/schemas';
 import type { ConfirmationResult } from '../../../src/shared/types';
 
 const NOW = '2026-08-07T00:00:00.000Z';
 const PLAINTEXT_KEY = 'sk-super-secret-onboarding-key';
+/**
+ * An obviously fake value written into a project fixture's `.env`, so tests
+ * can assert it never appears in a response, a search result or an audit
+ * record. Never a real credential — see `AGENTS.md` section 4.
+ */
+const WORKSPACE_SENTINEL_SECRET = 'fake-sentinel-not-a-real-key';
 
 /** One main → renderer event the fake `WebContents` was asked to send. */
 interface SentEvent {
@@ -139,11 +156,22 @@ function reject(): Promise<ConfirmationResult> {
   return Promise.resolve('rejected');
 }
 
+/**
+ * The default picker answer: dismissed.
+ *
+ * A test that wants a project must say so explicitly, so no test can approve
+ * a directory by forgetting to configure one.
+ */
+function cancelDirectoryPicker(): Promise<string | null> {
+  return Promise.resolve(null);
+}
+
 function buildRuntime(overrides: Partial<IpcHandlerRuntime> = {}): IpcHandlerRuntime {
   return {
     userDataPaths: paths,
     safeStorage: fakeSafeStorage(true),
     requestConfirmation: approve,
+    selectProjectDirectory: cancelDirectoryPicker,
     nowFn: () => NOW,
     ...overrides,
   };
@@ -930,5 +958,443 @@ describe('chat:cancel', () => {
   it('rejects a malformed request', async () => {
     const invoke = setUp();
     await expect(invoke(IPC_CHAT_CANCEL_CHANNEL, { requestId: 'not-a-uuid' })).rejects.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Coding workspace (Phase 2, Milestone 5)
+// ---------------------------------------------------------------------------
+
+/** A small project fixture, created outside the user-data directory. */
+async function createProjectFixture(): Promise<string> {
+  const projectRoot = await mkdtemp(join(tmpdir(), 'local-agent-project-'));
+  const real = await realpath(projectRoot);
+  await mkdir(join(real, 'src'), { recursive: true });
+  await mkdir(join(real, 'node_modules', 'pkg'), { recursive: true });
+  await writeFile(join(real, 'README.md'), '# Fixture\n\nThe answer is 42.\n', 'utf8');
+  await writeFile(join(real, 'package.json'), '{"name":"fixture"}\n', 'utf8');
+  await writeFile(join(real, 'src', 'index.ts'), 'export const answer = 42;\n', 'utf8');
+  await writeFile(join(real, '.env'), `API_KEY=${WORKSPACE_SENTINEL_SECRET}\n`, 'utf8');
+  await writeFile(join(real, 'node_modules', 'pkg', 'index.js'), 'module.exports = 42;\n', 'utf8');
+  return real;
+}
+
+/** Registers handlers whose picker returns `projectRoot` exactly once. */
+function setUpWorkspace(projectRoot: string, overrides: Partial<IpcHandlerRuntime> = {}) {
+  return setUp({
+    selectProjectDirectory: () => Promise.resolve(projectRoot),
+    ...overrides,
+  });
+}
+
+describe('workspace:status', () => {
+  it('reports no project before one has been approved', async () => {
+    const invoke = setUp();
+    const response = (await invoke(IPC_WORKSPACE_STATUS_CHANNEL)) as WorkspaceProjectResponse;
+    expect(response.outcome).toBe('success');
+    expect(response.project).toBeNull();
+  });
+
+  it('is routed through the permission pipeline and audited', async () => {
+    const invoke = setUp();
+    await invoke(IPC_WORKSPACE_STATUS_CHANNEL);
+
+    const [record] = await readAuditLines();
+    expect(record?.actionType).toBe('workspace.read');
+    expect(record?.decision).toBe('allow');
+    expect(record?.outcome).toBe('success');
+    expect(record?.parameters).toEqual({ operation: 'status' });
+  });
+
+  it('rejects an unexpected argument before any proposal is built', async () => {
+    const invoke = setUp();
+    await expect(invoke(IPC_WORKSPACE_STATUS_CHANNEL, { extra: true })).rejects.toThrow();
+    await expect(readAuditLines()).rejects.toThrow();
+  });
+});
+
+describe('workspace:select', () => {
+  let projectRoot: string;
+
+  beforeEach(async () => {
+    projectRoot = await createProjectFixture();
+  });
+
+  afterEach(async () => {
+    await rm(projectRoot, { recursive: true, force: true });
+  });
+
+  it('adopts the directory the native picker returned, with its markers', async () => {
+    const invoke = setUpWorkspace(projectRoot);
+    const response = (await invoke(IPC_WORKSPACE_SELECT_CHANNEL)) as WorkspaceProjectResponse;
+
+    expect(response.outcome).toBe('success');
+    expect(response.project?.path).toBe(projectRoot);
+    expect(response.project?.markers).toContain('package.json');
+    expect(response.project?.markers).toContain('README.md');
+  });
+
+  it('takes no argument, so the renderer cannot name a directory', async () => {
+    const selectProjectDirectory = vi.fn(() => Promise.resolve(projectRoot));
+    const invoke = setUp({ selectProjectDirectory });
+
+    // A payload naming a directory is rejected outright by the request tuple.
+    await expect(invoke(IPC_WORKSPACE_SELECT_CHANNEL, { path: 'C:\\Windows' })).rejects.toThrow();
+    expect(selectProjectDirectory).not.toHaveBeenCalled();
+
+    await invoke(IPC_WORKSPACE_SELECT_CHANNEL);
+    expect(selectProjectDirectory).toHaveBeenCalledWith();
+  });
+
+  it('reports a dismissed picker with its own code, not a generic failure', async () => {
+    const invoke = setUp({ selectProjectDirectory: () => Promise.resolve(null) });
+    const response = (await invoke(IPC_WORKSPACE_SELECT_CHANNEL)) as WorkspaceProjectResponse;
+    expect(response.outcome).toBe('failure');
+    expect(response.errorCode).toBe('WORKSPACE_SELECTION_CANCELLED');
+    expect(response.project).toBeUndefined();
+  });
+
+  it("refuses the application's own user-data directory", async () => {
+    const invoke = setUp({ selectProjectDirectory: () => Promise.resolve(dir) });
+    const response = (await invoke(IPC_WORKSPACE_SELECT_CHANNEL)) as WorkspaceProjectResponse;
+    expect(response.outcome).toBe('failure');
+    expect(response.errorCode).toBe('WORKSPACE_INVALID_PROJECT');
+  });
+
+  it('records the selection without the path or the project name', async () => {
+    const invoke = setUpWorkspace(projectRoot);
+    await invoke(IPC_WORKSPACE_SELECT_CHANNEL);
+
+    const [record] = await readAuditLines();
+    expect(record?.actionType).toBe('workspace.select');
+    expect(record?.outcome).toBe('success');
+    expect(record?.parameters).toEqual({ operation: 'select' });
+    // A directory path can name a person, a client, or an unreleased product.
+    expect(JSON.stringify(record)).not.toContain(projectRoot);
+  });
+
+  it('keeps the approved project for the rest of the session', async () => {
+    const invoke = setUpWorkspace(projectRoot);
+    await invoke(IPC_WORKSPACE_SELECT_CHANNEL);
+
+    const status = (await invoke(IPC_WORKSPACE_STATUS_CHANNEL)) as WorkspaceProjectResponse;
+    expect(status.project?.path).toBe(projectRoot);
+  });
+
+  it('never leaks the project of one registration into another', async () => {
+    const first = setUpWorkspace(projectRoot);
+    await first(IPC_WORKSPACE_SELECT_CHANNEL);
+
+    const second = setUp();
+    const status = (await second(IPC_WORKSPACE_STATUS_CHANNEL)) as WorkspaceProjectResponse;
+    expect(status.project).toBeNull();
+  });
+});
+
+describe('workspace:tree, workspace:file and workspace:search', () => {
+  let projectRoot: string;
+
+  beforeEach(async () => {
+    projectRoot = await createProjectFixture();
+  });
+
+  afterEach(async () => {
+    await rm(projectRoot, { recursive: true, force: true });
+  });
+
+  async function withProject() {
+    const invoke = setUpWorkspace(projectRoot);
+    await invoke(IPC_WORKSPACE_SELECT_CHANNEL);
+    return invoke;
+  }
+
+  it('refuses every read before a project is approved', async () => {
+    const invoke = setUp();
+    for (const [channel, payload] of [
+      [IPC_WORKSPACE_TREE_CHANNEL, { path: '' }],
+      [IPC_WORKSPACE_FILE_CHANNEL, { path: 'README.md' }],
+      [IPC_WORKSPACE_SEARCH_CHANNEL, { query: 'answer', path: '' }],
+      [IPC_WORKSPACE_PLAN_CHANNEL, { objective: 'Add retry' }],
+    ] as const) {
+      const response = (await invoke(channel, payload)) as { outcome: string; errorCode?: string };
+      expect(response.outcome, channel).toBe('failure');
+      expect(response.errorCode, channel).toBe('WORKSPACE_NO_PROJECT');
+    }
+  });
+
+  it('lists the approved project', async () => {
+    const invoke = await withProject();
+    const response = (await invoke(IPC_WORKSPACE_TREE_CHANNEL, {
+      path: '',
+    })) as WorkspaceTreeResponse;
+    expect(response.outcome).toBe('success');
+    expect(response.tree?.entries.map((entry) => entry.path)).toContain('README.md');
+  });
+
+  it('reads a text file from the approved project', async () => {
+    const invoke = await withProject();
+    const response = (await invoke(IPC_WORKSPACE_FILE_CHANNEL, {
+      path: 'src/index.ts',
+    })) as WorkspaceFileResponse;
+    expect(response.outcome).toBe('success');
+    expect(response.file?.content).toContain('answer');
+  });
+
+  it('refuses a traversal at the schema, before a proposal exists', async () => {
+    const invoke = await withProject();
+    await expect(
+      invoke(IPC_WORKSPACE_FILE_CHANNEL, { path: '../../etc/passwd' }),
+    ).rejects.toThrow();
+    await expect(invoke(IPC_WORKSPACE_TREE_CHANNEL, { path: '..' })).rejects.toThrow();
+  });
+
+  it('refuses a credential file and never returns its contents', async () => {
+    const invoke = await withProject();
+    const response = (await invoke(IPC_WORKSPACE_FILE_CHANNEL, {
+      path: '.env',
+    })) as WorkspaceFileResponse;
+    expect(response.outcome).toBe('failure');
+    expect(response.errorCode).toBe('WORKSPACE_PATH_EXCLUDED');
+    expect(JSON.stringify(response)).not.toContain(WORKSPACE_SENTINEL_SECRET);
+  });
+
+  it('never surfaces a credential through search either', async () => {
+    const invoke = await withProject();
+    const response = (await invoke(IPC_WORKSPACE_SEARCH_CHANNEL, {
+      query: WORKSPACE_SENTINEL_SECRET,
+      path: '',
+    })) as WorkspaceSearchResponse;
+    expect(response.outcome).toBe('success');
+    expect(response.results?.matches).toEqual([]);
+  });
+
+  it('searches the approved project and returns bounded matches', async () => {
+    const invoke = await withProject();
+    const response = (await invoke(IPC_WORKSPACE_SEARCH_CHANNEL, {
+      query: 'answer',
+      path: '',
+    })) as WorkspaceSearchResponse;
+    expect(response.outcome).toBe('success');
+    expect(response.results?.matches.length).toBeGreaterThan(0);
+    for (const match of response.results?.matches ?? []) {
+      expect(match.path.startsWith('node_modules/')).toBe(false);
+    }
+  });
+
+  it('rejects a search query that is too short or carries control characters', async () => {
+    const invoke = await withProject();
+    await expect(invoke(IPC_WORKSPACE_SEARCH_CHANNEL, { query: 'a', path: '' })).rejects.toThrow();
+    await expect(
+      invoke(IPC_WORKSPACE_SEARCH_CHANNEL, {
+        query: `bad${String.fromCharCode(0)}query`,
+        path: '',
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('records the operation and a length, never a path, a name or a query', async () => {
+    const invoke = await withProject();
+    await invoke(IPC_WORKSPACE_FILE_CHANNEL, { path: 'src/index.ts' });
+    await invoke(IPC_WORKSPACE_SEARCH_CHANNEL, { query: 'answer', path: '' });
+
+    const records = await readAuditLines();
+    const fileRecord = records.find(
+      (record) => (record.parameters as { operation?: string }).operation === 'file',
+    );
+    const searchRecord = records.find(
+      (record) => (record.parameters as { operation?: string }).operation === 'search',
+    );
+
+    expect(fileRecord?.parameters).toEqual({ operation: 'file' });
+    expect(searchRecord?.parameters).toEqual({ operation: 'search', queryLength: 6 });
+
+    const serialized = JSON.stringify(records);
+    expect(serialized).not.toContain('src/index.ts');
+    expect(serialized).not.toContain('answer');
+    expect(serialized).not.toContain(projectRoot);
+  });
+});
+
+describe('workspace:plan', () => {
+  let projectRoot: string;
+
+  beforeEach(async () => {
+    projectRoot = await createProjectFixture();
+  });
+
+  afterEach(async () => {
+    await rm(projectRoot, { recursive: true, force: true });
+  });
+
+  it('produces an inert plan that always awaits approval', async () => {
+    const invoke = setUpWorkspace(projectRoot);
+    await invoke(IPC_WORKSPACE_SELECT_CHANNEL);
+
+    const response = (await invoke(IPC_WORKSPACE_PLAN_CHANNEL, {
+      objective: 'Add retry around the answer constant',
+    })) as WorkspacePlanResponse;
+
+    expect(response.outcome).toBe('success');
+    expect(response.plan?.approvalRequired).toBe(true);
+    expect(response.plan?.status).toBe('awaiting-approval');
+    expect(response.plan?.diff).toBeNull();
+  });
+
+  it('changes nothing on disk, whatever the objective asks for', async () => {
+    const invoke = setUpWorkspace(projectRoot);
+    await invoke(IPC_WORKSPACE_SELECT_CHANNEL);
+
+    const before = await readFile(join(projectRoot, 'src', 'index.ts'), 'utf8');
+    await invoke(IPC_WORKSPACE_PLAN_CHANNEL, {
+      objective: 'Delete src/index.ts and rewrite README.md completely',
+    });
+    expect(await readFile(join(projectRoot, 'src', 'index.ts'), 'utf8')).toBe(before);
+  });
+
+  it('records the objective length, never the objective itself', async () => {
+    const invoke = setUpWorkspace(projectRoot);
+    await invoke(IPC_WORKSPACE_SELECT_CHANNEL);
+    await invoke(IPC_WORKSPACE_PLAN_CHANNEL, { objective: 'Add retry to the answer' });
+
+    const records = await readAuditLines();
+    const planRecord = records.find((record) => record.actionType === 'workspace.plan');
+    expect(planRecord?.parameters).toEqual({
+      operation: 'plan',
+      objectiveLength: 'Add retry to the answer'.length,
+    });
+    expect(JSON.stringify(records)).not.toContain('Add retry to the answer');
+  });
+
+  it('rejects an objective that is too short, too long, or unsafe', async () => {
+    const invoke = setUpWorkspace(projectRoot);
+    await invoke(IPC_WORKSPACE_SELECT_CHANNEL);
+
+    await expect(invoke(IPC_WORKSPACE_PLAN_CHANNEL, { objective: 'ab' })).rejects.toThrow();
+    await expect(
+      invoke(IPC_WORKSPACE_PLAN_CHANNEL, { objective: 'a'.repeat(5000) }),
+    ).rejects.toThrow();
+    await expect(
+      invoke(IPC_WORKSPACE_PLAN_CHANNEL, { objective: `add${String.fromCharCode(0)}retry` }),
+    ).rejects.toThrow();
+  });
+});
+
+describe('workspace channels under the emergency stop', () => {
+  let projectRoot: string;
+
+  beforeEach(async () => {
+    projectRoot = await createProjectFixture();
+  });
+
+  afterEach(async () => {
+    await rm(projectRoot, { recursive: true, force: true });
+  });
+
+  it('denies every workspace action once the stop is engaged', async () => {
+    const invoke = setUpWorkspace(projectRoot);
+    await invoke(IPC_WORKSPACE_SELECT_CHANNEL);
+    await engageEmergencyStop(paths.emergencyStateFile, NOW);
+
+    for (const [channel, payload] of [
+      [IPC_WORKSPACE_STATUS_CHANNEL, undefined],
+      [IPC_WORKSPACE_SELECT_CHANNEL, undefined],
+      [IPC_WORKSPACE_TREE_CHANNEL, { path: '' }],
+      [IPC_WORKSPACE_FILE_CHANNEL, { path: 'README.md' }],
+      [IPC_WORKSPACE_SEARCH_CHANNEL, { query: 'answer', path: '' }],
+      [IPC_WORKSPACE_PLAN_CHANNEL, { objective: 'Add retry' }],
+    ] as const) {
+      const response = (await (payload === undefined
+        ? invoke(channel)
+        : invoke(channel, payload))) as { outcome: string };
+      expect(response.outcome, channel).toBe('denied');
+    }
+  });
+
+  it('never opens the picker while the stop is engaged', async () => {
+    const selectProjectDirectory = vi.fn(() => Promise.resolve(projectRoot));
+    const invoke = setUp({ selectProjectDirectory });
+    await engageEmergencyStop(paths.emergencyStateFile, NOW);
+
+    const response = (await invoke(IPC_WORKSPACE_SELECT_CHANNEL)) as WorkspaceProjectResponse;
+    expect(response.outcome).toBe('denied');
+    // `execute` never reaches `perform`, so the dialog is never shown.
+    expect(selectProjectDirectory).not.toHaveBeenCalled();
+  });
+
+  it('never reads a file while the stop is engaged', async () => {
+    const invoke = setUpWorkspace(projectRoot);
+    await invoke(IPC_WORKSPACE_SELECT_CHANNEL);
+    await engageEmergencyStop(paths.emergencyStateFile, NOW);
+
+    const response = (await invoke(IPC_WORKSPACE_FILE_CHANNEL, {
+      path: 'src/index.ts',
+    })) as WorkspaceFileResponse;
+    expect(response.outcome).toBe('denied');
+    expect(response.file).toBeUndefined();
+  });
+
+  it('records the denial with the same fidelity as a success', async () => {
+    const invoke = setUpWorkspace(projectRoot);
+    await engageEmergencyStop(paths.emergencyStateFile, NOW);
+    await invoke(IPC_WORKSPACE_TREE_CHANNEL, { path: '' });
+
+    const records = await readAuditLines();
+    const denial = records.find((record) => record.actionType === 'workspace.read');
+    expect(denial?.decision).toBe('deny');
+    expect(denial?.outcome).toBe('denied');
+    expect(denial?.decisionReason).toBe('emergency-stop');
+  });
+});
+
+describe('workspace channels under a restrictive policy', () => {
+  let projectRoot: string;
+
+  beforeEach(async () => {
+    projectRoot = await createProjectFixture();
+  });
+
+  afterEach(async () => {
+    await rm(projectRoot, { recursive: true, force: true });
+  });
+
+  it('denies a workspace action a hand-edited policy omits', async () => {
+    // A policy that declares only the emergency floor leaves every workspace
+    // action unmatched, and unmatched actions are denied.
+    await mkdir(join(paths.userDataDir, 'permissions'), { recursive: true });
+    await writeFile(
+      paths.permissionPolicyFile,
+      JSON.stringify({
+        schemaVersion: 1,
+        defaultDecision: 'deny',
+        rules: [
+          {
+            id: 'audit.read',
+            actionType: 'audit.read',
+            decision: 'allow',
+            priority: 100,
+            reason: 'x',
+          },
+          {
+            id: 'emergency.engage',
+            actionType: 'emergency.engage',
+            decision: 'allow',
+            priority: 100,
+            reason: 'x',
+          },
+          {
+            id: 'emergency.reset',
+            actionType: 'emergency.reset',
+            decision: 'confirm',
+            priority: 100,
+            reason: 'x',
+          },
+        ],
+      }),
+      'utf8',
+    );
+
+    const invoke = setUpWorkspace(projectRoot);
+    const response = (await invoke(IPC_WORKSPACE_SELECT_CHANNEL)) as WorkspaceProjectResponse;
+    expect(response.outcome).toBe('denied');
   });
 });

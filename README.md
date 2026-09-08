@@ -3,8 +3,8 @@
 A local-first, permission-controlled desktop assistant for Windows. The
 assistant is named **JARVIS** by default; the product is **Local Agent**.
 
-> **Status: Phase 1 complete. Phase 2, Milestone 4 (provider completion and
-> streaming) in progress.**
+> **Status: Phase 1 complete. Phase 2, Milestone 5 (coding workspace
+> foundation) in progress.**
 > Phase 1 delivered the hardened desktop shell, non-secret settings storage,
 > an audit-log foundation, the permission-policy runtime, persisted
 > emergency-stop state, first-run onboarding, an encrypted secret store, and
@@ -33,15 +33,28 @@ assistant is named **JARVIS** by default; the product is **Local Agent**.
 > refused rather than sent — and reads no credential at all. A streamed
 > fragment is a preview, never a message: the reply committed to the
 > conversation is still the whole, separately validated one. `anthropic`,
-> `openai`, `claude` and `gemini` remain absent. See
+> `openai`, `claude` and `gemini` remain absent. Milestone 5 adds the
+> **read-only coding workspace**: the user approves one project directory in a
+> native picker the main process owns — the renderer cannot name a directory,
+> because `workspace.select` takes no argument at all — and the application can
+> then list, read, search and prepare a coding plan inside it, and nothing
+> else. Every path is contained twice (lexically, then again after `realpath`,
+> so a symbolic link cannot lead out); dependencies, build output and
+> credential files are never opened; every listing, file and search is
+> bounded; and **nothing in this milestone can modify a file**. That is
+> structural rather than a policy: no action type, no IPC channel, no preload
+> function and no schema can express a modification. A generated plan is
+> inert — its `diff` is pinned to `null`, it always awaits explicit approval,
+> and approving it unlocks nothing, because there is nothing to unlock. See
 > [docs/phase-2-chat-architecture.md](docs/phase-2-chat-architecture.md),
 > [docs/phase-2-provider-architecture.md](docs/phase-2-provider-architecture.md),
-> [docs/phase-2-real-provider-architecture.md](docs/phase-2-real-provider-architecture.md)
-> and
+> [docs/phase-2-real-provider-architecture.md](docs/phase-2-real-provider-architecture.md),
 > [docs/phase-2-provider-completion.md](docs/phase-2-provider-completion.md)
-> for the full design and for what remains explicitly deferred (tool/action
-> execution from model output, memory, and everything else Phase 2 has not
-> reached yet).
+> and
+> [docs/phase-2-coding-workspace.md](docs/phase-2-coding-workspace.md)
+> for the full design and for what remains explicitly deferred (file writing,
+> terminal execution, Git automation, tool/action execution from model output,
+> memory, and everything else Phase 2 has not reached yet).
 
 All rights reserved. No licence has been granted for this project.
 
@@ -83,12 +96,16 @@ postponed.
 - The preload bridge exposes only narrow, explicitly named, typed functions —
   `localAgent.health`, `localAgent.settings.{get,update}`,
   `localAgent.secrets.{status,write,clear}`,
-  `localAgent.chat.{send,cancel,onChunk}` — never `ipcRenderer` itself, never
-  a generic invoke-any-channel function, and never a generic
-  listen-to-any-channel one: `chat.onChunk` subscribes to a single fixed,
-  one-way streaming channel whose payloads are schema-validated in the
+  `localAgent.chat.{send,cancel,onChunk}`,
+  `localAgent.workspace.{status,select,tree,file,search,plan}` — never
+  `ipcRenderer` itself, never a generic invoke-any-channel function, and never
+  a generic listen-to-any-channel one: `chat.onChunk` subscribes to a single
+  fixed, one-way streaming channel whose payloads are schema-validated in the
   preload before any renderer code sees them. None of them can return a
-  plaintext API key.
+  plaintext API key, and none of the workspace functions can write, create,
+  delete or apply anything — `workspace.select` does not even accept a path,
+  since the directory is chosen by the user in a native dialog the main
+  process owns.
 - A strict Content-Security-Policy blocks remote script and network access
   outright; navigation, `window.open` and `<webview>` are all denied.
 - An action with no matching policy rule is **denied** — enforced both by the
@@ -135,13 +152,27 @@ postponed.
   anything: there is no path from a chat message, typed, streamed or
   received, to `main/executor.ts` or to an action proposal.
 
+- The coding workspace (Phase 2, Milestone 5) is **read-only, and structurally
+  so**. The user approves one directory through a native picker the main
+  process owns; the renderer cannot name a directory, and no action type, IPC
+  channel, preload function or schema in this milestone can express a
+  modification. Every renderer-supplied path is validated lexically and then
+  re-checked after `realpath`, so a symbolic link cannot lead outside the
+  approved project. Dependencies, build output and credential files are never
+  opened. Every listing, file read and search is bounded and reports when a
+  bound stopped it. A generated coding plan is inert: it always awaits explicit
+  approval, and approving it unlocks nothing. The approved path lives in memory
+  for one application run and is never written to disk.
+
 Full detail, including known limitations, is in
 [docs/security-model.md](docs/security-model.md); the chat-specific design is
 in [docs/phase-2-chat-architecture.md](docs/phase-2-chat-architecture.md),
 [docs/phase-2-provider-architecture.md](docs/phase-2-provider-architecture.md),
 [docs/phase-2-real-provider-architecture.md](docs/phase-2-real-provider-architecture.md)
 and
-[docs/phase-2-provider-completion.md](docs/phase-2-provider-completion.md).
+[docs/phase-2-provider-completion.md](docs/phase-2-provider-completion.md);
+the workspace design is in
+[docs/phase-2-coding-workspace.md](docs/phase-2-coding-workspace.md).
 
 ## Where your data lives
 
@@ -211,8 +242,10 @@ src/shared/     Pure schemas, types and constants, plus chat/ (the
                 deterministic mock provider, the approved-provider registry
                 with its fail-closed adapters, the composable timeout
                 decorator, and the local-endpoint classifier that keeps
-                Ollama local). No I/O, no Electron, no network — safe to
-                import from any process, including the renderer.
+                Ollama local), plus workspace/ (the lexical path-safety rules,
+                the exclusion lists, the normalized error vocabulary, and the
+                pure coding-plan builder). No I/O, no Electron, no network —
+                safe to import from any process, including the renderer.
 src/main/       Privileged Electron main process. Owns the BrowserWindow,
                 the Content-Security-Policy, navigation/window-open/webview
                 hardening, non-secret settings storage (paths.ts,
@@ -231,7 +264,12 @@ src/main/       Privileged Electron main process. Owns the BrowserWindow,
                 ollama-provider.ts — the last enforced local), the
                 main-process provider registry that resolves them from
                 settings and the encrypted secret store
-                (chat-provider-registry.ts), and the eight registered IPC
+                (chat-provider-registry.ts), the read-only coding workspace
+                (directory-picker.ts — the native project picker;
+                workspace-paths.ts — canonical path containment;
+                workspace-session.ts — the approved project, in memory only;
+                workspace-inspector.ts — the only module that reads a user's
+                file; workspace-planner.ts), and the fourteen registered IPC
                 channels (ipc.ts), of which chat:chunk is the only
                 main-to-renderer event.
 src/preload/    The single contextBridge. Exposes a narrow, explicitly
@@ -246,9 +284,13 @@ src/renderer/   React interface: App.tsx gates on onboardingCompleted,
                 provider is active — and, since Milestone 3,
                 ipc-chat-provider.ts, the one file in this directory
                 permitted to call window.localAgent, reaching the real
-                provider through chat.send/chat.cancel). No Node, no
-                Electron, no direct filesystem or network access anywhere
-                else in this directory — only the bridge at window.localAgent.
+                provider through chat.send/chat.cancel), and workspace/ is the
+                Milestone 5 read-only coding surface (Workspace.tsx, the
+                framework-independent workspace-controller.ts, useWorkspace.ts,
+                and ipc-workspace-client.ts — the second and only other file
+                permitted to call window.localAgent). No Node, no Electron, no
+                direct filesystem or network access anywhere else in this
+                directory — only the bridge at window.localAgent.
 tests/unit/     Unit tests. `npm test`.
 tests/e2e/      Playwright + Electron smoke test against the built app.
                 `npm run test:e2e`.

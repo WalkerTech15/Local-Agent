@@ -19,6 +19,18 @@ import {
   secretsWriteResponseSchema,
   settingsGetResponseSchema,
   settingsUpdateResponseSchema,
+  IPC_WORKSPACE_FILE_CHANNEL,
+  IPC_WORKSPACE_PLAN_CHANNEL,
+  IPC_WORKSPACE_SEARCH_CHANNEL,
+  IPC_WORKSPACE_SELECT_CHANNEL,
+  IPC_WORKSPACE_STATUS_CHANNEL,
+  IPC_WORKSPACE_TREE_CHANNEL,
+  workspaceFileResponseSchema,
+  workspacePlanResponseSchema,
+  workspaceSearchResponseSchema,
+  workspaceSelectResponseSchema,
+  workspaceStatusResponseSchema,
+  workspaceTreeResponseSchema,
   type ChatChunkEvent,
   type ChatMessage,
   type ChatSendResponse,
@@ -26,6 +38,11 @@ import {
   type SecretsActionResponse,
   type SettingsActionResponse,
   type SettingsUpdateInput,
+  type WorkspaceFileResponse,
+  type WorkspacePlanResponse,
+  type WorkspaceProjectResponse,
+  type WorkspaceSearchResponse,
+  type WorkspaceTreeResponse,
 } from '../shared/schemas';
 
 /**
@@ -141,6 +158,51 @@ const bridge = {
       return () => {
         ipcRenderer.off(IPC_CHAT_CHUNK_CHANNEL, handler);
       };
+    },
+  },
+  /**
+   * The read-only coding workspace (Phase 2, Milestone 5).
+   *
+   * Six functions, six fixed channels, and — the property worth checking
+   * first — **no way to name a directory**. `select` takes no argument at
+   * all: the main process opens a native picker and the user chooses, so
+   * nothing on this bridge can point the application at a directory of the
+   * caller's choosing. Every other function takes a path *relative* to
+   * whatever the user already approved, which the main process validates for
+   * containment before it touches the filesystem and re-validates after
+   * resolving it.
+   *
+   * There is no `write`, no `create`, no `delete` and no `apply`. The absence
+   * is the control: a renderer cannot ask for a modification because no
+   * function here expresses one.
+   */
+  workspace: {
+    status: async (): Promise<WorkspaceProjectResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKSPACE_STATUS_CHANNEL);
+      return workspaceStatusResponseSchema.parse(result);
+    },
+    select: async (): Promise<WorkspaceProjectResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKSPACE_SELECT_CHANNEL);
+      return workspaceSelectResponseSchema.parse(result);
+    },
+    tree: async (path: string): Promise<WorkspaceTreeResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKSPACE_TREE_CHANNEL, { path });
+      return workspaceTreeResponseSchema.parse(result);
+    },
+    file: async (path: string): Promise<WorkspaceFileResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKSPACE_FILE_CHANNEL, { path });
+      return workspaceFileResponseSchema.parse(result);
+    },
+    search: async (query: string, path: string): Promise<WorkspaceSearchResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKSPACE_SEARCH_CHANNEL, {
+        query,
+        path,
+      });
+      return workspaceSearchResponseSchema.parse(result);
+    },
+    plan: async (objective: string): Promise<WorkspacePlanResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKSPACE_PLAN_CHANNEL, { objective });
+      return workspacePlanResponseSchema.parse(result);
     },
   },
 };

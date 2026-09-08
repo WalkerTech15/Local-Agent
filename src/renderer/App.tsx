@@ -2,10 +2,13 @@ import { useEffect, useState } from 'react';
 
 import { Chat } from './chat/Chat';
 import { Onboarding } from './Onboarding';
+import { Workspace } from './workspace/Workspace';
 import { createDefaultSettings } from '../shared/schemas';
 import type { Settings } from '../shared/schemas';
 
 type Phase = 'loading' | 'onboarding' | 'ready';
+/** Which surface the shell is showing (Phase 2, Milestone 5). */
+type View = 'chat' | 'workspace';
 
 /**
  * Used only when `settings.get` itself did not succeed (denied, or the
@@ -22,6 +25,7 @@ export function App() {
   const [phase, setPhase] = useState<Phase>('loading');
   const [settings, setSettings] = useState<Settings | null>(null);
   const [health, setHealth] = useState('checking');
+  const [view, setView] = useState<View>('chat');
 
   useEffect(() => {
     void window.localAgent.health().then((result) => {
@@ -77,8 +81,37 @@ export function App() {
           <p className="lede">Welcome back, {settings.user.displayName}.</p>
         )}
         <p className="status">Main process: {health}</p>
+        {/*
+          Two surfaces, one shell (Phase 2, Milestone 5). A plain view switch
+          rather than a redesign: the chat surface is exactly what it was, and
+          the workspace is a sibling next to it.
+        */}
+        <nav className="app-views" aria-label="Views">
+          <button
+            type="button"
+            aria-pressed={view === 'chat'}
+            onClick={() => {
+              setView('chat');
+            }}
+          >
+            Chat
+          </button>
+          <button
+            type="button"
+            aria-pressed={view === 'workspace'}
+            onClick={() => {
+              setView('workspace');
+            }}
+          >
+            Workspace
+          </button>
+        </nav>
       </header>
-      <Chat assistantName={assistantName} modelProvider={modelProvider} />
+      {view === 'chat' ? (
+        <Chat assistantName={assistantName} modelProvider={modelProvider} />
+      ) : (
+        <Workspace assistantName={assistantName} modelProvider={modelProvider} />
+      )}
     </main>
   );
 }

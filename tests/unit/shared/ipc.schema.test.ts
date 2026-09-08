@@ -23,7 +23,23 @@ import {
   settingsActionResponseSchema,
   settingsGetRequestSchema,
   settingsUpdateRequestSchema,
+  IPC_WORKSPACE_FILE_CHANNEL,
+  IPC_WORKSPACE_PLAN_CHANNEL,
+  IPC_WORKSPACE_SEARCH_CHANNEL,
+  IPC_WORKSPACE_SELECT_CHANNEL,
+  IPC_WORKSPACE_STATUS_CHANNEL,
+  IPC_WORKSPACE_TREE_CHANNEL,
+  workspaceFileRequestSchema,
+  workspacePlanRequestSchema,
+  workspacePlanResponseSchema,
+  workspaceProjectResponseSchema,
+  workspaceSearchRequestSchema,
+  workspaceSelectRequestSchema,
+  workspaceStatusRequestSchema,
+  workspaceTreeRequestSchema,
+  workspaceTreeResponseSchema,
 } from '../../../src/shared/schemas/ipc.schema';
+import { WORKSPACE_ERROR_CODES } from '../../../src/shared/workspace/errors';
 
 const NOW = '2026-08-07T00:00:00.000Z';
 
@@ -418,5 +434,181 @@ describe('chatCancelRequestSchema / chatCancelResponseSchema', () => {
     expect(chatCancelResponseSchema.safeParse({ acknowledged: true }).success).toBe(true);
     expect(chatCancelResponseSchema.safeParse({ acknowledged: false }).success).toBe(false);
     expect(chatCancelResponseSchema.safeParse({}).success).toBe(false);
+  });
+});
+
+describe('workspace channel request schemas (Phase 2, Milestone 5)', () => {
+  it('takes no argument for status or select, so no directory can be named', () => {
+    expect(workspaceStatusRequestSchema.safeParse([]).success).toBe(true);
+    expect(workspaceSelectRequestSchema.safeParse([]).success).toBe(true);
+
+    // The property that matters: there is no shape in which a caller can
+    // point the picker at a directory of its choosing.
+    expect(workspaceSelectRequestSchema.safeParse([{ path: 'C:\\Windows' }]).success).toBe(false);
+    expect(workspaceSelectRequestSchema.safeParse(['C:\\Windows']).success).toBe(false);
+    expect(workspaceStatusRequestSchema.safeParse([{}]).success).toBe(false);
+  });
+
+  it('accepts a project-relative path for tree, and the root as the empty string', () => {
+    expect(workspaceTreeRequestSchema.safeParse([{ path: '' }]).success).toBe(true);
+    expect(workspaceTreeRequestSchema.safeParse([{ path: 'src/main' }]).success).toBe(true);
+  });
+
+  it('rejects a traversal, an absolute path or a backslash on every path-taking channel', () => {
+    for (const path of ['../secrets', '/etc/passwd', 'src\\main', 'C:/Windows', 'src/../..']) {
+      expect(workspaceTreeRequestSchema.safeParse([{ path }]).success, path).toBe(false);
+      expect(workspaceFileRequestSchema.safeParse([{ path }]).success, path).toBe(false);
+      expect(
+        workspaceSearchRequestSchema.safeParse([{ query: 'answer', path }]).success,
+        path,
+      ).toBe(false);
+    }
+  });
+
+  it('requires a file request to name an entry rather than the project root', () => {
+    expect(workspaceFileRequestSchema.safeParse([{ path: '' }]).success).toBe(false);
+    expect(workspaceFileRequestSchema.safeParse([{ path: 'README.md' }]).success).toBe(true);
+  });
+
+  it('bounds the search query and rejects unsafe characters in it', () => {
+    expect(workspaceSearchRequestSchema.safeParse([{ query: 'a', path: '' }]).success).toBe(false);
+    expect(workspaceSearchRequestSchema.safeParse([{ query: 'ab', path: '' }]).success).toBe(true);
+    expect(
+      workspaceSearchRequestSchema.safeParse([{ query: 'a'.repeat(500), path: '' }]).success,
+    ).toBe(false);
+    expect(
+      workspaceSearchRequestSchema.safeParse([
+        { query: `bad${String.fromCharCode(0)}query`, path: '' },
+      ]).success,
+    ).toBe(false);
+  });
+
+  it('bounds the plan objective', () => {
+    expect(workspacePlanRequestSchema.safeParse([{ objective: 'Add retry' }]).success).toBe(true);
+    expect(workspacePlanRequestSchema.safeParse([{ objective: 'ab' }]).success).toBe(false);
+    expect(workspacePlanRequestSchema.safeParse([{ objective: 'a'.repeat(5000) }]).success).toBe(
+      false,
+    );
+  });
+
+  it('rejects an extra field on every request, so nothing can ride along', () => {
+    expect(workspaceTreeRequestSchema.safeParse([{ path: 'src', root: 'C:\\' }]).success).toBe(
+      false,
+    );
+    expect(
+      workspaceFileRequestSchema.safeParse([{ path: 'README.md', encoding: 'binary' }]).success,
+    ).toBe(false);
+    expect(
+      workspaceSearchRequestSchema.safeParse([{ query: 'answer', path: '', regex: true }]).success,
+    ).toBe(false);
+    expect(
+      workspacePlanRequestSchema.safeParse([{ objective: 'Add retry', apply: true }]).success,
+    ).toBe(false);
+  });
+
+  it('declares no request field that could carry content to write', () => {
+    // The absence is the control: there is no `content`, no `data`, no
+    // `patch` and no `destination` anywhere in the workspace request surface.
+    for (const forbidden of ['content', 'data', 'patch', 'diff', 'destination', 'write']) {
+      expect(
+        workspaceFileRequestSchema.safeParse([{ path: 'a.ts', [forbidden]: 'x' }]).success,
+        forbidden,
+      ).toBe(false);
+      expect(
+        workspacePlanRequestSchema.safeParse([{ objective: 'Add retry', [forbidden]: 'x' }])
+          .success,
+        forbidden,
+      ).toBe(false);
+    }
+  });
+});
+
+describe('workspace channel response schemas (Phase 2, Milestone 5)', () => {
+  const project = {
+    name: 'demo',
+    path: 'C:\\Users\\me\\demo',
+    selectedAt: NOW,
+    markers: ['package.json'],
+    hasGitMetadata: true,
+  };
+
+  it('carries a project, or an explicit null meaning none is approved', () => {
+    expect(workspaceProjectResponseSchema.safeParse({ outcome: 'success', project }).success).toBe(
+      true,
+    );
+    expect(
+      workspaceProjectResponseSchema.safeParse({ outcome: 'success', project: null }).success,
+    ).toBe(true);
+  });
+
+  it('carries only a normalized error code, never a message or a path', () => {
+    expect(
+      workspaceProjectResponseSchema.safeParse({
+        outcome: 'failure',
+        errorCode: 'WORKSPACE_INVALID_PROJECT',
+      }).success,
+    ).toBe(true);
+
+    for (const code of ['ENOENT', 'EACCES: permission denied', 'C:\\Users\\me\\secret', 'oops']) {
+      expect(
+        workspaceProjectResponseSchema.safeParse({ outcome: 'failure', errorCode: code }).success,
+        code,
+      ).toBe(false);
+    }
+  });
+
+  it('accepts every member of the normalized vocabulary and nothing else', () => {
+    for (const code of WORKSPACE_ERROR_CODES) {
+      expect(
+        workspaceTreeResponseSchema.safeParse({ outcome: 'failure', errorCode: code }).success,
+        code,
+      ).toBe(true);
+    }
+  });
+
+  it('rejects an unknown field on every response', () => {
+    expect(
+      workspaceTreeResponseSchema.safeParse({ outcome: 'success', tree: null, extra: 1 }).success,
+    ).toBe(false);
+    expect(
+      workspacePlanResponseSchema.safeParse({ outcome: 'success', applied: true }).success,
+    ).toBe(false);
+  });
+
+  it('declares every outcome, so a denial is distinguishable from a failure', () => {
+    for (const outcome of ['success', 'failure', 'denied', 'aborted']) {
+      expect(workspaceProjectResponseSchema.safeParse({ outcome }).success, outcome).toBe(true);
+    }
+  });
+});
+
+describe('the workspace channel names', () => {
+  it('are distinct from each other and from every other channel', () => {
+    const channels = [
+      IPC_WORKSPACE_STATUS_CHANNEL,
+      IPC_WORKSPACE_SELECT_CHANNEL,
+      IPC_WORKSPACE_TREE_CHANNEL,
+      IPC_WORKSPACE_FILE_CHANNEL,
+      IPC_WORKSPACE_SEARCH_CHANNEL,
+      IPC_WORKSPACE_PLAN_CHANNEL,
+    ];
+    expect(new Set(channels).size).toBe(channels.length);
+    for (const channel of channels) {
+      expect(channel.startsWith('workspace:')).toBe(true);
+    }
+  });
+
+  it('include no channel that would write, apply or execute', () => {
+    const channels = [
+      IPC_WORKSPACE_STATUS_CHANNEL,
+      IPC_WORKSPACE_SELECT_CHANNEL,
+      IPC_WORKSPACE_TREE_CHANNEL,
+      IPC_WORKSPACE_FILE_CHANNEL,
+      IPC_WORKSPACE_SEARCH_CHANNEL,
+      IPC_WORKSPACE_PLAN_CHANNEL,
+    ].join(' ');
+    for (const forbidden of ['write', 'apply', 'delete', 'exec', 'run', 'patch', 'commit']) {
+      expect(channels, forbidden).not.toContain(forbidden);
+    }
   });
 });

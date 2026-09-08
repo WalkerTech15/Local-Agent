@@ -84,6 +84,43 @@ describe('permission model', () => {
     expect(new Set(ACTION_TYPES).size).toBe(ACTION_TYPES.length);
   });
 
+  it('adds no action that could write, delete or execute (Phase 2, Milestone 5)', () => {
+    const actions: readonly string[] = ACTION_TYPES;
+    // The workspace reads. It has no counterpart that writes, and the
+    // absence is the control — a modification could not be *expressed* as a
+    // proposal, let alone authorized.
+    for (const forbidden of [
+      'workspace.write',
+      'workspace.create',
+      'workspace.delete',
+      'workspace.apply',
+      'workspace.execute',
+      'workspace.patch',
+      'workspace.commit',
+      'terminal.execute',
+      'git.commit',
+    ]) {
+      expect(actions, forbidden).not.toContain(forbidden);
+    }
+  });
+
+  it('names the three read-only workspace actions and nothing else', () => {
+    const actions: readonly string[] = ACTION_TYPES;
+    const workspaceActions = actions.filter((action) => action.startsWith('workspace.'));
+    expect([...workspaceActions].sort()).toEqual([
+      'workspace.plan',
+      'workspace.read',
+      'workspace.select',
+    ]);
+  });
+
+  it('leaves every workspace action blocked by an engaged emergency stop', () => {
+    const exempt: readonly string[] = EMERGENCY_STOP_EXEMPT_ACTION_TYPES;
+    for (const action of ['workspace.select', 'workspace.read', 'workspace.plan']) {
+      expect(exempt, action).not.toContain(action);
+    }
+  });
+
   it('requires confirmation for the destructive and privacy-sensitive actions', () => {
     expect([...CONFIRMATION_REQUIRED_ACTION_TYPES].sort()).toEqual(
       ['app.exit', 'emergency.reset', 'secrets.clear', 'secrets.write'].sort(),

@@ -16,6 +16,11 @@ import type {
   SecretsActionResponse,
   SettingsActionResponse,
   SettingsUpdateInput,
+  WorkspaceFileResponse,
+  WorkspacePlanResponse,
+  WorkspaceProjectResponse,
+  WorkspaceSearchResponse,
+  WorkspaceTreeResponse,
 } from '../shared/schemas';
 
 export {};
@@ -41,6 +46,19 @@ declare global {
         readonly cancel: (requestId: string) => Promise<void>;
         /** Subscribe to streaming previews; returns an unsubscribe function. */
         readonly onChunk: (listener: (event: ChatChunkEvent) => void) => () => void;
+      };
+      /**
+       * The read-only coding workspace (Phase 2, Milestone 5). Note that
+       * `select` takes no argument: the directory is chosen by the user in a
+       * native picker the main process owns, never named by the renderer.
+       */
+      readonly workspace: {
+        readonly status: () => Promise<WorkspaceProjectResponse>;
+        readonly select: () => Promise<WorkspaceProjectResponse>;
+        readonly tree: (path: string) => Promise<WorkspaceTreeResponse>;
+        readonly file: (path: string) => Promise<WorkspaceFileResponse>;
+        readonly search: (query: string, path: string) => Promise<WorkspaceSearchResponse>;
+        readonly plan: (objective: string) => Promise<WorkspacePlanResponse>;
       };
     };
   }

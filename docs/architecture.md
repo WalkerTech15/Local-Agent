@@ -28,7 +28,12 @@
 > (`src/renderer/Onboarding.tsx`). `main/permissions.ts`,
 > `main/action-pipeline.ts` and `main/executor.ts` again needed **zero code
 > changes** — every new channel is routed through the unmodified
-> `handleActionProposal`. This document marks which parts exist today.
+> `handleActionProposal`. Phase 2 Milestone 5 adds the read-only coding
+> workspace (`main/directory-picker.ts`, `main/workspace-paths.ts`,
+> `main/workspace-session.ts`, `main/workspace-inspector.ts`,
+> `main/workspace-planner.ts`) and six more channels, under a permission
+> engine, executor, pipeline and audit writer that once again have **zero
+> diff**. This document marks which parts exist today.
 
 ---
 
@@ -60,36 +65,49 @@ mechanism to. With `sandbox: true`, `contextIsolation: true` and
 `nodeIntegration: false`, a fully compromised renderer gains only the narrow
 preload API: `health`, `settings.get`/`settings.update`,
 `secrets.status`/`secrets.write`/`secrets.clear` as of Milestone 7,
-`chat.send`/`chat.cancel` as of Phase 2 Milestone 3, and `chat.onChunk` as of
-Phase 2 Milestone 4 — every one of them except the last two policy-gated and
-audited before it can perform a privileged action, and none of them able to
-return a plaintext key. The two exceptions carry no authority of their own:
-`chat.cancel` can only ask an already-authorized call to stop early, and
-`chat.onChunk` only subscribes to bounded, validated preview text for a
-`chat.send` the renderer itself initiated — see
+`chat.send`/`chat.cancel` as of Phase 2 Milestone 3, `chat.onChunk` as of
+Phase 2 Milestone 4, and
+`workspace.status`/`select`/`tree`/`file`/`search`/`plan` as of Phase 2
+Milestone 5 — every one of them except `chat.cancel` and `chat.onChunk`
+policy-gated and audited before it can perform a privileged action, and none
+of them able to return a plaintext key. The two exceptions carry no authority
+of their own: `chat.cancel` can only ask an already-authorized call to stop
+early, and `chat.onChunk` only subscribes to bounded, validated preview text
+for a `chat.send` the renderer itself initiated — see
 `docs/phase-2-real-provider-architecture.md` and
 `docs/phase-2-provider-completion.md`.
 
+The six workspace functions read, and only read. None of them can name a
+directory to open — `workspace.select` takes no argument at all, because the
+user chooses in a native dialog the main process owns — and none of them can
+write, create, delete or apply anything, because no such function exists to
+call. See `docs/phase-2-coding-workspace.md`.
+
 ## Modules
 
-| Module                               | Responsibility                                                                                                                                    | Must not                                                                                                |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `shared` **(exists)**                | Zod schemas, derived types, constants. Pure data and pure functions.                                                                              | Perform I/O; import Electron or Node built-ins; depend on `main`, `preload` or `renderer`.              |
-| `renderer` **(exists)**              | All interface, including first-run onboarding. Renders state, collects input, sends requests over the bridge.                                     | Touch Node APIs, the filesystem or `ipcRenderer`; read secrets; load remote content.                    |
-| `preload` **(exists)**               | The single bridge. Exposes an explicitly enumerated, typed API via `contextBridge`.                                                               | Expose `ipcRenderer`; provide a generic "invoke any channel" function; expose a Node primitive.         |
-| `main/ipc` **(exists)**              | Receives every request, validates its payload and its response against a schema, and routes it through `main/action-runtime.ts`.                  | Execute anything itself; call `execute` or `main/secrets.ts` directly, bypassing the permission engine. |
-| `main/action-runtime` **(exists)**   | Loads the current policy and emergency state fresh per request and calls `handleActionProposal`.                                                  | Add a decision step of its own; cache policy or emergency state across requests.                        |
-| `main/confirm` **(exists)**          | `showNativeConfirmation` — the real `dialog.showMessageBox`, parented to the main window.                                                         | Be called from the renderer; be rendered as HTML; describe a secret in the dialog text.                 |
-| `main/permissions` **(exists)**      | Pure decision function. `(proposal, policy, emergencyState) → verdict`.                                                                           | Perform I/O, show dialogs, or log.                                                                      |
-| `main/executor` **(exists)**         | The **only** module that performs side effects. Requires a permission verdict as an argument.                                                     | Be called from `renderer` or `preload`; act without a decision; make its own policy judgements.         |
-| `main/action-pipeline` **(exists)**  | Assembles `permissions → [confirm] → executor → audit` into one function every IPC handler calls.                                                 | Be bypassed by a handler that wires the pieces together itself.                                         |
-| `main/audit` **(exists)**            | Append-only event writer with redaction and daily rotation.                                                                                       | Expose any update or delete function; write an unredacted secret.                                       |
-| `main/settings` **(exists)**         | Loads, validates and atomically writes settings. Fails closed to safe defaults.                                                                   | Store secrets; write without going through the executor.                                                |
-| `main/settings-service` **(exists)** | Reconciles `hasApiKey` against the secret store on every read and write; assembles onboarding/provider settings writes.                           | Accept `hasApiKey` as caller input; skip re-validating the full document before persisting.             |
-| `main/secrets` **(exists)**          | Encrypts and decrypts via the **synchronous** `safeStorage` API (Windows DPAPI). Presence is answered from the file's shape, never by decrypting. | Return a plaintext secret across IPC; log a secret; fall back to storing plaintext.                     |
-| `main/policy` **(exists)**           | Loads and validates the permission policy file. Fails closed to `createDefaultPermissionPolicy()`.                                                | Merge a partially-valid document; expose a write path.                                                  |
-| `main/emergency` **(exists)**        | Loads and atomically persists emergency-stop state; `engageEmergencyStop`/`resetEmergencyStop` are `perform` callbacks for the action pipeline.   | Be bypassable by the renderer, a model, or the policy file; make its own permission decision.           |
-| `main/paths` **(exists)**            | Single source of truth for user-data locations.                                                                                                   | Accept a user-supplied path.                                                                            |
+| Module                                  | Responsibility                                                                                                                                    | Must not                                                                                                |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `shared` **(exists)**                   | Zod schemas, derived types, constants. Pure data and pure functions.                                                                              | Perform I/O; import Electron or Node built-ins; depend on `main`, `preload` or `renderer`.              |
+| `renderer` **(exists)**                 | All interface, including first-run onboarding. Renders state, collects input, sends requests over the bridge.                                     | Touch Node APIs, the filesystem or `ipcRenderer`; read secrets; load remote content.                    |
+| `preload` **(exists)**                  | The single bridge. Exposes an explicitly enumerated, typed API via `contextBridge`.                                                               | Expose `ipcRenderer`; provide a generic "invoke any channel" function; expose a Node primitive.         |
+| `main/ipc` **(exists)**                 | Receives every request, validates its payload and its response against a schema, and routes it through `main/action-runtime.ts`.                  | Execute anything itself; call `execute` or `main/secrets.ts` directly, bypassing the permission engine. |
+| `main/action-runtime` **(exists)**      | Loads the current policy and emergency state fresh per request and calls `handleActionProposal`.                                                  | Add a decision step of its own; cache policy or emergency state across requests.                        |
+| `main/confirm` **(exists)**             | `showNativeConfirmation` — the real `dialog.showMessageBox`, parented to the main window.                                                         | Be called from the renderer; be rendered as HTML; describe a secret in the dialog text.                 |
+| `main/permissions` **(exists)**         | Pure decision function. `(proposal, policy, emergencyState) → verdict`.                                                                           | Perform I/O, show dialogs, or log.                                                                      |
+| `main/executor` **(exists)**            | The **only** module that performs side effects. Requires a permission verdict as an argument.                                                     | Be called from `renderer` or `preload`; act without a decision; make its own policy judgements.         |
+| `main/action-pipeline` **(exists)**     | Assembles `permissions → [confirm] → executor → audit` into one function every IPC handler calls.                                                 | Be bypassed by a handler that wires the pieces together itself.                                         |
+| `main/audit` **(exists)**               | Append-only event writer with redaction and daily rotation.                                                                                       | Expose any update or delete function; write an unredacted secret.                                       |
+| `main/settings` **(exists)**            | Loads, validates and atomically writes settings. Fails closed to safe defaults.                                                                   | Store secrets; write without going through the executor.                                                |
+| `main/settings-service` **(exists)**    | Reconciles `hasApiKey` against the secret store on every read and write; assembles onboarding/provider settings writes.                           | Accept `hasApiKey` as caller input; skip re-validating the full document before persisting.             |
+| `main/secrets` **(exists)**             | Encrypts and decrypts via the **synchronous** `safeStorage` API (Windows DPAPI). Presence is answered from the file's shape, never by decrypting. | Return a plaintext secret across IPC; log a secret; fall back to storing plaintext.                     |
+| `main/policy` **(exists)**              | Loads and validates the permission policy file. Fails closed to `createDefaultPermissionPolicy()`.                                                | Merge a partially-valid document; expose a write path.                                                  |
+| `main/emergency` **(exists)**           | Loads and atomically persists emergency-stop state; `engageEmergencyStop`/`resetEmergencyStop` are `perform` callbacks for the action pipeline.   | Be bypassable by the renderer, a model, or the policy file; make its own permission decision.           |
+| `main/paths` **(exists)**               | Single source of truth for user-data locations.                                                                                                   | Accept a user-supplied path.                                                                            |
+| `main/directory-picker` **(exists)**    | `showDirectoryPicker` — the real `dialog.showOpenDialog`. Takes no path, so the user alone chooses which directory becomes readable.              | Be called from the renderer; accept, suggest or remember a location; create a directory.                |
+| `main/workspace-paths` **(exists)**     | Canonical containment: join, check, `realpath`, check again. The layer that catches a symbolic link.                                              | Trust a lexical check alone; put a path or an `errno` into a thrown error.                              |
+| `main/workspace-session` **(exists)**   | Holds the one approved project, in memory, for one application run.                                                                               | Persist the approved path; accept a project that was not canonicalised and validated.                   |
+| `main/workspace-inspector` **(exists)** | The only module that reads a user's own file: list, read, search. Bounded in every dimension.                                                     | Write, create, rename or delete anything; log; follow a link out; read an excluded path.                |
+| `main/workspace-planner` **(exists)**   | Gathers observations about the approved project and calls the pure plan builder.                                                                  | Call a model; produce content that could be applied; read the clock.                                    |
 
 ## Dependency direction
 
@@ -718,3 +736,45 @@ request — the permission decision, the audit record, `updatedAt` on a written
 
 All persisted timestamps are UTC ISO-8601 and reject a UTC offset, so records
 sort correctly and compare unambiguously.
+
+`main/workspace-session.ts` and `main/workspace-planner.ts` follow the same
+convention: `adoptProjectDirectory({now})` and `createCodingPlan(project,
+objective, now)` both take the timestamp from the caller, so a generated plan
+is byte-for-byte reproducible in a test. `main/workspace-inspector.ts` reads no
+clock at all.
+
+## Coding workspace (implemented, Phase 2 Milestone 5)
+
+| File                              | Describes                                                                     |
+| --------------------------------- | ----------------------------------------------------------------------------- |
+| `src/main/directory-picker.ts`    | The native project picker. Takes no path.                                     |
+| `src/main/workspace-paths.ts`     | `isContainedPath`, `resolveProjectPath`, `toWorkspaceError`                   |
+| `src/main/workspace-session.ts`   | `createWorkspaceSession`, `adoptProjectDirectory`, `requireApprovedProject`   |
+| `src/main/workspace-inspector.ts` | `listProjectTree`, `readProjectFile`, `searchProject`                         |
+| `src/main/workspace-planner.ts`   | `gatherPlanObservations`, `createCodingPlan`                                  |
+| `src/shared/workspace/`           | The pure half: path rules, exclusions, error vocabulary, the plan builder     |
+| `src/renderer/workspace/`         | `Workspace.tsx`, `workspace-controller.ts`, `useWorkspace.ts`, the IPC client |
+
+**No engine, pipeline or audit code changed.** Three new action types
+(`workspace.select`, `workspace.read`, `workspace.plan`) and six new channels
+are routed through the same unmodified `runAction` → `handleActionProposal`
+every action-backed channel already used — the fourth milestone in a row for
+which that has been true.
+
+**The pure/impure split matches `decidePermission`'s.** What a plan _says_ is
+computed by `buildCodingPlan` in `src/shared/workspace/plan.ts` — no I/O, no
+clock, no model, fully testable without a filesystem. What is _true of a
+project_ is measured by `main/workspace-planner.ts`, under the same bounds
+every other workspace read obeys. The same split puts the lexical path rules
+in `src/shared` and the `realpath` containment check in `src/main`, so both
+processes apply one rule rather than two that can drift.
+
+**The renderer's workspace state is framework-independent**, exactly like
+`ConversationController`: `WorkspaceController` holds every transition —
+loading, empty, error, retry, staleness, the approval gate — and
+`Workspace.tsx` holds none, which is what makes the interface's behaviour
+testable in a toolchain with no jsdom.
+
+Full design, including why the plan is derived rather than model-generated and
+why the picker takes no argument, is in
+[phase-2-coding-workspace.md](phase-2-coding-workspace.md).

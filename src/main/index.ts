@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, safeStorage, session } from 'electron';
 import { join } from 'node:path';
 
 import { showNativeConfirmation } from './confirm';
+import { showDirectoryPicker } from './directory-picker';
 import { loadEmergencyState } from './emergency';
 import { registerIpcHandlers } from './ipc';
 import { resolveUserDataPaths } from './paths';
@@ -122,6 +123,12 @@ app
       safeStorage,
       requestConfirmation: (message) =>
         showNativeConfirmation(window.isDestroyed() ? null : window, message),
+      // The coding workspace's one grant of read access (Phase 2, Milestone
+      // 5), and the only place a directory outside `%APPDATA%\Local-Agent`
+      // becomes readable. Built here, like the confirmation callback above,
+      // because this is the one file that imports the live `electron` module
+      // and holds the real window to parent the dialog to.
+      selectProjectDirectory: () => showDirectoryPicker(window.isDestroyed() ? null : window),
       nowFn: () => new Date().toISOString(),
     });
   })

@@ -3,17 +3,19 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
- * Source-scan regression test (Phase 2, Milestones 2-3).
+ * Source-scan regression test (Phase 2, Milestones 2-5).
  *
- * `src/shared/chat` is structurally barred from reaching Electron, Node
- * built-ins, the network, or `window.localAgent` — `eslint.config.js`'s
- * purity boundary covers `src/shared/**`. `src/renderer/chat` is barred from
- * all of the same things **except** `window.localAgent`, which exactly one
- * file — `ipc-chat-provider.ts` — is deliberately permitted to call, since
- * Milestone 3 needs one seam through which the real, network-capable
- * adapter in `src/main` is reached. This test makes both guarantees
+ * `src/shared/chat` and `src/shared/workspace` are structurally barred from
+ * reaching Electron, Node built-ins, the network, or `window.localAgent` —
+ * `eslint.config.js`'s purity boundary covers `src/shared/**`. Their renderer
+ * counterparts, `src/renderer/chat` and `src/renderer/workspace`, are barred
+ * from all of the same things **except** `window.localAgent`, which exactly
+ * one file per feature is deliberately permitted to call:
+ * `ipc-chat-provider.ts` for the real provider (Milestone 3) and
+ * `ipc-workspace-client.ts` for the read-only workspace (Milestone 5). One
+ * named seam each, and nothing else. This test makes both guarantees
  * empirical rather than relying solely on lint staying configured correctly
- * forever: it reads the actual source of every file in both directories,
+ * forever: it reads the actual source of every file in all four directories,
  * strips comments (this codebase's own doc comments freely *describe* what
  * is absent or narrowly permitted — "never touches `window.localAgent`",
  * "the one file... permitted to reference `window.localAgent`" — which
@@ -25,10 +27,26 @@ import { join } from 'node:path';
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 const SHARED_CHAT_DIR = join(REPO_ROOT, 'src', 'shared', 'chat');
 const RENDERER_CHAT_DIR = join(REPO_ROOT, 'src', 'renderer', 'chat');
-const SCAN_DIRECTORIES = [SHARED_CHAT_DIR, RENDERER_CHAT_DIR];
+const SHARED_WORKSPACE_DIR = join(REPO_ROOT, 'src', 'shared', 'workspace');
+const RENDERER_WORKSPACE_DIR = join(REPO_ROOT, 'src', 'renderer', 'workspace');
+const SCAN_DIRECTORIES = [
+  SHARED_CHAT_DIR,
+  RENDERER_CHAT_DIR,
+  SHARED_WORKSPACE_DIR,
+  RENDERER_WORKSPACE_DIR,
+];
 
-/** The one file under `src/renderer/chat` permitted to reference `window.localAgent`. */
+/** The directories whose files may never reference `window.localAgent` at all. */
+const SHARED_SCAN_DIRECTORIES = [SHARED_CHAT_DIR, SHARED_WORKSPACE_DIR];
+
+/**
+ * The only two files in the renderer permitted to reference
+ * `window.localAgent` — one per feature, each the single seam through which
+ * its privileged main-process counterpart is reached.
+ */
 const IPC_CHAT_PROVIDER_FILE = join(RENDERER_CHAT_DIR, 'ipc-chat-provider.ts');
+const IPC_WORKSPACE_CLIENT_FILE = join(RENDERER_WORKSPACE_DIR, 'ipc-workspace-client.ts');
+const BRIDGE_CALLER_FILES = [IPC_CHAT_PROVIDER_FILE, IPC_WORKSPACE_CLIENT_FILE].sort();
 
 const WINDOW_LOCAL_AGENT_SUBSTRING = 'window.localAgent';
 
@@ -44,7 +62,13 @@ const FORBIDDEN_PATTERNS: readonly { readonly label: string; readonly pattern: R
   { label: 'eval(', pattern: /\beval\(/ },
   { label: 'new Function(', pattern: /new Function\(/ },
   { label: 'dangerouslySetInnerHTML', pattern: /dangerouslySetInnerHTML/ },
-  { label: 'ActionProposal (chat has no action to authorize)', pattern: /ActionProposal/ },
+  {
+    // A proposal is built in `main/ipc.ts` and nowhere else. Neither feature's
+    // shared or renderer code may construct one, because building a proposal
+    // is the step that asks for authority.
+    label: 'ActionProposal (only main/ipc.ts may build one)',
+    pattern: /ActionProposal/,
+  },
 ];
 
 function listSourceFiles(dir: string): string[] {
@@ -98,18 +122,30 @@ describe('chat/provider layer source-scan boundary', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('no code under src/shared/chat references window.localAgent', () => {
+  it('no code under src/shared references window.localAgent', () => {
     const offenders = [...codeByFile.entries()]
-      .filter(([file]) => file.startsWith(SHARED_CHAT_DIR))
+      .filter(([file]) => SHARED_SCAN_DIRECTORIES.some((dir) => file.startsWith(dir)))
       .filter(([, code]) => code.includes(WINDOW_LOCAL_AGENT_SUBSTRING))
       .map(([file]) => file);
     expect(offenders).toEqual([]);
   });
 
-  it('window.localAgent is referenced by exactly, and only, ipc-chat-provider.ts', () => {
+  it('window.localAgent is referenced by exactly, and only, the two named bridge callers', () => {
+    // One seam per feature, each named here. A future file that starts
+    // calling the bridge fails this test immediately, independent of review.
     const offenders = [...codeByFile.entries()]
       .filter(([, code]) => code.includes(WINDOW_LOCAL_AGENT_SUBSTRING))
-      .map(([file]) => file);
-    expect(offenders).toEqual([IPC_CHAT_PROVIDER_FILE]);
+      .map(([file]) => file)
+      .sort();
+    expect(offenders).toEqual(BRIDGE_CALLER_FILES);
+  });
+
+  it('scans both features, so neither directory can be silently dropped', () => {
+    for (const directory of SCAN_DIRECTORIES) {
+      expect(
+        files.some((file) => file.startsWith(directory)),
+        `${directory} contributed no files to the scan`,
+      ).toBe(true);
+    }
   });
 });

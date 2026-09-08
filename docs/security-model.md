@@ -23,9 +23,14 @@
 > and Ollama, the latter refused unless its endpoint is a local address) and
 > adds bounded streaming, introducing `chat:chunk` — the first and only
 > main → renderer _push_ channel — while adding **no** new action type, no
-> new permission decision and no new secret-store access. Controls below are
-> marked **[implemented]**, **[enforced by schema]** or **[planned, milestone
-> N]**. Nothing here is claimed as working before it exists.
+> new permission decision and no new secret-store access. Phase 2, Milestone 5
+> adds the **read-only coding workspace** — the first time this application
+> reads a file outside `%APPDATA%\Local-Agent\` — under three new action types
+> (`workspace.select`, `workspace.read`, `workspace.plan`), six new channels,
+> and a permission engine, executor, pipeline and audit writer that once again
+> needed **zero code changes**. Controls below are marked **[implemented]**,
+> **[enforced by schema]** or **[planned, milestone N]**. Nothing here is
+> claimed as working before it exists.
 
 ---
 
@@ -216,6 +221,107 @@ by default rather than `confirm`, since the send itself is already a
 direct, per-message user action, unlike the rare, one-time changes the
 confirmation floor (`secrets.write`, `secrets.clear`, `emergency.reset`,
 `app.exit`) protects.
+
+### Filesystem access
+
+**[implemented, Phase 2 Milestone 5]** Before this milestone, every path this
+application touched derived from `app.getPath('appData')` and none was
+user-supplied — "path traversal: not reachable" was literally true. The coding
+workspace changes that, so the controls that make it safe are stated in full.
+
+**The renderer cannot name a directory.** `workspace:select` takes no
+arguments at all — not a path it validates, none. `main/directory-picker.ts`
+opens `dialog.showOpenDialog` and whatever the _user_ clicks is the only
+candidate, which is then still canonicalised, confirmed to be a directory, and
+refused if it is (or contains) the application's own data directory. A
+compromised renderer can ask that the user be asked, and nothing more. This is
+the same reasoning that makes the confirmation dialog native rather than HTML,
+and it is why `workspace.select` is `allow` by default: the picker **is** the
+consent, and a stronger form of it than a renderer-side click.
+
+**Containment is enforced twice, by two mechanisms that fail differently.**
+Every renderer-supplied path is relative to the approved root and passes:
+
+1. `src/shared/workspace/path-safety.ts` — pure and lexical. Refuses `..`,
+   `.`, absolute paths, UNC prefixes, drive letters, `\` (without which
+   `..\..\Windows` is a single segment that passes a `/`-oriented check while
+   `path.resolve` still treats it as separators), `:` (a drive letter, and the
+   NTFS alternate-data-stream separator — `notes.txt:hidden` is a different
+   file no listing ever showed), wildcards, control characters, bidirectional
+   overrides, Windows reserved device names, and any trailing dot or space
+   (Windows strips both, so `secrets.` and `secrets` are the same file — a
+   second spelling around every name-based rule).
+2. `src/main/workspace-paths.ts` — joins onto the real root, checks
+   containment, canonicalises with `realpath`, and **checks containment
+   again**. This is the check that catches a symbolic link: a lexical rule
+   cannot see one, and `realpath` cannot run on a string that has not been
+   joined onto a root yet. Verified against a real filesystem with real links.
+
+Containment comparison uses `path.relative`, not a string prefix: on Windows
+that compares case-insensitively and normalises separators, and it does not
+mistake `…\project-backup` for something inside `…\project`.
+
+**The tree walk never follows a link.** It keeps only entries that are a
+regular file or a real directory, which excludes symbolic links (and with them
+directory loops and escapes), sockets, FIFOs and device nodes. A symlinked file
+can still be opened directly by path, where the canonical check proves it stays
+inside; the walk simply does not offer it.
+
+**Excluded paths are never opened**, at any depth, and the check runs on every
+segment rather than only the last — `node_modules/pkg/index.js` is refused even
+though `index.js` alone would be fine. Three lists, for three reasons
+(`src/shared/workspace/exclusions.ts`): dependency and build directories
+(listed but never descended into, so a tree does not silently misrepresent the
+project); credential files (`.env*`, `.netrc`, `.npmrc`, `id_rsa`, `*.pem`,
+`*.p12`, `secrets.json` — never listed as readable, never read, never
+searched); and binary extensions, as a pre-filter ahead of the real test, which
+is a NUL byte in the first bytes read plus a strict UTF-8 decode.
+
+**Everything is bounded**, and every bound reports itself rather than silently
+shortening a result: tree depth (8), entries (2,000), entries per directory
+(500), file size (512,000 bytes — **refused**, not truncated, for the same
+reason an oversized audit record is rejected), search matches (200), files
+opened by one search (1,000), and match excerpt length (240). A search query is
+matched as a **literal substring, never compiled as a regular expression** —
+compiling user input as a pattern is how a search box becomes a denial of
+service against the process that owns every privileged operation here.
+
+**Nothing in this milestone can modify a file**, and that is structural rather
+than a policy: there is no `workspace.write` action type, no write channel, no
+preload function, and no request schema field capable of carrying content or a
+destination. `main/workspace-inspector.ts` imports exactly `readdir`,
+`readFile` and `stat` from `node:fs/promises`, and that import list is the
+whole of its filesystem capability. A test snapshots a project before and after
+a full listing, read, search and plan — including when every operation fails —
+and asserts it is unchanged; another asserts the module logs nothing at all.
+
+**No path, name, query or file content reaches an audit record or an error.**
+Audit parameters carry `{operation}` and at most a _length_
+(`{operation: 'search', queryLength: 6}`); a directory path can name a person,
+a client or an unreleased product, and a search term is user content.
+Filesystem errors are mapped by `code` alone — never `message`, which contains
+the full path — into a twelve-code normalized vocabulary, and the sentence a
+user reads is one of the renderer's own reviewed strings, never anything that
+crossed the boundary.
+
+**The approved path is never persisted.** It lives in memory, per
+`registerIpcHandlers` call, for one application run. Read access to someone's
+source tree is a grant the user makes by clicking through a dialog, not a
+preference restored silently on the next launch.
+
+**A coding plan is inert.** `codingPlanSchema` pins `diff` to `null` (declared,
+not omitted, so a later edit that starts producing one must change the schema
+and therefore be reviewed), `approvalRequired` to `true`, and `status` to
+`'awaiting-approval'`; `changeType` admits only `'modify'` and `'review'`. The
+plan is produced deterministically from observation, with **no model call** —
+see [phase-2-coding-workspace.md](phase-2-coding-workspace.md) for why. Nothing
+in this milestone consumes a plan, so approving one unlocks nothing; the gate
+exists so whichever milestone adds a modification has one to route through.
+
+**Every workspace action is denied while the emergency stop is engaged.** None
+of the three is on `EMERGENCY_STOP_EXEMPT_ACTION_TYPES`, and a test walks all
+six channels to confirm it — including that the native picker is never even
+shown, since `execute` never reaches `perform`.
 
 ### Secret handling
 
@@ -652,7 +758,14 @@ exposes no way to address one. No generic pass-through channel exists.
 | `hasApiKey` reported as `true` for a provider that does not use a key (`none`, `ollama`)     | Addressed, M7 — forced `false` regardless of the secret store; proven by test                                                                                                                                      |
 | A denied or rejected secret operation still mutating the store or `hasApiKey`                | Addressed, M7 — `perform` is structurally unreachable on `deny`/`reject`; `hasApiKey` is only refreshed after the store write already succeeded; proven by test                                                    |
 | Renderer-supplied `hasApiKey` reaching a persisted document                                  | Addressed, M7 — `settingsUpdateRequestSchema` has no such field; `strictObject` rejects the extra key outright                                                                                                     |
-| Path traversal                                                                               | Not reachable — all paths derive from the app-data directory; none is user-supplied                                                                                                                                |
+| Path traversal                                                                               | Addressed, Phase 2 M5 — user-supplied paths exist for the first time; contained lexically and again after `realpath`, both verified against a real filesystem                                                      |
+| Symbolic link leading outside the approved project                                           | Addressed, Phase 2 M5 — refused after canonicalisation; the tree walk keeps only regular files and real directories, so it cannot follow or loop on one                                                            |
+| A credential file in the user's project being read or displayed                              | Addressed, Phase 2 M5 — `.env*`, key, keystore and credential-stemmed data files are never listed as readable, opened or searched, at any depth                                                                    |
+| The renderer choosing which directory becomes readable                                       | Addressed, Phase 2 M5 — `workspace.select` takes no argument; the user chooses in a native dialog the main process owns, which is then still canonicalised and validated                                           |
+| The application's own data directory opened as a "project"                                   | Addressed, Phase 2 M5 — refused in both directions, with both sides canonicalised first so a short (8.3) Windows ancestor cannot defeat the comparison                                                             |
+| A file modified, created or deleted by the workspace                                         | Addressed, Phase 2 M5 — structurally absent: no action type, channel, preload function or schema field can express one; proven by before/after snapshots across success and failure                                |
+| A project path, file content or search query reaching the audit log                          | Addressed, Phase 2 M5 — parameters carry `{operation}` and at most a length; asserted by test                                                                                                                      |
+| Unbounded memory or time from a hostile project tree                                         | Addressed, Phase 2 M5 — depth, entry, per-directory, file-size, match and scanned-file caps, each reporting when it stopped; search is literal substring matching, never a compiled pattern                        |
 | Prompt injection, untrusted model or tool output                                             | Reachable from Phase 2 M3 (a real provider replies) — no tool exists for a model to invoke, so untrusted assistant text still cannot authorize or perform an action; see the proposal/executor split               |
 | Renderer or a compromised dependency making a network request directly                       | Addressed, Phase 2 M3 — CSP `connect-src 'none'` (unmodified since M2) plus the `src/shared` and `src/renderer/chat` purity/scan boundaries; only `src/main/openai-compatible-provider.ts` can reach the network   |
 | Plaintext API key reaching the renderer through a real provider call                         | Addressed, Phase 2 M3 — stays inside `resolveMainChatProvider`/`openai-compatible-provider.ts`; never in `ActionProposal.parameters`, `chatSendResponseSchema`, an audit record, or a thrown error; proven by test |
@@ -841,6 +954,65 @@ These are real and are stated plainly rather than described as solved.
     surface) that touch no side effect; full behavioural coverage of the five
     channels is in `tests/unit/main/ipc.test.ts`, against temporary
     directories, not the real application process.
+
+20. **The workspace has a time-of-check/time-of-use gap.** Between `realpath`
+    returning and the subsequent `open`/`readdir`, a path component could in
+    principle be replaced with a symbolic link. Closing it properly needs
+    handle-based, `O_NOFOLLOW`-style APIs that Node does not expose portably.
+    The exposure is narrow — the attacker must already be able to write inside
+    the user's own approved project, on the user's own machine, between two
+    adjacent syscalls — and the consequence is bounded by everything else in
+    the layer: the result is still read-only, still size-capped, and still
+    refused if it is not text. Stated rather than described as solved.
+
+21. **The file viewer warns about bidirectional control characters; it does
+    not neutralise them.** A source file containing an override is shown
+    exactly as stored, with a prominent warning, because refusing would make
+    legitimate Arabic, Hebrew and Persian source unopenable and rewriting it
+    would mean the viewer lied about what is on disk. The text can therefore
+    still _render_ differently from how it is stored. File **names** and search
+    **excerpts** are handled more strictly — a name carrying one is refused
+    outright, and an excerpt is sanitised — because a name can disguise an
+    extension and a results list is where a reordered line would be most
+    convincing.
+
+22. **Credential detection in a project is name-based, like the audit log's
+    redaction, and inherits the same limitation.** `.env*`, known credential
+    file names, key and keystore extensions, and credential-stemmed _data_
+    files are excluded. A credential pasted into an ordinary source file —
+    `src/config.ts` — is not caught, and the stem rule is deliberately skipped
+    for source and documentation extensions so that files _about_ credential
+    handling (this repository's own `src/main/secrets.ts`) stay readable. That
+    is the safe direction for an inspector whose job is to show a project
+    truthfully, but it is a real gap and is not closed by a value-level check.
+
+23. **A coding plan is keyword matching, not understanding.** It is derived
+    deterministically from bounded searches and the project's structure, with
+    no model call (see
+    [phase-2-coding-workspace.md](phase-2-coding-workspace.md) for why). It
+    will miss a file that is relevant without sharing vocabulary with the
+    request, and it says so in its own risks when nothing matched or when a
+    search was truncated. It is a grounded starting point, not an analysis.
+
+24. **The workspace bounds each operation, not the rate of operations.** One
+    listing, read or search is capped in every dimension, but nothing limits
+    how many a renderer may issue in succession. In a single-user desktop
+    application whose renderer is driven by the same person who approved the
+    project, this is acceptable; it would not be in a multi-user or remote
+    context, neither of which this project has.
+
+25. **No component-level render test for `Workspace.tsx`**, for the same reason
+    as limitation 18 and with the same mitigation: every state transition
+    (loading, empty, error, retry, staleness, the approval gate) lives in the
+    framework-independent `WorkspaceController` and is fully covered there.
+    What remains untested by an automated test is the JSX and event wiring
+    itself. The e2e suite likewise does not drive the six workspace channels
+    against the real built application — like `settings:*` and `secrets:*`
+    (limitation 19), they have real side effects against the developer's actual
+    `%APPDATA%\Local-Agent\`, and would additionally open a native dialog no
+    headless run can answer. Their behavioural coverage is in
+    `tests/unit/main/ipc.test.ts`, against temporary directories; the e2e suite
+    asserts only the bridge's static shape and the absence of any mutator.
 
 ---
 

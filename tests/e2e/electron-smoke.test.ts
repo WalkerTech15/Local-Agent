@@ -41,10 +41,19 @@ interface ExposedLocalAgentBridge {
  * channel — in Milestone 4. Every one stays a narrow, explicitly named
  * sub-object, never a generic invoke or listen surface.
  */
-const EXPECTED_BRIDGE_KEYS = ['chat', 'health', 'secrets', 'settings'] as const;
+const EXPECTED_BRIDGE_KEYS = ['chat', 'health', 'secrets', 'settings', 'workspace'] as const;
 const EXPECTED_SETTINGS_KEYS = ['get', 'update'] as const;
 const EXPECTED_SECRETS_KEYS = ['clear', 'status', 'write'] as const;
 const EXPECTED_CHAT_KEYS = ['cancel', 'onChunk', 'send'] as const;
+/**
+ * The read-only coding workspace (Phase 2, Milestone 5). Every one of these
+ * reads; there is deliberately no `write`, `create`, `delete` or `apply` — a
+ * renderer cannot request a modification because no function here expresses
+ * one. `select` additionally takes no argument at all, so the directory that
+ * becomes readable is chosen by the user in a native dialog the main process
+ * owns.
+ */
+const EXPECTED_WORKSPACE_KEYS = ['file', 'plan', 'search', 'select', 'status', 'tree'] as const;
 
 function launchEnv(): Record<string, string> {
   const env: Record<string, string> = {};
@@ -117,13 +126,15 @@ describe('Electron desktop shell — security and health-check smoke test', () =
     expect(hasIpcRenderer).toBe(false);
   });
 
-  it('exposes exactly one bridge object with exactly the narrow, named functions of Phase 2 Milestone 3', async () => {
+  it('exposes exactly one bridge object with exactly the narrow, named functions of Phase 2 Milestone 5', async () => {
     const bridgeShape = await page.evaluate(() => {
       const w = window as unknown as {
-        localAgent?: { settings?: object; secrets?: object; chat?: object } & Record<
-          string,
-          unknown
-        >;
+        localAgent?: {
+          settings?: object;
+          secrets?: object;
+          chat?: object;
+          workspace?: object;
+        } & Record<string, unknown>;
       };
       const localAgent = w.localAgent;
       return {
@@ -132,6 +143,7 @@ describe('Electron desktop shell — security and health-check smoke test', () =
         settingsKeys: localAgent?.settings ? Object.keys(localAgent.settings).sort() : [],
         secretsKeys: localAgent?.secrets ? Object.keys(localAgent.secrets).sort() : [],
         chatKeys: localAgent?.chat ? Object.keys(localAgent.chat).sort() : [],
+        workspaceKeys: localAgent?.workspace ? Object.keys(localAgent.workspace).sort() : [],
       };
     });
     expect(bridgeShape).toEqual({
@@ -140,7 +152,39 @@ describe('Electron desktop shell — security and health-check smoke test', () =
       settingsKeys: [...EXPECTED_SETTINGS_KEYS],
       secretsKeys: [...EXPECTED_SECRETS_KEYS],
       chatKeys: [...EXPECTED_CHAT_KEYS],
+      workspaceKeys: [...EXPECTED_WORKSPACE_KEYS],
     });
+  });
+
+  it('exposes no workspace function capable of modifying anything', async () => {
+    // The absence is the control, so it is asserted against the real built
+    // bridge rather than only against the source that produces it.
+    const hasMutator = await page.evaluate(() => {
+      const w = window as unknown as {
+        localAgent?: { workspace?: Record<string, unknown> };
+      };
+      const workspace = w.localAgent?.workspace;
+      if (workspace === undefined) return true;
+      const mutators = [
+        'write',
+        'writeFile',
+        'create',
+        'createFile',
+        'delete',
+        'remove',
+        'rename',
+        'move',
+        'apply',
+        'applyPlan',
+        'patch',
+        'exec',
+        'execute',
+        'run',
+        'commit',
+      ];
+      return mutators.some((key) => key in workspace);
+    });
+    expect(hasMutator).toBe(false);
   });
 
   it('has no generic invoke-any-channel function anywhere on window, including its sub-objects', async () => {
@@ -152,11 +196,15 @@ describe('Electron desktop shell — security and health-check smoke test', () =
             settings?: Record<string, unknown>;
             secrets?: Record<string, unknown>;
             chat?: Record<string, unknown>;
+            workspace?: Record<string, unknown>;
           })
         | undefined;
-      const nested = [localAgent?.settings, localAgent?.secrets, localAgent?.chat].filter(
-        (value): value is Record<string, unknown> => value !== undefined,
-      );
+      const nested = [
+        localAgent?.settings,
+        localAgent?.secrets,
+        localAgent?.chat,
+        localAgent?.workspace,
+      ].filter((value): value is Record<string, unknown> => value !== undefined);
       return (
         candidates.some((key) => key in w) ||
         (localAgent !== undefined && 'invoke' in localAgent) ||
@@ -178,9 +226,16 @@ describe('Electron desktop shell — security and health-check smoke test', () =
             settings?: Record<string, unknown>;
             secrets?: Record<string, unknown>;
             chat?: Record<string, unknown>;
+            workspace?: Record<string, unknown>;
           })
         | undefined;
-      const surfaces = [localAgent, localAgent?.settings, localAgent?.secrets, localAgent?.chat];
+      const surfaces = [
+        localAgent,
+        localAgent?.settings,
+        localAgent?.secrets,
+        localAgent?.chat,
+        localAgent?.workspace,
+      ];
       return surfaces.some(
         (surface) => surface !== undefined && generic.some((key) => key in surface),
       );
