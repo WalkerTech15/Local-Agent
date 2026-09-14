@@ -579,3 +579,249 @@ main.app-ready {
 .workspace-plan__approved {
   color: #73d5c8;
 }
+
+/* --------------------------------------------------------------------- */
+/* Controlled coding actions (Phase 2, Milestone 6)                        */
+/*                                                                         */
+/* Reuses the palette established above. The one deliberate emphasis is on */
+/* the diff: added and removed lines are distinguished by a sigil and a    */
+/* left border as well as by colour, so the change a person is approving   */
+/* stays readable without relying on colour perception alone.              */
+/* --------------------------------------------------------------------- */
+
+.workspace__panels {
+  grid-template-columns: minmax(15rem, 20rem) minmax(0, 1.2fr) minmax(0, 1fr);
+}
+@media (width <= 78rem) {
+  .workspace__panels {
+    grid-template-columns: minmax(15rem, 20rem) 1fr;
+  }
+}
+@media (width <= 60rem) {
+  .workspace__panels {
+    grid-template-columns: 1fr;
+  }
+}
+
+.workspace__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.workspace__edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.6rem;
+}
+.workspace__draft {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: #e8edf5;
+  background: #060d18;
+  border: 1px solid #2a3750;
+  border-radius: 0.4rem;
+  padding: 0.5rem;
+  resize: vertical;
+}
+
+.workspace-change {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #2a3750;
+}
+.workspace-change__approval {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.6rem;
+  border: 1px solid #3a4a68;
+  border-radius: 0.5rem;
+  background: #101d31;
+}
+.workspace-change__approval p {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #aebbd0;
+}
+
+.workspace-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.workspace-diff__file {
+  border: 1px solid #2a3750;
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+.workspace-diff__head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  background: #101d31;
+  font-size: 0.8rem;
+}
+.workspace-diff__stat {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.75rem;
+}
+.workspace-diff__stat--added {
+  color: #73d5a0;
+}
+.workspace-diff__stat--removed {
+  color: #e79ba6;
+}
+.workspace-diff__hunk-head {
+  padding: 0.25rem 0.6rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  color: #7f8ea8;
+  background: #0a1425;
+}
+.workspace-diff__line {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0 0.6rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.76rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-inline-start: 3px solid transparent;
+}
+.workspace-diff__sigil {
+  flex: 0 0 auto;
+  width: 0.7rem;
+  color: #7f8ea8;
+}
+.workspace-diff__text {
+  flex: 1 1 auto;
+}
+.workspace-diff__line--added {
+  background: #0e2a1d;
+  border-inline-start-color: #3f9b6d;
+}
+.workspace-diff__line--removed {
+  background: #2c1219;
+  border-inline-start-color: #a85a68;
+}
+.workspace-diff__line--meta {
+  color: #7f8ea8;
+}
+.workspace-diff__line--hunk {
+  color: #73d5c8;
+}
+
+.workspace-commands {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.workspace-commands li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+}
+.workspace-commands code {
+  font-size: 0.74rem;
+  color: #73d5c8;
+}
+.workspace-commands__script {
+  color: #7f8ea8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+.workspace-commands__risk {
+  color: #e2b566;
+  font-size: 0.72rem;
+}
+
+.workspace-run {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.workspace-run__output {
+  margin: 0;
+  max-height: 18rem;
+  overflow: auto;
+  padding: 0.5rem;
+  border: 1px solid #2a3750;
+  border-radius: 0.4rem;
+  background: #060d18;
+}
+.workspace-run__line {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.74rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.workspace-run__line--stderr {
+  color: #e79ba6;
+}
+
+.workspace-git {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.workspace-git__entries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.workspace-git__entries li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+.workspace-git__code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  color: #73d5c8;
+  white-space: pre;
+}
+.workspace-git__diff {
+  margin: 0;
+  max-height: 16rem;
+  overflow: auto;
+  padding: 0.5rem;
+  border: 1px solid #2a3750;
+  border-radius: 0.4rem;
+  background: #060d18;
+}
+
+.workspace-history {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.workspace-history li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.45rem;
+  font-size: 0.78rem;
+}

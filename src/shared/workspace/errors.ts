@@ -48,6 +48,59 @@ export const WORKSPACE_ERROR_CODES = [
   'WORKSPACE_BINARY_FILE',
   /** Any other read failure, already stripped of its underlying detail. */
   'WORKSPACE_READ_FAILED',
+
+  // -------------------------------------------------------------------------
+  // Change sets (Phase 2, Milestone 6)
+  // -------------------------------------------------------------------------
+
+  /** No change set with that identifier is held by this session. */
+  'WORKSPACE_CHANGE_NOT_FOUND',
+  /** A file changed on disk between the diff being shown and the write. */
+  'WORKSPACE_CHANGE_STALE',
+  /** The change set has already been applied, or already rolled back. */
+  'WORKSPACE_CHANGE_SETTLED',
+  /** The proposed content is byte-identical to what is already there. */
+  'WORKSPACE_CHANGE_EMPTY',
+  /** The proposal exceeds a file-count or byte bound. */
+  'WORKSPACE_CHANGE_TOO_LARGE',
+  /** The write itself failed. Any file already written was restored. */
+  'WORKSPACE_WRITE_FAILED',
+  /** There is no applied change set left to roll back. */
+  'WORKSPACE_ROLLBACK_UNAVAILABLE',
+  /** The pre-change backup could not be taken, so the write did not start. */
+  'WORKSPACE_BACKUP_FAILED',
+
+  // -------------------------------------------------------------------------
+  // Registry commands (Phase 2, Milestone 6)
+  // -------------------------------------------------------------------------
+
+  /** The project does not declare the script this registry command runs. */
+  'COMMAND_NOT_AVAILABLE',
+  /** A command is already running; only one runs at a time. */
+  'COMMAND_ALREADY_RUNNING',
+  /** The command exceeded its time limit and was killed. */
+  'COMMAND_TIMED_OUT',
+  /** The user cancelled the command. */
+  'COMMAND_CANCELLED',
+  /** The emergency stop was engaged while the command was running. */
+  'COMMAND_STOPPED_BY_EMERGENCY',
+  /** The process could not be started at all — usually a missing tool. */
+  'COMMAND_LAUNCH_FAILED',
+
+  // -------------------------------------------------------------------------
+  // Git (Phase 2, Milestone 6)
+  // -------------------------------------------------------------------------
+
+  /** No usable `git` executable, or it could not be started. */
+  'GIT_UNAVAILABLE',
+  /** The approved project is not a Git working tree. */
+  'GIT_NOT_A_REPOSITORY',
+  /** HEAD is detached, so a checkpoint commit would be easy to lose. */
+  'GIT_DETACHED_HEAD',
+  /** There is nothing uncommitted, so a checkpoint would be empty. */
+  'GIT_NOTHING_TO_COMMIT',
+  /** Git ran and failed. Its own message never crosses a boundary. */
+  'GIT_COMMAND_FAILED',
 ] as const;
 
 export type WorkspaceErrorCode = (typeof WORKSPACE_ERROR_CODES)[number];
@@ -72,6 +125,28 @@ export const WORKSPACE_ERROR_MESSAGES: Readonly<Record<WorkspaceErrorCode, strin
   WORKSPACE_FILE_TOO_LARGE: 'the file is larger than the read-only viewer will open',
   WORKSPACE_BINARY_FILE: 'the file is not text and will not be shown as text',
   WORKSPACE_READ_FAILED: 'the requested path could not be read',
+
+  WORKSPACE_CHANGE_NOT_FOUND: 'no such change set is held by this session',
+  WORKSPACE_CHANGE_STALE: 'the file changed after the diff was produced',
+  WORKSPACE_CHANGE_SETTLED: 'that change set has already been applied or rolled back',
+  WORKSPACE_CHANGE_EMPTY: 'the proposed content is identical to what is already there',
+  WORKSPACE_CHANGE_TOO_LARGE: 'the proposed change exceeds the size limits',
+  WORKSPACE_WRITE_FAILED: 'the change could not be written and was rolled back',
+  WORKSPACE_ROLLBACK_UNAVAILABLE: 'there is no applied change left to roll back',
+  WORKSPACE_BACKUP_FAILED: 'the backup could not be taken, so nothing was written',
+
+  COMMAND_NOT_AVAILABLE: 'the project does not declare that command',
+  COMMAND_ALREADY_RUNNING: 'a command is already running',
+  COMMAND_TIMED_OUT: 'the command exceeded its time limit and was stopped',
+  COMMAND_CANCELLED: 'the command was cancelled',
+  COMMAND_STOPPED_BY_EMERGENCY: 'the emergency stop was engaged while the command was running',
+  COMMAND_LAUNCH_FAILED: 'the command could not be started',
+
+  GIT_UNAVAILABLE: 'git is not available',
+  GIT_NOT_A_REPOSITORY: 'the approved project is not a git working tree',
+  GIT_DETACHED_HEAD: 'the repository has no branch checked out',
+  GIT_NOTHING_TO_COMMIT: 'there is nothing uncommitted to check point',
+  GIT_COMMAND_FAILED: 'the git command failed',
 };
 
 /**

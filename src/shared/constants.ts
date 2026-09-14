@@ -50,6 +50,21 @@ export const USER_DATA_PATHS = {
   auditLogDir: 'logs/audit',
   emergencyStateFile: 'state/emergency.json',
   memoryDir: 'memory',
+  /**
+   * Pre-change backups (Phase 2, Milestone 6).
+   *
+   * Deliberately here rather than inside the user's project: a backup written
+   * into the project would show up in its file tree, in its `git status`, and
+   * eventually in one of its commits — the application would be leaving litter
+   * in someone else's repository as a side effect of protecting it.
+   */
+  backupsDir: 'backups',
+  /**
+   * An empty directory pointed at by `core.hooksPath` for every `git`
+   * invocation, so a repository's own hooks — executable code from a
+   * directory the user merely opened — never run.
+   */
+  gitHooksDir: 'state/git-hooks-disabled',
 } as const;
 
 /** Audit log file name pattern, one file per UTC day. */
@@ -176,9 +191,27 @@ export const BIDI_CONTROL_PATTERN = /[\u202A-\u202E\u2066-\u2069]/;
  * process owns, so the user, not the renderer and not a model, chooses what
  * may be read; `workspace.read` and `workspace.plan` operate only inside
  * that already-approved root, on a path validated for containment first.
- * There is still no `fs.read`, no `fs.write`, no `shell.execute`, and
- * nothing here writes: the whole workspace surface is read-only, and a
- * proposal that would modify a file has no action type to be expressed as.
+ *
+ * Phase 2, Milestone 6 adds the first five actions that can change something
+ * outside this application's own data directory, and every one of them is on
+ * the confirmation floor except the read-only `git.read`:
+ *
+ *  - `workspace.write` applies a change set the main process already holds,
+ *    already diffed and already shown. The renderer names a change *id*, not
+ *    a path and not content, so what was approved is necessarily what is
+ *    written.
+ *  - `workspace.rollback` restores the backup taken before that write.
+ *  - `command.run` runs one entry of a fixed registry (`test`, `lint`,
+ *    `typecheck`, `build`, `format-check`) inside the approved project. The
+ *    renderer sends an identifier from an enum — never a command string,
+ *    never arguments, never a shell.
+ *  - `git.read` reads `git status` and `git diff`.
+ *  - `git.checkpoint` creates one commit on the current branch.
+ *
+ * There is still no `fs.read`, no `fs.write`, no `shell.execute`, and no
+ * generic "run this string" action anywhere in this list: a caller cannot
+ * express an arbitrary filesystem or process operation, because no action
+ * type here has the shape to carry one.
  */
 export const ACTION_TYPES = [
   'settings.read',
@@ -194,6 +227,11 @@ export const ACTION_TYPES = [
   'workspace.select',
   'workspace.read',
   'workspace.plan',
+  'workspace.write',
+  'workspace.rollback',
+  'command.run',
+  'git.read',
+  'git.checkpoint',
 ] as const;
 export type ActionType = (typeof ACTION_TYPES)[number];
 
@@ -209,12 +247,27 @@ export const DEFAULT_PERMISSION_DECISION: PermissionDecision = 'deny';
  * This is a hard floor enforced in code, not a policy default. Editing the
  * policy file cannot downgrade any of these to `allow`. It covers the
  * destructive, privacy-sensitive and security-sensitive operations of Phase 1.
+ *
+ * Phase 2, Milestone 6 adds every action that can change something outside
+ * this application's own data directory. Each is irreversible in the ordinary
+ * sense — a file on disk is overwritten, a process runs the project's own
+ * code, a commit is created — and each is therefore approved by the user in a
+ * *native* dialog the main process owns, stating the exact operation, before
+ * anything happens. A renderer approval alone is never sufficient, and no
+ * policy edit can turn any of these into an `allow`.
+ *
+ * `git.read` is deliberately absent: reading `git status` and `git diff`
+ * changes nothing, exactly as `workspace.read` does not.
  */
 export const CONFIRMATION_REQUIRED_ACTION_TYPES: readonly ActionType[] = [
   'secrets.write',
   'secrets.clear',
   'emergency.reset',
   'app.exit',
+  'workspace.write',
+  'workspace.rollback',
+  'command.run',
+  'git.checkpoint',
 ] as const;
 
 /**
@@ -616,3 +669,116 @@ export const WORKSPACE_PLAN_MAX_TEXT_LENGTH = 500;
  * keeps the searches that discriminate best.
  */
 export const WORKSPACE_PLAN_MAX_SEARCH_TERMS = 3;
+
+// ---------------------------------------------------------------------------
+// Controlled coding actions (Phase 2, Milestone 6)
+//
+// Milestone 5 could only read. These are the bounds on the three things this
+// milestone adds that can change state: writing a file inside the approved
+// project, running one registry command in it, and creating a Git checkpoint.
+//
+// Every bound below exists because the thing it bounds is unbounded in
+// principle. A project's own build command can print forever; a proposed edit
+// could be a gigabyte; a diff of two unrelated files is quadratic. None of
+// those may be allowed to consume the process that owns every privileged
+// operation in this application, so each is capped, and each cap reports
+// itself rather than silently truncating a result a reader would then draw a
+// conclusion from.
+// ---------------------------------------------------------------------------
+
+/**
+ * Maximum files one change set may touch.
+ *
+ * A change set is applied all-or-nothing, so this is also the maximum number
+ * of files one approval can affect — which is the number a person has to be
+ * able to read and understand in a confirmation dialog before saying yes.
+ */
+export const WORKSPACE_MAX_CHANGE_FILES = 10;
+/** Maximum bytes of proposed replacement content for one file. */
+export const WORKSPACE_MAX_WRITE_BYTES = 256_000;
+/**
+ * Maximum change sets held awaiting approval at once. Reaching the limit
+ * discards the *oldest still-pending* proposal, never an applied one — an
+ * applied change set is the only thing a rollback has to work from.
+ */
+export const WORKSPACE_MAX_PENDING_CHANGES = 5;
+/** Maximum applied change sets remembered, newest first. */
+export const WORKSPACE_MAX_APPLIED_CHANGES = 20;
+
+/** Context lines shown either side of a hunk, as `diff -U3` would. */
+export const WORKSPACE_DIFF_CONTEXT_LINES = 3;
+/** Maximum lines one whole diff may contain across every file. */
+export const WORKSPACE_DIFF_MAX_LINES = 4_000;
+/** Maximum length of one diff line before the rest of it is elided. */
+export const WORKSPACE_DIFF_MAX_LINE_LENGTH = 500;
+/**
+ * Maximum cells in the line-alignment matrix before the differ stops trying
+ * to align and reports one coarse replacement instead.
+ *
+ * The alignment is quadratic in the number of *differing* lines (a shared
+ * prefix and suffix are removed first, so an ordinary edit leaves a handful).
+ * Two genuinely unrelated files are the pathological case, and a cap keeps
+ * that from spending the privileged process's CPU. Hitting it is reported as
+ * `coarse`, never hidden.
+ */
+export const WORKSPACE_DIFF_MAX_MATRIX_CELLS = 1_000_000;
+
+/**
+ * How long one registry command may run before it is killed.
+ *
+ * Generous: a real `npm test` or `npm run build` on a large project takes
+ * minutes. It is a stop on a command that will never finish, not a
+ * performance budget.
+ */
+export const COMMAND_TIMEOUT_MS = 300_000;
+/** Grace period between asking a command to stop and killing it outright. */
+export const COMMAND_KILL_GRACE_MS = 3_000;
+/** Maximum bytes captured from stdout and stderr combined. */
+export const COMMAND_MAX_OUTPUT_BYTES = 200_000;
+/** Maximum output lines returned to the renderer. */
+export const COMMAND_MAX_OUTPUT_LINES = 2_000;
+/** Maximum length of one captured output line before it is elided. */
+export const COMMAND_MAX_OUTPUT_LINE_LENGTH = 2_000;
+/**
+ * How many commands may run at once. One: a second request while one is in
+ * flight is refused rather than queued, so a runaway interface cannot start
+ * an unbounded number of processes, and "cancel" is never ambiguous about
+ * what it cancels.
+ */
+export const COMMAND_MAX_CONCURRENT_RUNS = 1;
+/**
+ * How often a running command re-checks the emergency stop.
+ *
+ * The permission engine already refuses to *start* an action while the stop
+ * is engaged. This is the other half: a command that was already running when
+ * the stop was engaged is killed rather than allowed to finish.
+ */
+export const COMMAND_EMERGENCY_POLL_MS = 1_000;
+/**
+ * Maximum length of the project's own script text shown in the native
+ * confirmation dialog.
+ *
+ * This string comes from the project's `package.json` — untrusted input — so
+ * it is sanitized to a single line and bounded before it is shown. It is
+ * displayed because the user cannot meaningfully approve running a command
+ * without seeing what it will run.
+ */
+export const COMMAND_SCRIPT_PREVIEW_MAX_LENGTH = 200;
+/** Maximum length of a registry command's resolved argument vector, joined. */
+export const COMMAND_MAX_DISPLAY_LENGTH = 300;
+
+/** Git is expected to answer quickly; a hang is a failure, not a long job. */
+export const GIT_TIMEOUT_MS = 30_000;
+/** Maximum entries one `git status` response may carry. */
+export const GIT_MAX_STATUS_ENTRIES = 500;
+/** Maximum bytes of `git diff` output captured. */
+export const GIT_MAX_DIFF_BYTES = 200_000;
+/**
+ * The fixed prefix of every checkpoint commit message.
+ *
+ * The message is built by the main process from this constant and a
+ * timestamp. No renderer-supplied text ever reaches a commit message, so a
+ * commit cannot be used to smuggle attacker-chosen content into the user's
+ * repository history.
+ */
+export const GIT_CHECKPOINT_MESSAGE_PREFIX = 'Local Agent checkpoint';

@@ -10,6 +10,13 @@ import {
 } from '../../../src/renderer/workspace/workspace-controller';
 import type {
   CodingPlan,
+  CommandCatalog,
+  CommandRunResult,
+  GitCheckpointValue,
+  GitDiffValue,
+  GitStatusValue,
+  WorkspaceChangeHistory,
+  WorkspaceChangeSet,
   WorkspaceFile,
   WorkspaceProjectSummary,
   WorkspaceSearchResult,
@@ -18,7 +25,7 @@ import type {
 import type { WorkspaceErrorCode } from '../../../src/shared/workspace';
 
 /**
- * Workspace interface behaviour (Phase 2, Milestone 5).
+ * Workspace interface behaviour (Phase 2, Milestones 5-6).
  *
  * Everything the interface actually does — loading, empty, error, retry,
  * staleness, the approval gate — lives in `WorkspaceController`, so it is
@@ -106,6 +113,110 @@ function denied<T>(): WorkspaceResult<T> {
   return { ok: false, failure: { kind: 'denied' } };
 }
 
+/** The user answering "no" to a native confirmation (Phase 2, Milestone 6). */
+function declined<T>(): WorkspaceResult<T> {
+  return { ok: false, failure: { kind: 'declined' } };
+}
+
+const CHANGE: WorkspaceChangeSet = {
+  id: '11111111-1111-4111-8111-111111111111',
+  createdAt: '2026-09-07T00:00:00.000Z',
+  status: 'awaiting-approval',
+  files: [
+    {
+      path: 'src/index.ts',
+      name: 'index.ts',
+      hunks: [
+        {
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 1,
+          lines: [
+            { kind: 'removed', text: 'export const answer = 42;' },
+            { kind: 'added', text: 'export const answer = 43;' },
+          ],
+        },
+      ],
+      added: 1,
+      removed: 1,
+      coarse: false,
+      truncated: false,
+      warnings: [],
+    },
+  ],
+  totalAdded: 1,
+  totalRemoved: 1,
+  truncated: false,
+  approvalRequired: true,
+  backupAvailable: false,
+  appliedAt: null,
+  rolledBackAt: null,
+};
+
+const APPLIED: WorkspaceChangeSet = {
+  ...CHANGE,
+  status: 'applied',
+  backupAvailable: true,
+  appliedAt: '2026-09-07T00:01:00.000Z',
+};
+
+const HISTORY: WorkspaceChangeHistory = { changes: [APPLIED], rollbackTarget: APPLIED.id };
+
+const CATALOG: CommandCatalog = {
+  commands: [
+    {
+      id: 'test',
+      label: 'Run tests',
+      description: 'Runs the project’s own test script.',
+      commandLine: 'npm run test',
+      available: true,
+      scriptPreview: 'vitest run',
+      risks: [],
+    },
+  ],
+  busy: false,
+};
+
+const RUN: CommandRunResult = {
+  runId: '22222222-2222-4222-8222-222222222222',
+  commandId: 'test',
+  commandLine: 'npm run test',
+  outcome: 'succeeded',
+  exitCode: 0,
+  startedAt: '2026-09-07T00:00:00.000Z',
+  finishedAt: '2026-09-07T00:00:02.000Z',
+  durationMs: 2000,
+  output: [{ stream: 'stdout', text: 'ok' }],
+  outputTruncated: false,
+  timedOut: false,
+  cancelled: false,
+  stoppedByEmergency: false,
+};
+
+const GIT_STATUS: GitStatusValue = {
+  branch: 'main',
+  entries: [{ path: 'src/index.ts', code: ' M', state: 'modified', staged: false }],
+  clean: false,
+  truncated: false,
+  unparsableEntries: 0,
+};
+
+const GIT_DIFF: GitDiffValue = {
+  path: null,
+  lines: [{ kind: 'meta', text: 'diff --git a/src/index.ts b/src/index.ts' }],
+  truncated: false,
+  empty: false,
+};
+
+const CHECKPOINT: GitCheckpointValue = {
+  branch: 'main',
+  commit: 'abc1234',
+  message: 'Local Agent checkpoint 2026-09-07T00:00:00.000Z',
+  filesChanged: 1,
+  createdAt: '2026-09-07T00:00:00.000Z',
+};
+
 /** A client whose every method resolves successfully unless overridden. */
 function fakeClient(overrides: Partial<WorkspaceClient> = {}): WorkspaceClient {
   return {
@@ -115,12 +226,25 @@ function fakeClient(overrides: Partial<WorkspaceClient> = {}): WorkspaceClient {
     file: () => Promise.resolve(ok(FILE)),
     search: () => Promise.resolve(ok(SEARCH)),
     plan: () => Promise.resolve(ok(PLAN)),
+    propose: () => Promise.resolve(ok(CHANGE)),
+    apply: () => Promise.resolve(ok(APPLIED)),
+    rollback: () => Promise.resolve(ok({ ...APPLIED, status: 'rolled-back' as const })),
+    changes: () => Promise.resolve(ok(HISTORY)),
+    commands: () => Promise.resolve(ok(CATALOG)),
+    runCommand: () => Promise.resolve(ok(RUN)),
+    cancelCommand: () => Promise.resolve(),
+    gitStatus: () => Promise.resolve(ok(GIT_STATUS)),
+    gitDiff: () => Promise.resolve(ok(GIT_DIFF)),
+    gitCheckpoint: () => Promise.resolve(ok(CHECKPOINT)),
     ...overrides,
   };
 }
 
 function controllerWith(overrides: Partial<WorkspaceClient> = {}): WorkspaceController {
-  return new WorkspaceController({ client: fakeClient(overrides) });
+  return new WorkspaceController({
+    client: fakeClient(overrides),
+    newRunId: () => '22222222-2222-4222-8222-222222222222',
+  });
 }
 
 /** Every state the controller published, in order. */
@@ -162,9 +286,26 @@ describe('initial and empty states', () => {
       search: null,
       plan: null,
       planApproved: false,
+      change: null,
+      changeApproved: false,
+      history: null,
+      commands: null,
+      commandRun: null,
+      runningCommand: null,
+      gitStatus: null,
+      gitDiff: null,
+      checkpoint: null,
       activity: null,
       error: null,
     });
+  });
+
+  it('starts with both approval gates closed', () => {
+    // Asserted separately from the shape above so that a future field being
+    // added cannot quietly carry an approval in with it.
+    const state = controllerWith().getState();
+    expect(state.planApproved).toBe(false);
+    expect(state.changeApproved).toBe(false);
   });
 
   it('marks itself initialised with no project when none was approved', async () => {
@@ -499,11 +640,29 @@ describe('the plan approval gate', () => {
     expect(controller.getState().planApproved).toBe(true);
   });
 
-  it('says plainly that approval unlocks no modification', async () => {
+  it('says plainly that approving a plan is not approving a change', async () => {
     const controller = controllerWith();
     await controller.createPlan('Add retry');
     controller.approvePlan();
-    expect(controller.getState().activity).toContain('No modification capability');
+    expect(controller.getState().activity).toContain('separate, explicit step');
+  });
+
+  it('approving a plan produces no change and unlocks no write', async () => {
+    // The gate that matters after Milestone 6: a plan and a change are
+    // separate objects with separate approvals. Approving a plan must not
+    // create a change set, must not approve one, and must leave `applyChange`
+    // with nothing it is willing to do.
+    const apply = vi.fn();
+    const controller = controllerWith({ apply });
+    await controller.createPlan('Add retry');
+    controller.approvePlan();
+
+    expect(controller.getState().planApproved).toBe(true);
+    expect(controller.getState().change).toBeNull();
+    expect(controller.getState().changeApproved).toBe(false);
+
+    await controller.applyChange();
+    expect(apply).not.toHaveBeenCalled();
   });
 
   it('cannot approve when there is no plan', () => {
@@ -546,5 +705,284 @@ describe('the plan approval gate', () => {
     ]) {
       expect(names, forbidden).not.toContain(forbidden);
     }
+  });
+});
+
+describe('the change approval gate', () => {
+  it('proposes a change without approving it', async () => {
+    const controller = controllerWith();
+    await controller.proposeChange([{ path: 'src/index.ts', content: 'x' }]);
+    expect(controller.getState().change?.status).toBe('awaiting-approval');
+    expect(controller.getState().changeApproved).toBe(false);
+  });
+
+  it('refuses to apply a change the user has not approved', async () => {
+    const apply = vi.fn(() => Promise.resolve(ok(APPLIED)));
+    const controller = controllerWith({ apply });
+    await controller.proposeChange([{ path: 'src/index.ts', content: 'x' }]);
+
+    await controller.applyChange();
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it('applies only after the diff has been approved', async () => {
+    const apply = vi.fn(() => Promise.resolve(ok(APPLIED)));
+    const controller = controllerWith({ apply });
+    await controller.proposeChange([{ path: 'src/index.ts', content: 'x' }]);
+    controller.approveChange();
+    await controller.applyChange();
+
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(apply).toHaveBeenCalledWith(CHANGE.id);
+    expect(controller.getState().change?.status).toBe('applied');
+  });
+
+  it('sends only the change id, never a path or content', async () => {
+    const apply = vi.fn(() => Promise.resolve(ok(APPLIED)));
+    const controller = controllerWith({ apply });
+    await controller.proposeChange([{ path: 'src/index.ts', content: 'x' }]);
+    controller.approveChange();
+    await controller.applyChange();
+
+    expect(apply.mock.calls[0]).toEqual([CHANGE.id]);
+  });
+
+  it('resets approval for every newly proposed change', async () => {
+    const controller = controllerWith();
+    await controller.proposeChange([{ path: 'src/index.ts', content: 'x' }]);
+    controller.approveChange();
+    expect(controller.getState().changeApproved).toBe(true);
+
+    await controller.proposeChange([{ path: 'src/index.ts', content: 'y' }]);
+    expect(controller.getState().changeApproved).toBe(false);
+  });
+
+  it('resets approval after applying, so it is never reused', async () => {
+    const controller = controllerWith();
+    await controller.proposeChange([{ path: 'src/index.ts', content: 'x' }]);
+    controller.approveChange();
+    await controller.applyChange();
+    expect(controller.getState().changeApproved).toBe(false);
+  });
+
+  it('cannot approve when there is no change on screen', () => {
+    const controller = controllerWith();
+    controller.approveChange();
+    expect(controller.getState().changeApproved).toBe(false);
+  });
+
+  it('cannot approve a change that has already been applied', async () => {
+    const controller = controllerWith({ propose: () => Promise.resolve(ok(APPLIED)) });
+    await controller.proposeChange([{ path: 'src/index.ts', content: 'x' }]);
+    controller.approveChange();
+    expect(controller.getState().changeApproved).toBe(false);
+  });
+
+  it('says plainly that approving here is not the system confirmation', async () => {
+    const controller = controllerWith();
+    await controller.proposeChange([{ path: 'src/index.ts', content: 'x' }]);
+    controller.approveChange();
+    expect(controller.getState().activity).toContain('system confirmation');
+  });
+
+  it('clears the open file after applying, because it is now out of date', async () => {
+    const controller = controllerWith();
+    await controller.openFile('src/index.ts');
+    expect(controller.getState().openFile).not.toBeNull();
+
+    await controller.proposeChange([{ path: 'src/index.ts', content: 'x' }]);
+    controller.approveChange();
+    await controller.applyChange();
+    expect(controller.getState().openFile).toBeNull();
+  });
+
+  it('drops a failed proposal rather than leaving a stale diff on screen', async () => {
+    const controller = controllerWith({
+      propose: () => Promise.resolve(errored<WorkspaceChangeSet>('WORKSPACE_CHANGE_EMPTY')),
+    });
+    await controller.proposeChange([{ path: 'src/index.ts', content: 'x' }]);
+    expect(controller.getState().change).toBeNull();
+    expect(controller.getState().error?.message).toContain('exactly as it is');
+  });
+});
+
+describe('declining a confirmation is not an error', () => {
+  it('reports a decline as activity, with no error banner', async () => {
+    const controller = controllerWith({
+      apply: () => Promise.resolve(declined<WorkspaceChangeSet>()),
+    });
+    await controller.proposeChange([{ path: 'src/index.ts', content: 'x' }]);
+    controller.approveChange();
+    await controller.applyChange();
+
+    expect(controller.getState().error).toBeNull();
+    expect(controller.getState().activity).toContain('declined');
+  });
+
+  it('reports a denial as an error, which is a different thing entirely', async () => {
+    const controller = controllerWith({
+      apply: () => Promise.resolve(denied<WorkspaceChangeSet>()),
+    });
+    await controller.proposeChange([{ path: 'src/index.ts', content: 'x' }]);
+    controller.approveChange();
+    await controller.applyChange();
+
+    expect(controller.getState().error?.message).toContain('emergency stop');
+  });
+});
+
+describe('rollback', () => {
+  it('does nothing when there is no applied change to undo', async () => {
+    const rollback = vi.fn(() => Promise.resolve(ok(APPLIED)));
+    const controller = controllerWith({ rollback });
+    await controller.rollbackLatest();
+    expect(rollback).not.toHaveBeenCalled();
+  });
+
+  it('undoes the change the history names as the target', async () => {
+    const rollback = vi.fn(() =>
+      Promise.resolve(ok({ ...APPLIED, status: 'rolled-back' as const })),
+    );
+    const controller = controllerWith({ rollback });
+    await controller.refreshChanges();
+    await controller.rollbackLatest();
+
+    expect(rollback).toHaveBeenCalledWith(APPLIED.id);
+    expect(controller.getState().change?.status).toBe('rolled-back');
+  });
+});
+
+describe('commands', () => {
+  it('reads the catalog', async () => {
+    const controller = controllerWith();
+    await controller.refreshCommands();
+    expect(controller.getState().commands?.commands[0]?.id).toBe('test');
+  });
+
+  it('sends an identifier from the enum, never a command line', async () => {
+    // Typed with the real signature rather than inferred from the stub, so
+    // the assertion below can actually see the arguments.
+    const runCommand = vi.fn<WorkspaceClient['runCommand']>(() => Promise.resolve(ok(RUN)));
+    const controller = controllerWith({ runCommand });
+    await controller.runCommand('test');
+
+    expect(runCommand).toHaveBeenCalledTimes(1);
+    expect(runCommand.mock.calls[0]?.[1]).toBe('test');
+  });
+
+  it('records which run is in flight so it can be cancelled', async () => {
+    const pending = deferred<WorkspaceResult<CommandRunResult>>();
+    const controller = controllerWith({ runCommand: () => pending.promise });
+
+    const running = controller.runCommand('test');
+    expect(controller.getState().runningCommand?.commandId).toBe('test');
+    expect(controller.getState().busy).toBe('run');
+
+    pending.resolve(ok(RUN));
+    await running;
+    expect(controller.getState().runningCommand).toBeNull();
+    expect(controller.getState().busy).toBeNull();
+  });
+
+  it('cancels the run that is actually in flight', async () => {
+    // Cancellation must work *while* the controller is busy, which is exactly
+    // when every other operation is refused.
+    const pending = deferred<WorkspaceResult<CommandRunResult>>();
+    const cancelCommand = vi.fn(() => Promise.resolve());
+    const controller = controllerWith({ cancelCommand, runCommand: () => pending.promise });
+
+    const running = controller.runCommand('test');
+    await controller.cancelCommand();
+    expect(cancelCommand).toHaveBeenCalledWith('22222222-2222-4222-8222-222222222222');
+
+    pending.resolve(ok(RUN));
+    await running;
+  });
+
+  it('does not cancel when nothing is running', async () => {
+    const cancelCommand = vi.fn(() => Promise.resolve());
+    const controller = controllerWith({ cancelCommand });
+    await controller.cancelCommand();
+    expect(cancelCommand).not.toHaveBeenCalled();
+  });
+
+  it('describes a stopped run as stopped, never as a failure', async () => {
+    const controller = controllerWith({
+      runCommand: () =>
+        Promise.resolve(
+          ok({ ...RUN, outcome: 'stopped' as const, exitCode: null, timedOut: true }),
+        ),
+    });
+    await controller.runCommand('test');
+    expect(controller.getState().activity).toContain('time limit');
+  });
+
+  it('asks a running command to stop when the interface goes away', async () => {
+    // A read simply has its result discarded on arrival. A command holds a
+    // real process, so unmounting must actually try to end it.
+    const pending = deferred<WorkspaceResult<CommandRunResult>>();
+    const cancelCommand = vi.fn(() => Promise.resolve());
+    const controller = controllerWith({ cancelCommand, runCommand: () => pending.promise });
+
+    const running = controller.runCommand('test');
+    controller.dispose();
+    expect(cancelCommand).toHaveBeenCalledTimes(1);
+
+    pending.resolve(ok(RUN));
+    await running;
+  });
+});
+
+describe('git', () => {
+  it('reads status and reports a clean tree', async () => {
+    const controller = controllerWith({
+      gitStatus: () => Promise.resolve(ok({ ...GIT_STATUS, entries: [], clean: true })),
+    });
+    await controller.refreshGitStatus();
+    expect(controller.getState().activity).toContain('clean');
+  });
+
+  it('reads the whole-tree diff by default', async () => {
+    const gitDiff = vi.fn(() => Promise.resolve(ok(GIT_DIFF)));
+    const controller = controllerWith({ gitDiff });
+    await controller.refreshGitDiff();
+    expect(gitDiff).toHaveBeenCalledWith(null);
+  });
+
+  it('refreshes status after a checkpoint, so the interface stops showing stale changes', async () => {
+    const gitStatus = vi.fn(() => Promise.resolve(ok(GIT_STATUS)));
+    const controller = controllerWith({ gitStatus });
+    await controller.createCheckpoint();
+    expect(controller.getState().checkpoint?.commit).toBe('abc1234');
+    expect(gitStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces a repository that is not a working tree as a plain message', async () => {
+    const controller = controllerWith({
+      gitStatus: () => Promise.resolve(errored<GitStatusValue>('GIT_NOT_A_REPOSITORY')),
+    });
+    await controller.refreshGitStatus();
+    expect(controller.getState().error?.message).toContain('not the root of a Git working tree');
+    expect(controller.getState().error?.retryable).toBe(false);
+  });
+});
+
+describe('selecting a new project invalidates everything from the old one', () => {
+  it('drops the pending change, the history, the commands and the git state', async () => {
+    const controller = controllerWith();
+    await controller.proposeChange([{ path: 'src/index.ts', content: 'x' }]);
+    controller.approveChange();
+    await controller.refreshChanges();
+    await controller.refreshCommands();
+    await controller.refreshGitStatus();
+
+    await controller.selectProject();
+
+    const state = controller.getState();
+    expect(state.change).toBeNull();
+    expect(state.changeApproved).toBe(false);
+    expect(state.history).toBeNull();
+    expect(state.commands).toBeNull();
+    expect(state.gitStatus).toBeNull();
   });
 });

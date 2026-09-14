@@ -3,8 +3,8 @@
 A local-first, permission-controlled desktop assistant for Windows. The
 assistant is named **JARVIS** by default; the product is **Local Agent**.
 
-> **Status: Phase 1 complete. Phase 2, Milestone 5 (coding workspace
-> foundation) in progress.**
+> **Status: Phase 1 complete. Phase 2, Milestone 6 (controlled coding
+> actions) in progress.**
 > Phase 1 delivered the hardened desktop shell, non-secret settings storage,
 > an audit-log foundation, the permission-policy runtime, persisted
 > emergency-stop state, first-run onboarding, an encrypted secret store, and
@@ -52,9 +52,28 @@ assistant is named **JARVIS** by default; the product is **Local Agent**.
 > [docs/phase-2-provider-completion.md](docs/phase-2-provider-completion.md)
 > and
 > [docs/phase-2-coding-workspace.md](docs/phase-2-coding-workspace.md)
-> for the full design and for what remains explicitly deferred (file writing,
-> terminal execution, Git automation, tool/action execution from model output,
-> memory, and everything else Phase 2 has not reached yet).
+> for the full design.
+>
+> Milestone 6 adds **controlled coding actions** — the first three things this
+> application can change outside its own data directory, each behind a native
+> confirmation the renderer cannot forge or answer. It can **overwrite files**
+> inside the approved project: a change is proposed once, shown as a diff, and
+> then applied by _identifier_ — `workspace:apply` carries no path and no
+> content, so the bytes written are necessarily the bytes that were reviewed.
+> A backup is taken outside the project first, the latest change can be undone,
+> and nothing can create or delete a file. It can **run one of five commands**
+> (`test`, `lint`, `typecheck`, `build`, `format:check`) that the project
+> itself declares — named by an enum member, never a command string, with no
+> shell, no terminal, no inherited secrets, bounded time and output, and a kill
+> that reaches the whole process tree and is triggered by the emergency stop.
+> And it can read **Git status and diff** and create **one checkpoint commit**
+> on the branch already checked out; there is no reset, checkout, branch,
+> push or remote anywhere in the codebase, and a repository's own hooks are
+> disabled for every invocation. See
+> [docs/phase-2-coding-actions.md](docs/phase-2-coding-actions.md) for the
+> design, the bounds, and what remains explicitly deferred (file creation and
+> deletion, arbitrary commands, dependency installation, browser and Windows
+> automation, memory, and everything else Phase 2 has not reached yet).
 
 All rights reserved. No licence has been granted for this project.
 
@@ -97,15 +116,22 @@ postponed.
   `localAgent.health`, `localAgent.settings.{get,update}`,
   `localAgent.secrets.{status,write,clear}`,
   `localAgent.chat.{send,cancel,onChunk}`,
-  `localAgent.workspace.{status,select,tree,file,search,plan}` — never
-  `ipcRenderer` itself, never a generic invoke-any-channel function, and never
-  a generic listen-to-any-channel one: `chat.onChunk` subscribes to a single
-  fixed, one-way streaming channel whose payloads are schema-validated in the
-  preload before any renderer code sees them. None of them can return a
-  plaintext API key, and none of the workspace functions can write, create,
-  delete or apply anything — `workspace.select` does not even accept a path,
-  since the directory is chosen by the user in a native dialog the main
-  process owns.
+  `localAgent.workspace.{status,select,tree,file,search,plan,propose,apply,rollback,changes}`,
+  `localAgent.command.{list,run,cancel}`,
+  `localAgent.git.{status,diff,checkpoint}` — never `ipcRenderer` itself,
+  never a generic invoke-any-channel function, and never a generic
+  listen-to-any-channel one: `chat.onChunk` subscribes to a single fixed,
+  one-way streaming channel whose payloads are schema-validated in the preload
+  before any renderer code sees them. None of them can return a plaintext API
+  key. Of the ones that change something: `workspace.select` does not accept a
+  path, since the directory is chosen by the user in a native dialog the main
+  process owns; `workspace.apply` accepts only a change _identifier_, so the
+  bytes written are necessarily the ones already diffed and shown;
+  `command.run` accepts an identifier from a five-value enum, never a command
+  string; and `git.checkpoint` accepts no argument at all. There is no
+  function anywhere on the bridge that can create a file, delete one, run an
+  arbitrary command, or perform a destructive Git operation — asserted against
+  the real built bridge by an end-to-end test.
 - A strict Content-Security-Policy blocks remote script and network access
   outright; navigation, `window.open` and `<webview>` are all denied.
 - An action with no matching policy rule is **denied** — enforced both by the

@@ -42,3 +42,41 @@ export {
 
 export { buildCodingPlan, extractObjectiveKeywords } from './plan';
 export type { BuildCodingPlanInput, CodingPlanObservations, ObservedFile } from './plan';
+
+// ---------------------------------------------------------------------------
+// Controlled coding actions (Phase 2, Milestone 6)
+// ---------------------------------------------------------------------------
+
+export { buildFileDiff, DIFF_LINE_KINDS, DIFF_WARNINGS, isUnchanged } from './diff';
+export type { DiffHunk, DiffLine, DiffLineKind, DiffWarning, FileDiff } from './diff';
+
+export {
+  CODING_COMMAND_IDS,
+  CODING_COMMANDS,
+  describeCommandLine,
+  describeScriptRisks,
+  findCodingCommand,
+  isCodingCommandId,
+  sanitizeScriptPreview,
+  SCRIPT_RISK_FLAGS,
+} from './command-registry';
+export type { CodingCommandDefinition, CodingCommandId, ScriptRiskFlag } from './command-registry';
+
+export {
+  buildGitArgv,
+  FORBIDDEN_GIT_SUBCOMMANDS,
+  GIT_STATUS_STATES,
+  gitBranchArgs,
+  gitCommitArgs,
+  gitDiffArgs,
+  gitHeadArgs,
+  gitIsRepositoryArgs,
+  gitStageAllArgs,
+  gitStatusArgs,
+  gitToplevelArgs,
+  parseGitStatus,
+} from './git';
+export type { GitStatusEntry, GitStatusState, GitStatusSummary } from './git';
+
+export { collapseToSingleLine, sanitizeDisplayLine, TRUNCATION_MARKER } from './text-safety';
+export type { SanitizedLine } from './text-safety';

@@ -31,9 +31,14 @@ import type { IpcMain, IpcMainInvokeEvent, SafeStorage } from 'electron';
 import { runAction } from './action-runtime';
 import type { ActionRuntime } from './action-runtime';
 import { resolveMainChatProvider } from './chat-provider-registry';
+import { loadEmergencyState } from './emergency';
 import { ActionExecutionError } from './executor';
+import { createGitCheckpoint, describeCheckpoint, readGitDiff, readGitStatus } from './git-runner';
+import type { GitRuntime } from './git-runner';
 import type { UserDataPaths } from './paths';
+import { buildCommandCatalog, runCodingCommand } from './project-commands';
 import { clearSecret, SecretStoreUnavailableError, writeSecret } from './secrets';
+import { createChangeStore } from './workspace-changes';
 import { listProjectTree, readProjectFile, searchProject } from './workspace-inspector';
 import { createCodingPlan } from './workspace-planner';
 import {
@@ -50,7 +55,12 @@ import {
 import { loadSettings } from './settings';
 import { CHAT_PROVIDER_ERROR_CODES, ChatProviderError } from '../shared/chat/provider';
 import type { ChatProviderResult } from '../shared/chat/provider';
-import { CHAT_STREAM_MAX_DELTA_LENGTH, PROVIDERS_REQUIRING_API_KEY } from '../shared/constants';
+import {
+  CHAT_STREAM_MAX_DELTA_LENGTH,
+  COMMAND_MAX_CONCURRENT_RUNS,
+  PROVIDERS_REQUIRING_API_KEY,
+} from '../shared/constants';
+import { describeCommandLine, findCodingCommand } from '../shared/workspace/command-registry';
 import {
   chatCancelRequestSchema,
   chatCancelResponseSchema,
@@ -96,14 +106,58 @@ import {
   workspaceStatusResponseSchema,
   workspaceTreeRequestSchema,
   workspaceTreeResponseSchema,
+  commandCancelRequestSchema,
+  commandCancelResponseSchema,
+  commandListRequestSchema,
+  commandListResponseSchema,
+  commandRunRequestSchema,
+  commandRunResponseSchema,
+  gitCheckpointRequestSchema,
+  gitCheckpointResponseSchema,
+  gitDiffRequestSchema,
+  gitDiffResponseSchema,
+  gitStatusRequestSchema,
+  gitStatusResponseSchema,
+  IPC_COMMAND_CANCEL_CHANNEL,
+  IPC_COMMAND_LIST_CHANNEL,
+  IPC_COMMAND_RUN_CHANNEL,
+  IPC_GIT_CHECKPOINT_CHANNEL,
+  IPC_GIT_DIFF_CHANNEL,
+  IPC_GIT_STATUS_CHANNEL,
+  IPC_WORKSPACE_APPLY_CHANNEL,
+  IPC_WORKSPACE_CHANGES_CHANNEL,
+  IPC_WORKSPACE_PROPOSE_CHANNEL,
+  IPC_WORKSPACE_ROLLBACK_CHANNEL,
+  workspaceApplyRequestSchema,
+  workspaceApplyResponseSchema,
+  workspaceChangesRequestSchema,
+  workspaceChangesResponseSchema,
+  workspaceProposeRequestSchema,
+  workspaceProposeResponseSchema,
+  workspaceRollbackRequestSchema,
+  workspaceRollbackResponseSchema,
 } from '../shared/schemas';
 import type {
   ChatSendResponse,
   CodingPlan,
+  CommandCatalog,
+  CommandListResponse,
+  CommandRunResponse,
+  CommandRunResult,
+  GitCheckpointResponse,
+  GitCheckpointValue,
+  GitDiffResponse,
+  GitDiffValue,
+  GitStatusResponse,
+  GitStatusValue,
   SecretsActionResponse,
   SecretStatusResult,
   SettingsActionResponse,
   Settings,
+  WorkspaceChangeHistory,
+  WorkspaceChangeResponse,
+  WorkspaceChangesResponse,
+  WorkspaceChangeSet,
   WorkspaceFile,
   WorkspaceFileResponse,
   WorkspacePlanResponse,
@@ -319,6 +373,73 @@ function toWorkspacePlanResponse(result: ActionResult<CodingPlan>): WorkspacePla
   return {
     outcome: result.outcome,
     ...(result.value === undefined ? {} : { plan: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function toWorkspaceChangeResponse(
+  result: ActionResult<WorkspaceChangeSet>,
+): WorkspaceChangeResponse {
+  const errorCode = toWorkspaceErrorCode(result);
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { change: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function toWorkspaceChangesResponse(
+  result: ActionResult<WorkspaceChangeHistory>,
+): WorkspaceChangesResponse {
+  const errorCode = toWorkspaceErrorCode(result);
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { history: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function toCommandListResponse(result: ActionResult<CommandCatalog>): CommandListResponse {
+  const errorCode = toWorkspaceErrorCode(result);
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { catalog: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function toCommandRunResponse(result: ActionResult<CommandRunResult>): CommandRunResponse {
+  const errorCode = toWorkspaceErrorCode(result);
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { run: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function toGitStatusResponse(result: ActionResult<GitStatusValue>): GitStatusResponse {
+  const errorCode = toWorkspaceErrorCode(result);
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { status: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function toGitDiffResponse(result: ActionResult<GitDiffValue>): GitDiffResponse {
+  const errorCode = toWorkspaceErrorCode(result);
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { diff: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function toGitCheckpointResponse(result: ActionResult<GitCheckpointValue>): GitCheckpointResponse {
+  const errorCode = toWorkspaceErrorCode(result);
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { checkpoint: result.value }),
     ...(errorCode === undefined ? {} : { errorCode }),
   };
 }
@@ -563,20 +684,41 @@ export function registerIpcHandlers(ipcMain: IpcMain, runtime: IpcHandlerRuntime
     actionType: ActionType,
     parameters: Record<string, unknown>,
     perform: (now: string) => TValue | Promise<TValue>,
+    /**
+     * Builds the sentence shown in the native confirmation dialog, if the
+     * verdict turns out to require one (Phase 2, Milestone 6).
+     *
+     * Built here, in the main process, from state the main process already
+     * holds — a change set it stored, a registry entry, a fixed command
+     * vector — never from the request. The renderer therefore cannot
+     * influence what the user is asked, only that they are asked.
+     *
+     * Omitted for the read-only actions, which matches `runAction`'s own
+     * contract: no callback is supplied, so a `confirm` verdict reaching one
+     * of them fails loudly rather than silently proceeding unconfirmed.
+     */
+    buildConfirmation?: (now: string) => string | Promise<string>,
   ): Promise<ActionResult<TValue>> {
     const now = runtime.nowFn();
     const actionRuntime = buildActionRuntime(runtime, now);
+    const confirmationMessage =
+      buildConfirmation === undefined ? null : await buildConfirmation(now);
 
-    return runAction(actionRuntime, newProposal(actionType, parameters), null, async () => {
-      try {
-        return await perform(now);
-      } catch (error) {
-        if (error instanceof WorkspaceError) {
-          throw new ActionExecutionError(error.code, error.message);
+    return runAction(
+      actionRuntime,
+      newProposal(actionType, parameters),
+      confirmationMessage,
+      async () => {
+        try {
+          return await perform(now);
+        } catch (error) {
+          if (error instanceof WorkspaceError) {
+            throw new ActionExecutionError(error.code, error.message);
+          }
+          throw error;
         }
-        throw error;
-      }
-    });
+      },
+    );
   }
 
   ipcMain.handle(IPC_WORKSPACE_STATUS_CHANNEL, async (_event, ...args: unknown[]) => {
@@ -674,5 +816,276 @@ export function registerIpcHandlers(ipcMain: IpcMain, runtime: IpcHandlerRuntime
     );
 
     return workspacePlanResponseSchema.parse(toWorkspacePlanResponse(result));
+  });
+
+  // -------------------------------------------------------------------------
+  // Controlled coding actions (Phase 2, Milestone 6)
+  //
+  // Ten channels. Four of them can change something, and every one of those
+  // four routes through the same unmodified `runAction` ->
+  // `handleActionProposal` pipeline as everything above, with a confirmation
+  // message this process builds from state it already holds.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Proposed changes, held in the main process for the lifetime of this run.
+   *
+   * Per `registerIpcHandlers` call, exactly like {@link workspaceSession} and
+   * {@link inFlightChatRequests}: one test's proposal never reaches another's,
+   * and one application run's proposals never survive into the next.
+   */
+  const changeStore = createChangeStore({ backupsDir: runtime.userDataPaths.backupsDir });
+
+  const gitRuntime: GitRuntime = { hooksDir: runtime.userDataPaths.gitHooksDir };
+
+  /**
+   * The one command allowed to be running, and how to stop it.
+   *
+   * A map rather than a single slot so `command:cancel` can address a run by
+   * id without having to guess which one is current — and its size is the
+   * concurrency limit, checked inside `perform` where the check and the claim
+   * happen together and cannot race.
+   */
+  const inFlightCommandRuns = new Map<string, AbortController>();
+
+  /**
+   * Whether the emergency stop is engaged *right now*, re-read from disk.
+   *
+   * Passed to a running command so an engaged stop kills it. The permission
+   * engine already refuses to start an action while the stop is engaged; this
+   * is the other half, without which "emergency stop" would only mean "no new
+   * work".
+   */
+  async function isEmergencyEngaged(): Promise<boolean> {
+    const state = await loadEmergencyState(
+      runtime.userDataPaths.emergencyStateFile,
+      runtime.nowFn(),
+    );
+    return state.engaged;
+  }
+
+  /** Plain, exact text for the write confirmation, built from the stored change. */
+  function describeChangeSet(change: WorkspaceChangeSet | null, verb: string): string {
+    if (change === null) {
+      return `${verb} a proposed change? The change is no longer held by this session, so nothing would be written.`;
+    }
+    const paths = change.files.map((file) => `  ${file.path}`).join('\n');
+    return [
+      `${verb} ${String(change.files.length)} file(s) in the approved project?`,
+      '',
+      paths,
+      '',
+      `+${String(change.totalAdded)} / -${String(change.totalRemoved)} lines.`,
+      'A copy of the current contents is kept so the change can be undone.',
+    ].join('\n');
+  }
+
+  ipcMain.handle(IPC_WORKSPACE_PROPOSE_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ edits }] = workspaceProposeRequestSchema.parse(args);
+
+    // Producing a diff writes nothing, so it is `workspace.plan` — the same
+    // action type as the inert Milestone 5 plan, for the same reason.
+    const result = await runWorkspaceAction<WorkspaceChangeSet>(
+      'workspace.plan',
+      { operation: 'propose', fileCount: edits.length },
+      (now) =>
+        changeStore.propose({
+          project: requireApprovedProject(workspaceSession),
+          edits,
+          now,
+        }),
+    );
+
+    return workspaceProposeResponseSchema.parse(toWorkspaceChangeResponse(result));
+  });
+
+  ipcMain.handle(IPC_WORKSPACE_APPLY_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ changeId }] = workspaceApplyRequestSchema.parse(args);
+
+    const result = await runWorkspaceAction<WorkspaceChangeSet>(
+      'workspace.write',
+      // The number of files, never their paths: a path names a person, a
+      // client or an unreleased product, and this follows the same rule the
+      // Milestone 5 workspace parameters already do.
+      { operation: 'apply', fileCount: changeStore.describe(changeId)?.files.length ?? 0 },
+      (now) =>
+        changeStore.apply({
+          project: requireApprovedProject(workspaceSession),
+          changeId,
+          now,
+        }),
+      () => describeChangeSet(changeStore.describe(changeId), 'Overwrite'),
+    );
+
+    return workspaceApplyResponseSchema.parse(toWorkspaceChangeResponse(result));
+  });
+
+  ipcMain.handle(IPC_WORKSPACE_ROLLBACK_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ changeId }] = workspaceRollbackRequestSchema.parse(args);
+
+    const result = await runWorkspaceAction<WorkspaceChangeSet>(
+      'workspace.rollback',
+      { operation: 'rollback', fileCount: changeStore.describe(changeId)?.files.length ?? 0 },
+      (now) =>
+        changeStore.rollback({
+          project: requireApprovedProject(workspaceSession),
+          changeId,
+          now,
+        }),
+      () => describeChangeSet(changeStore.describe(changeId), 'Restore the previous contents of'),
+    );
+
+    return workspaceRollbackResponseSchema.parse(toWorkspaceChangeResponse(result));
+  });
+
+  ipcMain.handle(IPC_WORKSPACE_CHANGES_CHANNEL, async (_event, ...args: unknown[]) => {
+    workspaceChangesRequestSchema.parse(args);
+
+    const result = await runWorkspaceAction<WorkspaceChangeHistory>(
+      'workspace.read',
+      { operation: 'changes' },
+      () => {
+        requireApprovedProject(workspaceSession);
+        return changeStore.history();
+      },
+    );
+
+    return workspaceChangesResponseSchema.parse(toWorkspaceChangesResponse(result));
+  });
+
+  ipcMain.handle(IPC_COMMAND_LIST_CHANNEL, async (_event, ...args: unknown[]) => {
+    commandListRequestSchema.parse(args);
+
+    const result = await runWorkspaceAction<CommandCatalog>(
+      'workspace.read',
+      { operation: 'commands' },
+      () =>
+        buildCommandCatalog(requireApprovedProject(workspaceSession), inFlightCommandRuns.size > 0),
+    );
+
+    return commandListResponseSchema.parse(toCommandListResponse(result));
+  });
+
+  ipcMain.handle(IPC_COMMAND_RUN_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ runId, commandId }] = commandRunRequestSchema.parse(args);
+
+    const command = findCodingCommand(commandId);
+    const project = workspaceSession.get();
+
+    const result = await runWorkspaceAction<CommandRunResult>(
+      'command.run',
+      // The command's own identifier is a member of a fixed enum, not user
+      // content, so recording it costs nothing and makes the audit trail
+      // actually answer "what did it run".
+      { operation: 'run', commandId },
+      async (now) => {
+        const approved = requireApprovedProject(workspaceSession);
+
+        // Checked and claimed in the same step, inside `perform`, so two
+        // concurrent requests cannot both pass the check.
+        if (inFlightCommandRuns.size >= COMMAND_MAX_CONCURRENT_RUNS) {
+          throw new WorkspaceError('COMMAND_ALREADY_RUNNING');
+        }
+        const abortController = new AbortController();
+        inFlightCommandRuns.set(runId, abortController);
+
+        try {
+          return await runCodingCommand({
+            project: approved,
+            commandId,
+            runId,
+            startedAt: now,
+            finishedAtFn: runtime.nowFn,
+            signal: abortController.signal,
+            isEmergencyEngaged,
+          });
+        } finally {
+          inFlightCommandRuns.delete(runId);
+        }
+      },
+      async () => {
+        const catalog =
+          project === null ? null : await buildCommandCatalog(project, false).catch(() => null);
+        const descriptor = catalog?.commands.find((entry) => entry.id === commandId) ?? null;
+        const lines = [
+          `Run a command inside the approved project?`,
+          '',
+          `Command:   ${command === null ? commandId : describeCommandLine(command)}`,
+          `Directory: ${project === null ? '(no project approved)' : project.rootPath}`,
+        ];
+        if (descriptor?.scriptPreview != null) {
+          lines.push('', `The project defines this script as:`, `  ${descriptor.scriptPreview}`);
+        }
+        if (descriptor !== null && descriptor.risks.length > 0) {
+          lines.push('', `Note: this script ${descriptor.risks.join(', ')}.`);
+        }
+        lines.push(
+          '',
+          'This runs code from the project you opened. Local Agent bounds how long it may run and how much it may print, but not what it does.',
+        );
+        return lines.join('\n');
+      },
+    );
+
+    return commandRunResponseSchema.parse(toCommandRunResponse(result));
+  });
+
+  ipcMain.handle(IPC_COMMAND_CANCEL_CHANNEL, (_event, ...args: unknown[]) => {
+    const [{ runId }] = commandCancelRequestSchema.parse(args);
+    // Best-effort and idempotent, exactly like `chat:cancel`, and ungated for
+    // the same reason: this cannot start an action, read anything or reach
+    // anything — it can only ask an already-authorized run to stop early.
+    inFlightCommandRuns.get(runId)?.abort();
+    return commandCancelResponseSchema.parse({ acknowledged: true });
+  });
+
+  ipcMain.handle(IPC_GIT_STATUS_CHANNEL, async (_event, ...args: unknown[]) => {
+    gitStatusRequestSchema.parse(args);
+
+    const result = await runWorkspaceAction<GitStatusValue>(
+      'git.read',
+      { operation: 'status' },
+      () => readGitStatus(requireApprovedProject(workspaceSession), gitRuntime),
+    );
+
+    return gitStatusResponseSchema.parse(toGitStatusResponse(result));
+  });
+
+  ipcMain.handle(IPC_GIT_DIFF_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ path }] = gitDiffRequestSchema.parse(args);
+
+    const result = await runWorkspaceAction<GitDiffValue>(
+      'git.read',
+      // Whether the diff was narrowed, never to what: a path is user content.
+      { operation: 'diff', scoped: path !== null },
+      () => readGitDiff(requireApprovedProject(workspaceSession), gitRuntime, path),
+    );
+
+    return gitDiffResponseSchema.parse(toGitDiffResponse(result));
+  });
+
+  ipcMain.handle(IPC_GIT_CHECKPOINT_CHANNEL, async (_event, ...args: unknown[]) => {
+    gitCheckpointRequestSchema.parse(args);
+
+    const project = workspaceSession.get();
+
+    const result = await runWorkspaceAction<GitCheckpointValue>(
+      'git.checkpoint',
+      { operation: 'checkpoint' },
+      (now) => createGitCheckpoint(requireApprovedProject(workspaceSession), gitRuntime, now),
+      (now) =>
+        [
+          'Create a Git checkpoint commit in the approved project?',
+          '',
+          `Directory: ${project === null ? '(no project approved)' : project.rootPath}`,
+          '',
+          'Exactly these commands will run, and nothing else:',
+          describeCheckpoint(now),
+          '',
+          'Nothing is reset, checked out, deleted or pushed. Repository hooks are disabled for this commit.',
+        ].join('\n'),
+    );
+
+    return gitCheckpointResponseSchema.parse(toGitCheckpointResponse(result));
   });
 }

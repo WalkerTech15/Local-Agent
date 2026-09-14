@@ -33,7 +33,15 @@
 > `main/workspace-session.ts`, `main/workspace-inspector.ts`,
 > `main/workspace-planner.ts`) and six more channels, under a permission
 > engine, executor, pipeline and audit writer that once again have **zero
-> diff**. This document marks which parts exist today.
+> diff**. Phase 2 Milestone 6 adds the first actions that can change something
+> outside `%APPDATA%\Local-Agent`: approved file changes
+> (`main/workspace-changes.ts`), a five-entry command registry run through a
+> bounded process runner (`main/process-runner.ts`,
+> `main/project-commands.ts`), and read-only Git plus a checkpoint commit
+> (`main/git-runner.ts`) — ten more channels, four of them on the
+> confirmation floor, and the permission engine, executor, pipeline and audit
+> writer have **zero diff** for the fifth consecutive milestone. This document
+> marks which parts exist today.
 
 ---
 
@@ -108,6 +116,10 @@ call. See `docs/phase-2-coding-workspace.md`.
 | `main/workspace-session` **(exists)**   | Holds the one approved project, in memory, for one application run.                                                                               | Persist the approved path; accept a project that was not canonicalised and validated.                   |
 | `main/workspace-inspector` **(exists)** | The only module that reads a user's own file: list, read, search. Bounded in every dimension.                                                     | Write, create, rename or delete anything; log; follow a link out; read an excluded path.                |
 | `main/workspace-planner` **(exists)**   | Gathers observations about the approved project and calls the pure plan builder.                                                                  | Call a model; produce content that could be applied; read the clock.                                    |
+| `main/workspace-changes` **(exists)**   | The only module that writes a user's own file. Holds proposed change sets, diffs them, backs up, applies all-or-nothing, restores.                | Create or delete a project file; write without a fresh containment and hash re-check; delete a backup.  |
+| `main/process-runner` **(exists)**      | The only module that starts a process. `shell: false`, bounded in time and output, no terminal, allowlisted environment, tree-killed.             | Use a shell; build a command from a request; inherit the parent environment; leave output unread.       |
+| `main/project-commands` **(exists)**    | Reads the project's declared scripts and runs one registry entry inside the approved root.                                                        | Run a script the registry does not name; take an argument vector from anywhere but a literal.           |
+| `main/git-runner` **(exists)**          | Read-only `status`/`diff`, plus one checkpoint commit on the branch already checked out. Hooks disabled for every invocation.                     | Reset, checkout, switch, clean, delete a branch, rewrite history, or contact a remote.                  |
 
 ## Dependency direction
 

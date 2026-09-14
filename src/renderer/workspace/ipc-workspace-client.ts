@@ -22,6 +22,15 @@
 
 import type {
   CodingPlan,
+  CommandCatalog,
+  CommandIdValue,
+  CommandRunResult,
+  GitCheckpointValue,
+  GitDiffValue,
+  GitStatusValue,
+  WorkspaceChangeHistory,
+  WorkspaceChangeSet,
+  WorkspaceEdit,
   WorkspaceFile,
   WorkspaceProjectSummary,
   WorkspaceSearchResult,
@@ -37,9 +46,16 @@ import type { WorkspaceErrorCode } from '../../shared/workspace';
  * failure of the operation at all: the permission engine or the emergency
  * stop refused it, and that deserves its own message rather than being folded
  * into "could not read".
+ *
+ * `'declined'` is the Milestone 6 addition, and it matters more than it
+ * looks: it is the user answering "no" to the native confirmation that guards
+ * every write, every command and every checkpoint. Reporting that as an error
+ * would tell someone their own deliberate refusal had failed.
  */
 export type WorkspaceFailure =
-  { readonly kind: 'denied' } | { readonly kind: 'error'; readonly code: WorkspaceErrorCode };
+  | { readonly kind: 'denied' }
+  | { readonly kind: 'declined' }
+  | { readonly kind: 'error'; readonly code: WorkspaceErrorCode };
 
 export type WorkspaceResult<TValue> =
   | { readonly ok: true; readonly value: TValue }
@@ -53,6 +69,8 @@ interface OutcomeCarrier {
 
 function failureFrom(response: OutcomeCarrier): WorkspaceFailure {
   if (response.outcome === 'denied') return { kind: 'denied' };
+  // `aborted` is what `execute` returns for a rejected confirmation.
+  if (response.outcome === 'aborted') return { kind: 'declined' };
   const code = response.errorCode;
   return {
     kind: 'error',
@@ -86,6 +104,21 @@ export interface WorkspaceClient {
   file(path: string): Promise<WorkspaceResult<WorkspaceFile>>;
   search(query: string, path: string): Promise<WorkspaceResult<WorkspaceSearchResult>>;
   plan(objective: string): Promise<WorkspaceResult<CodingPlan>>;
+
+  // Controlled coding actions (Phase 2, Milestone 6).
+
+  /** Produces a diff. Writes nothing. */
+  propose(edits: readonly WorkspaceEdit[]): Promise<WorkspaceResult<WorkspaceChangeSet>>;
+  /** Applies a change the main process holds, by id — never by content. */
+  apply(changeId: string): Promise<WorkspaceResult<WorkspaceChangeSet>>;
+  rollback(changeId: string): Promise<WorkspaceResult<WorkspaceChangeSet>>;
+  changes(): Promise<WorkspaceResult<WorkspaceChangeHistory>>;
+  commands(): Promise<WorkspaceResult<CommandCatalog>>;
+  runCommand(runId: string, commandId: CommandIdValue): Promise<WorkspaceResult<CommandRunResult>>;
+  cancelCommand(runId: string): Promise<void>;
+  gitStatus(): Promise<WorkspaceResult<GitStatusValue>>;
+  gitDiff(path: string | null): Promise<WorkspaceResult<GitDiffValue>>;
+  gitCheckpoint(): Promise<WorkspaceResult<GitCheckpointValue>>;
 }
 
 export function createIpcWorkspaceClient(): WorkspaceClient {
@@ -113,6 +146,45 @@ export function createIpcWorkspaceClient(): WorkspaceClient {
     async plan(objective: string) {
       const response = await window.localAgent.workspace.plan(objective);
       return unwrap(response, response.plan);
+    },
+    async propose(edits: readonly WorkspaceEdit[]) {
+      const response = await window.localAgent.workspace.propose(edits);
+      return unwrap(response, response.change);
+    },
+    async apply(changeId: string) {
+      const response = await window.localAgent.workspace.apply(changeId);
+      return unwrap(response, response.change);
+    },
+    async rollback(changeId: string) {
+      const response = await window.localAgent.workspace.rollback(changeId);
+      return unwrap(response, response.change);
+    },
+    async changes() {
+      const response = await window.localAgent.workspace.changes();
+      return unwrap(response, response.history);
+    },
+    async commands() {
+      const response = await window.localAgent.command.list();
+      return unwrap(response, response.catalog);
+    },
+    async runCommand(runId: string, commandId: CommandIdValue) {
+      const response = await window.localAgent.command.run(runId, commandId);
+      return unwrap(response, response.run);
+    },
+    async cancelCommand(runId: string) {
+      await window.localAgent.command.cancel(runId);
+    },
+    async gitStatus() {
+      const response = await window.localAgent.git.status();
+      return unwrap(response, response.status);
+    },
+    async gitDiff(path: string | null) {
+      const response = await window.localAgent.git.diff(path);
+      return unwrap(response, response.diff);
+    },
+    async gitCheckpoint() {
+      const response = await window.localAgent.git.checkpoint();
+      return unwrap(response, response.checkpoint);
     },
   };
 }

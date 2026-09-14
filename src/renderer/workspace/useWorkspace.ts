@@ -1,5 +1,5 @@
 /**
- * Thin React binding over `WorkspaceController` (Phase 2, Milestone 5).
+ * Thin React binding over `WorkspaceController` (Phase 2, Milestones 5-6).
  *
  * Deliberately minimal, exactly like `chat/useConversation.ts`: this hook
  * owns no workspace logic of its own. Everything observable here is
@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import { createIpcWorkspaceClient, type WorkspaceClient } from './ipc-workspace-client';
 import { WorkspaceController, type WorkspaceState } from './workspace-controller';
+import type { CommandIdValue, WorkspaceEdit } from '../../shared/schemas';
 
 export interface UseWorkspaceResult {
   readonly state: WorkspaceState;
@@ -23,6 +24,17 @@ export interface UseWorkspaceResult {
   readonly search: (query: string) => Promise<void>;
   readonly createPlan: (objective: string) => Promise<void>;
   readonly approvePlan: () => void;
+  readonly proposeChange: (edits: readonly WorkspaceEdit[]) => Promise<void>;
+  readonly approveChange: () => void;
+  readonly applyChange: () => Promise<void>;
+  readonly rollbackLatest: () => Promise<void>;
+  readonly refreshChanges: () => Promise<void>;
+  readonly refreshCommands: () => Promise<void>;
+  readonly runCommand: (commandId: CommandIdValue) => Promise<void>;
+  readonly cancelCommand: () => Promise<void>;
+  readonly refreshGitStatus: () => Promise<void>;
+  readonly refreshGitDiff: (path: string | null) => Promise<void>;
+  readonly createCheckpoint: () => Promise<void>;
   readonly retry: () => Promise<void>;
   readonly dismissError: () => void;
 }
@@ -69,6 +81,19 @@ export function useWorkspace(client?: WorkspaceClient): UseWorkspaceResult {
     approvePlan: () => {
       controller.approvePlan();
     },
+    proposeChange: (edits: readonly WorkspaceEdit[]) => controller.proposeChange(edits),
+    approveChange: () => {
+      controller.approveChange();
+    },
+    applyChange: () => controller.applyChange(),
+    rollbackLatest: () => controller.rollbackLatest(),
+    refreshChanges: () => controller.refreshChanges(),
+    refreshCommands: () => controller.refreshCommands(),
+    runCommand: (commandId: CommandIdValue) => controller.runCommand(commandId),
+    cancelCommand: () => controller.cancelCommand(),
+    refreshGitStatus: () => controller.refreshGitStatus(),
+    refreshGitDiff: (path: string | null) => controller.refreshGitDiff(path),
+    createCheckpoint: () => controller.createCheckpoint(),
     retry: () => controller.retry(),
     dismissError: () => {
       controller.dismissError();

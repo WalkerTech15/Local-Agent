@@ -43,7 +43,20 @@ import {
   AUDIT_OUTCOMES,
   CHAT_CONVERSATION_MAX_MESSAGES,
   CONTROL_CHARACTER_PATTERN,
+  WORKSPACE_MAX_CHANGE_FILES,
 } from '../constants';
+import {
+  commandCatalogSchema,
+  commandIdSchema,
+  commandRunResultSchema,
+  gitCheckpointSchema,
+  gitDiffSchema,
+  gitStatusSchema,
+  workspaceChangeHistorySchema,
+  workspaceChangeIdSchema,
+  workspaceChangeSetSchema,
+  workspaceEditSchema,
+} from './coding.schema';
 import { chatContentSchema, chatMessageSchema, chatStreamDeltaSchema } from './chat.schema';
 import {
   codingPlanSchema,
@@ -405,3 +418,182 @@ export const workspacePlanResponseSchema = z.strictObject({
 });
 
 export type WorkspacePlanResponse = z.infer<typeof workspacePlanResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Controlled coding actions (Phase 2, Milestone 6)
+//
+// The first channels in this codebase that can change something outside
+// `%APPDATA%\Local-Agent`. Four properties hold across all of them, and each
+// is a shape rather than a check:
+//
+//  - **A change is applied by reference.** `workspace:propose` is the only
+//    channel that carries file content, and it writes nothing.
+//    `workspace:apply` carries a change *id* and nothing else — no path, no
+//    content, no destination — so the bytes written are necessarily the bytes
+//    that were diffed and shown. A renderer compromised between the two calls
+//    can re-request an already-reviewed change; it cannot substitute one.
+//  - **A command is named, never spelled.** `commandRunRequestSchema` carries
+//    an identifier from a five-value enum. There is no field here for a
+//    command string, an argument, a shell, a working directory, or an
+//    environment variable, so "no arbitrary command strings" is a property of
+//    the type rather than a filter applied to one.
+//  - **Git is not addressable.** No schema here carries a git subcommand,
+//    a ref, a branch name, a remote or a commit message. `git:checkpoint`
+//    takes no arguments at all.
+//  - **Every one of them except the read-only pair is on the confirmation
+//    floor**, which no policy edit can downgrade, so the operation is stated
+//    in a native dialog the main process owns before anything happens.
+//
+// `command:cancel` is the one channel with no permission gate, for exactly
+// the reason `chat:cancel` has none: it cannot start anything, reach anything
+// or read anything — it can only ask an already-authorized run to stop early.
+// ---------------------------------------------------------------------------
+
+export const IPC_WORKSPACE_PROPOSE_CHANNEL = 'workspace:propose';
+export const IPC_WORKSPACE_APPLY_CHANNEL = 'workspace:apply';
+export const IPC_WORKSPACE_ROLLBACK_CHANNEL = 'workspace:rollback';
+export const IPC_WORKSPACE_CHANGES_CHANNEL = 'workspace:changes';
+export const IPC_COMMAND_LIST_CHANNEL = 'command:list';
+export const IPC_COMMAND_RUN_CHANNEL = 'command:run';
+export const IPC_COMMAND_CANCEL_CHANNEL = 'command:cancel';
+export const IPC_GIT_STATUS_CHANNEL = 'git:status';
+export const IPC_GIT_DIFF_CHANNEL = 'git:diff';
+export const IPC_GIT_CHECKPOINT_CHANNEL = 'git:checkpoint';
+
+/**
+ * The one request that carries file content, and it produces a diff rather
+ * than a write.
+ *
+ * Duplicate paths are refused outright: two edits naming the same file would
+ * make "what will this change set do to that file" ambiguous, and an
+ * ambiguous change is not one a person can meaningfully approve.
+ */
+export const workspaceProposeRequestSchema = z.tuple([
+  z.strictObject({
+    edits: z
+      .array(workspaceEditSchema)
+      .min(1)
+      .max(WORKSPACE_MAX_CHANGE_FILES)
+      .superRefine((edits, ctx) => {
+        const seen = new Set<string>();
+        edits.forEach((edit, index) => {
+          if (seen.has(edit.path)) {
+            ctx.addIssue({
+              code: 'custom',
+              path: [index, 'path'],
+              message: 'a change set must not name the same file twice',
+            });
+          }
+          seen.add(edit.path);
+        });
+      }),
+  }),
+]);
+
+export type WorkspaceProposeRequestInput = z.infer<typeof workspaceProposeRequestSchema>[0];
+
+/** Applying and rolling back both carry an identifier and nothing else. */
+const changeReferenceRequestSchema = z.tuple([
+  z.strictObject({ changeId: workspaceChangeIdSchema }),
+]);
+
+export const workspaceApplyRequestSchema = changeReferenceRequestSchema;
+export const workspaceRollbackRequestSchema = changeReferenceRequestSchema;
+export const workspaceChangesRequestSchema = z.tuple([]);
+
+export const workspaceChangeResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  change: workspaceChangeSetSchema.optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export const workspaceProposeResponseSchema = workspaceChangeResponseSchema;
+export const workspaceApplyResponseSchema = workspaceChangeResponseSchema;
+export const workspaceRollbackResponseSchema = workspaceChangeResponseSchema;
+
+export type WorkspaceChangeResponse = z.infer<typeof workspaceChangeResponseSchema>;
+
+export const workspaceChangesResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  history: workspaceChangeHistorySchema.optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export type WorkspaceChangesResponse = z.infer<typeof workspaceChangesResponseSchema>;
+
+export const commandListRequestSchema = z.tuple([]);
+
+/**
+ * `runId` correlates a later `command:cancel` to this specific run, exactly
+ * as `chat:send`'s `requestId` does. `commandId` is an enum member; there is
+ * no other field, and in particular no argument vector.
+ */
+export const commandRunRequestSchema = z.tuple([
+  z.strictObject({
+    runId: z.uuid(),
+    commandId: commandIdSchema,
+  }),
+]);
+
+export type CommandRunRequestInput = z.infer<typeof commandRunRequestSchema>[0];
+
+export const commandCancelRequestSchema = z.tuple([z.strictObject({ runId: z.uuid() })]);
+
+export const commandListResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  catalog: commandCatalogSchema.optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export type CommandListResponse = z.infer<typeof commandListResponseSchema>;
+
+export const commandRunResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  run: commandRunResultSchema.optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export type CommandRunResponse = z.infer<typeof commandRunResponseSchema>;
+
+/** Best-effort and idempotent, exactly like {@link chatCancelResponseSchema}. */
+export const commandCancelResponseSchema = z.strictObject({
+  acknowledged: z.literal(true),
+});
+
+export type CommandCancelResponse = z.infer<typeof commandCancelResponseSchema>;
+
+export const gitStatusRequestSchema = z.tuple([]);
+
+/** `null` diffs the whole working tree; a path narrows it to one file. */
+export const gitDiffRequestSchema = z.tuple([
+  z.strictObject({ path: workspaceEntryPathSchema.nullable() }),
+]);
+
+export type GitDiffRequestInput = z.infer<typeof gitDiffRequestSchema>[0];
+
+/** Takes no arguments: the message, the branch and the commands are all fixed. */
+export const gitCheckpointRequestSchema = z.tuple([]);
+
+export const gitStatusResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  status: gitStatusSchema.optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export type GitStatusResponse = z.infer<typeof gitStatusResponseSchema>;
+
+export const gitDiffResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  diff: gitDiffSchema.optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export type GitDiffResponse = z.infer<typeof gitDiffResponseSchema>;
+
+export const gitCheckpointResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  checkpoint: gitCheckpointSchema.optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export type GitCheckpointResponse = z.infer<typeof gitCheckpointResponseSchema>;

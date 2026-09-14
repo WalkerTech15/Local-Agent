@@ -12,10 +12,19 @@ import type {
   ChatChunkEvent,
   ChatMessage,
   ChatSendResponse,
+  CommandIdValue,
+  CommandListResponse,
+  CommandRunResponse,
+  GitCheckpointResponse,
+  GitDiffResponse,
+  GitStatusResponse,
   HealthCheckResponse,
   SecretsActionResponse,
   SettingsActionResponse,
   SettingsUpdateInput,
+  WorkspaceChangeResponse,
+  WorkspaceChangesResponse,
+  WorkspaceEdit,
   WorkspaceFileResponse,
   WorkspacePlanResponse,
   WorkspaceProjectResponse,
@@ -59,6 +68,32 @@ declare global {
         readonly file: (path: string) => Promise<WorkspaceFileResponse>;
         readonly search: (query: string, path: string) => Promise<WorkspaceSearchResponse>;
         readonly plan: (objective: string) => Promise<WorkspacePlanResponse>;
+        /** Produces a diff. Writes nothing — see `apply` (Milestone 6). */
+        readonly propose: (edits: readonly WorkspaceEdit[]) => Promise<WorkspaceChangeResponse>;
+        /** Takes a change id only, so what was shown is what is written. */
+        readonly apply: (changeId: string) => Promise<WorkspaceChangeResponse>;
+        readonly rollback: (changeId: string) => Promise<WorkspaceChangeResponse>;
+        readonly changes: () => Promise<WorkspaceChangesResponse>;
+      };
+      /**
+       * The command registry (Phase 2, Milestone 6). Note that `run` takes an
+       * identifier from an enum: there is no parameter for a command string,
+       * an argument, a shell or a working directory.
+       */
+      readonly command: {
+        readonly list: () => Promise<CommandListResponse>;
+        readonly run: (runId: string, commandId: CommandIdValue) => Promise<CommandRunResponse>;
+        readonly cancel: (runId: string) => Promise<void>;
+      };
+      /**
+       * Git (Phase 2, Milestone 6). `checkpoint` takes no argument: nothing
+       * here can name a ref, a branch, a remote or a commit message, and
+       * there is no reset, checkout, push or delete.
+       */
+      readonly git: {
+        readonly status: () => Promise<GitStatusResponse>;
+        readonly diff: (path: string | null) => Promise<GitDiffResponse>;
+        readonly checkpoint: () => Promise<GitCheckpointResponse>;
       };
     };
   }

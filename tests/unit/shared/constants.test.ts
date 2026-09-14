@@ -86,45 +86,105 @@ describe('permission model', () => {
 
   it('adds no action that could write, delete or execute (Phase 2, Milestone 5)', () => {
     const actions: readonly string[] = ACTION_TYPES;
-    // The workspace reads. It has no counterpart that writes, and the
-    // absence is the control — a modification could not be *expressed* as a
-    // proposal, let alone authorized.
+    // Milestone 6 gives the workspace the ability to write, to run one of
+    // five named commands, and to create a commit. What it deliberately still
+    // does not give it is a *general* capability: there is no action type
+    // through which an arbitrary file operation, an arbitrary command, or a
+    // destructive Git operation could be expressed at all.
     for (const forbidden of [
-      'workspace.write',
       'workspace.create',
       'workspace.delete',
-      'workspace.apply',
-      'workspace.execute',
       'workspace.patch',
-      'workspace.commit',
+      'workspace.execute',
+      'fs.read',
+      'fs.write',
+      'fs.delete',
+      'shell.execute',
       'terminal.execute',
-      'git.commit',
+      'process.spawn',
+      'command.execute',
+      'git.push',
+      'git.reset',
+      'git.checkout',
+      'git.branch',
+      'git.remote',
+      'admin.execute',
     ]) {
       expect(actions, forbidden).not.toContain(forbidden);
     }
   });
 
-  it('names the three read-only workspace actions and nothing else', () => {
+  it('names the five workspace actions and nothing else', () => {
     const actions: readonly string[] = ACTION_TYPES;
     const workspaceActions = actions.filter((action) => action.startsWith('workspace.'));
     expect([...workspaceActions].sort()).toEqual([
       'workspace.plan',
       'workspace.read',
+      'workspace.rollback',
       'workspace.select',
+      'workspace.write',
     ]);
   });
 
-  it('leaves every workspace action blocked by an engaged emergency stop', () => {
+  it('names exactly two Git actions: one that reads and one that commits', () => {
+    const actions: readonly string[] = ACTION_TYPES;
+    const gitActions = actions.filter((action) => action.startsWith('git.'));
+    expect([...gitActions].sort()).toEqual(['git.checkpoint', 'git.read']);
+  });
+
+  it('puts every action that can change something outside the app on the confirmation floor', () => {
+    // The Milestone 6 invariant, stated positively: writing a file, undoing a
+    // write, running a project command and creating a commit are the four
+    // things that reach outside `%APPDATA%\\Local-Agent`, and a policy edit
+    // cannot turn any of them into an `allow`.
+    const floor: readonly string[] = CONFIRMATION_REQUIRED_ACTION_TYPES;
+    for (const action of [
+      'workspace.write',
+      'workspace.rollback',
+      'command.run',
+      'git.checkpoint',
+    ]) {
+      expect(floor, action).toContain(action);
+    }
+  });
+
+  it('leaves every workspace, command and Git action blocked by an engaged emergency stop', () => {
     const exempt: readonly string[] = EMERGENCY_STOP_EXEMPT_ACTION_TYPES;
-    for (const action of ['workspace.select', 'workspace.read', 'workspace.plan']) {
+    for (const action of [
+      'workspace.select',
+      'workspace.read',
+      'workspace.plan',
+      'workspace.write',
+      'workspace.rollback',
+      'command.run',
+      'git.read',
+      'git.checkpoint',
+    ]) {
       expect(exempt, action).not.toContain(action);
     }
   });
 
   it('requires confirmation for the destructive and privacy-sensitive actions', () => {
     expect([...CONFIRMATION_REQUIRED_ACTION_TYPES].sort()).toEqual(
-      ['app.exit', 'emergency.reset', 'secrets.clear', 'secrets.write'].sort(),
+      [
+        'app.exit',
+        'command.run',
+        'emergency.reset',
+        'git.checkpoint',
+        'secrets.clear',
+        'secrets.write',
+        'workspace.rollback',
+        'workspace.write',
+      ].sort(),
     );
+  });
+
+  it('leaves the two read-only additions off the confirmation floor', () => {
+    // Reading `git status` and `git diff` changes nothing, exactly as
+    // `workspace.read` does not, so neither is prompted for.
+    const floor: readonly string[] = CONFIRMATION_REQUIRED_ACTION_TYPES;
+    expect(floor).not.toContain('git.read');
+    expect(floor).not.toContain('workspace.read');
   });
 
   it('only names real action types in the confirmation floor', () => {

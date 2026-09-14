@@ -97,7 +97,15 @@ describe('gatherPlanObservations', () => {
     }
     const observations = await gatherPlanObservations(project, 'retry');
     expect(observations.files.length).toBeLessThanOrEqual(WORKSPACE_PLAN_MAX_FILES);
-  });
+    // Explicit timeout, not a relaxed one: 35 sequential real file writes plus
+    // a scan comfortably finish in ~1s alone, but the suite now also spawns
+    // real npm/git/node child processes in sibling test files (Phase 2,
+    // Milestone 6), and disk/CPU contention under full-suite concurrency can
+    // push this past vitest's 5s default. Matches the same reasoning already
+    // applied to genuinely slow I/O-bound cases elsewhere (e.g.
+    // `git-runner.test.ts`'s hook test, `project-commands.test.ts`'s real
+    // `npm` runs).
+  }, 20_000);
 });
 
 describe('createCodingPlan', () => {

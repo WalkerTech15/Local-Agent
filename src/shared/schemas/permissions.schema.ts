@@ -228,6 +228,45 @@ export function createDefaultPermissionPolicy(): PermissionPolicy {
         reason:
           'Producing a coding plan only reads the approved project; the plan itself is inert and cannot be applied.',
       },
+      {
+        id: 'workspace.write',
+        actionType: 'workspace.write',
+        decision: 'confirm',
+        priority: 100,
+        reason:
+          'Overwriting a file in the user’s own project is irreversible without the backup, so it is approved per change set in a native dialog.',
+      },
+      {
+        id: 'workspace.rollback',
+        actionType: 'workspace.rollback',
+        decision: 'confirm',
+        priority: 100,
+        reason:
+          'Restoring a backup discards whatever the file contains now, which may include edits made since.',
+      },
+      {
+        id: 'command.run',
+        actionType: 'command.run',
+        decision: 'confirm',
+        priority: 100,
+        reason:
+          'Running a project script executes code from a directory the user opened, so the exact command and script text are shown before it starts.',
+      },
+      {
+        id: 'git.read',
+        actionType: 'git.read',
+        decision: 'allow',
+        priority: 100,
+        reason: 'Reading git status and diff changes nothing in the repository.',
+      },
+      {
+        id: 'git.checkpoint',
+        actionType: 'git.checkpoint',
+        decision: 'confirm',
+        priority: 100,
+        reason:
+          'Creating a commit changes the user’s repository history, so the exact commands are shown before it runs.',
+      },
     ],
   };
 }

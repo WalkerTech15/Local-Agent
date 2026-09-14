@@ -42,6 +42,8 @@ beforeEach(async () => {
     auditLogDir: join(dir, 'logs', 'audit'),
     emergencyStateFile: join(dir, 'emergency.json'),
     memoryDir: join(dir, 'memory'),
+    backupsDir: join(dir, 'backups'),
+    gitHooksDir: join(dir, 'state', 'git-hooks-disabled'),
   };
 });
 
