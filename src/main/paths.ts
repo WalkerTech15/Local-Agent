@@ -28,6 +28,12 @@ export interface UserDataPaths {
   readonly auditLogDir: string;
   readonly emergencyStateFile: string;
   readonly memoryDir: string;
+  /** Pre-change backups (Phase 2, Milestone 6). Never inside a user project. */
+  readonly backupsDir: string;
+  /** The empty directory `git` is pointed at instead of a repository's hooks. */
+  readonly gitHooksDir: string;
+  /** Agent profiles (Phase 2, Milestone 7). Holds no credential. */
+  readonly agentProfilesFile: string;
 }
 
 /**
@@ -47,5 +53,8 @@ export function resolveUserDataPaths(appDataDir: string): UserDataPaths {
     auditLogDir: join(userDataDir, USER_DATA_PATHS.auditLogDir),
     emergencyStateFile: join(userDataDir, USER_DATA_PATHS.emergencyStateFile),
     memoryDir: join(userDataDir, USER_DATA_PATHS.memoryDir),
+    backupsDir: join(userDataDir, USER_DATA_PATHS.backupsDir),
+    gitHooksDir: join(userDataDir, USER_DATA_PATHS.gitHooksDir),
+    agentProfilesFile: join(userDataDir, USER_DATA_PATHS.agentProfilesFile),
   };
 }

@@ -19,6 +19,66 @@ import {
   secretsWriteResponseSchema,
   settingsGetResponseSchema,
   settingsUpdateResponseSchema,
+  IPC_WORKSPACE_FILE_CHANNEL,
+  IPC_WORKSPACE_PLAN_CHANNEL,
+  IPC_WORKSPACE_SEARCH_CHANNEL,
+  IPC_WORKSPACE_SELECT_CHANNEL,
+  IPC_WORKSPACE_STATUS_CHANNEL,
+  IPC_WORKSPACE_TREE_CHANNEL,
+  workspaceFileResponseSchema,
+  workspacePlanResponseSchema,
+  workspaceSearchResponseSchema,
+  workspaceSelectResponseSchema,
+  workspaceStatusResponseSchema,
+  workspaceTreeResponseSchema,
+  commandCancelResponseSchema,
+  commandListResponseSchema,
+  commandRunResponseSchema,
+  gitCheckpointResponseSchema,
+  gitDiffResponseSchema,
+  gitStatusResponseSchema,
+  IPC_COMMAND_CANCEL_CHANNEL,
+  IPC_COMMAND_LIST_CHANNEL,
+  IPC_COMMAND_RUN_CHANNEL,
+  IPC_GIT_CHECKPOINT_CHANNEL,
+  IPC_GIT_DIFF_CHANNEL,
+  IPC_GIT_STATUS_CHANNEL,
+  IPC_WORKSPACE_APPLY_CHANNEL,
+  IPC_WORKSPACE_CHANGES_CHANNEL,
+  IPC_WORKSPACE_PROPOSE_CHANNEL,
+  IPC_WORKSPACE_ROLLBACK_CHANNEL,
+  workspaceApplyResponseSchema,
+  workspaceChangesResponseSchema,
+  workspaceProposeResponseSchema,
+  workspaceRollbackResponseSchema,
+  agentCancelResponseSchema,
+  agentCreateResponseSchema,
+  agentDeleteResponseSchema,
+  agentListResponseSchema,
+  agentRunResponseSchema,
+  agentSelectResponseSchema,
+  agentSetEnabledResponseSchema,
+  agentUpdateResponseSchema,
+  IPC_AGENT_CANCEL_CHANNEL,
+  IPC_AGENT_CREATE_CHANNEL,
+  IPC_AGENT_DELETE_CHANNEL,
+  IPC_AGENT_LIST_CHANNEL,
+  IPC_AGENT_RUN_CHANNEL,
+  IPC_AGENT_SELECT_CHANNEL,
+  IPC_AGENT_SET_ENABLED_CHANNEL,
+  IPC_AGENT_UPDATE_CHANNEL,
+  type AgentProfileInput,
+  type AgentRegistryResponse,
+  type AgentRunResponse,
+  type CommandIdValue,
+  type CommandListResponse,
+  type CommandRunResponse,
+  type GitCheckpointResponse,
+  type GitDiffResponse,
+  type GitStatusResponse,
+  type WorkspaceChangeResponse,
+  type WorkspaceChangesResponse,
+  type WorkspaceEdit,
   type ChatChunkEvent,
   type ChatMessage,
   type ChatSendResponse,
@@ -26,6 +86,11 @@ import {
   type SecretsActionResponse,
   type SettingsActionResponse,
   type SettingsUpdateInput,
+  type WorkspaceFileResponse,
+  type WorkspacePlanResponse,
+  type WorkspaceProjectResponse,
+  type WorkspaceSearchResponse,
+  type WorkspaceTreeResponse,
 } from '../shared/schemas';
 
 /**
@@ -141,6 +206,197 @@ const bridge = {
       return () => {
         ipcRenderer.off(IPC_CHAT_CHUNK_CHANNEL, handler);
       };
+    },
+  },
+  /**
+   * The read-only coding workspace (Phase 2, Milestone 5).
+   *
+   * Six functions, six fixed channels, and — the property worth checking
+   * first — **no way to name a directory**. `select` takes no argument at
+   * all: the main process opens a native picker and the user chooses, so
+   * nothing on this bridge can point the application at a directory of the
+   * caller's choosing. Every other function takes a path *relative* to
+   * whatever the user already approved, which the main process validates for
+   * containment before it touches the filesystem and re-validates after
+   * resolving it.
+   *
+   * There is no `write`, no `create`, no `delete` and no `apply`. The absence
+   * is the control: a renderer cannot ask for a modification because no
+   * function here expresses one.
+   */
+  workspace: {
+    status: async (): Promise<WorkspaceProjectResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKSPACE_STATUS_CHANNEL);
+      return workspaceStatusResponseSchema.parse(result);
+    },
+    select: async (): Promise<WorkspaceProjectResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKSPACE_SELECT_CHANNEL);
+      return workspaceSelectResponseSchema.parse(result);
+    },
+    tree: async (path: string): Promise<WorkspaceTreeResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKSPACE_TREE_CHANNEL, { path });
+      return workspaceTreeResponseSchema.parse(result);
+    },
+    file: async (path: string): Promise<WorkspaceFileResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKSPACE_FILE_CHANNEL, { path });
+      return workspaceFileResponseSchema.parse(result);
+    },
+    search: async (query: string, path: string): Promise<WorkspaceSearchResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKSPACE_SEARCH_CHANNEL, {
+        query,
+        path,
+      });
+      return workspaceSearchResponseSchema.parse(result);
+    },
+    plan: async (objective: string): Promise<WorkspacePlanResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKSPACE_PLAN_CHANNEL, { objective });
+      return workspacePlanResponseSchema.parse(result);
+    },
+    /**
+     * Proposes a change and gets back a diff (Phase 2, Milestone 6).
+     *
+     * The only function on this bridge that carries file content, and it
+     * writes nothing: the main process keeps the proposal and answers with a
+     * diff to show. Applying it is {@link LocalAgentBridge.coding}'s `apply`,
+     * which takes an id.
+     */
+    propose: async (edits: readonly WorkspaceEdit[]): Promise<WorkspaceChangeResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKSPACE_PROPOSE_CHANNEL, { edits });
+      return workspaceProposeResponseSchema.parse(result);
+    },
+    /**
+     * Applies a change the main process already holds, already diffed and
+     * already shown.
+     *
+     * Takes a change id and nothing else — no path, no content, no
+     * destination — so the bytes written are necessarily the bytes that were
+     * diffed. There is no function here that writes content directly, and
+     * none that creates or deletes a file.
+     */
+    apply: async (changeId: string): Promise<WorkspaceChangeResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKSPACE_APPLY_CHANNEL, { changeId });
+      return workspaceApplyResponseSchema.parse(result);
+    },
+    /** Restores the backup taken before the most recent applied change. */
+    rollback: async (changeId: string): Promise<WorkspaceChangeResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKSPACE_ROLLBACK_CHANNEL, {
+        changeId,
+      });
+      return workspaceRollbackResponseSchema.parse(result);
+    },
+    changes: async (): Promise<WorkspaceChangesResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKSPACE_CHANGES_CHANNEL);
+      return workspaceChangesResponseSchema.parse(result);
+    },
+  },
+  /**
+   * The command registry (Phase 2, Milestone 6).
+   *
+   * `run` takes an identifier from a five-value enum. There is no parameter
+   * here for a command string, an argument, a shell, a working directory or
+   * an environment variable — so this bridge cannot express an arbitrary
+   * command, in the same way `workspace.select` cannot express a directory.
+   * `cancel` is fire-and-forget best effort, exactly like `chat.cancel`.
+   */
+  command: {
+    list: async (): Promise<CommandListResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_COMMAND_LIST_CHANNEL);
+      return commandListResponseSchema.parse(result);
+    },
+    run: async (runId: string, commandId: CommandIdValue): Promise<CommandRunResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_COMMAND_RUN_CHANNEL, {
+        runId,
+        commandId,
+      });
+      return commandRunResponseSchema.parse(result);
+    },
+    cancel: async (runId: string): Promise<void> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_COMMAND_CANCEL_CHANNEL, { runId });
+      commandCancelResponseSchema.parse(result);
+    },
+  },
+  /**
+   * Git (Phase 2, Milestone 6).
+   *
+   * `status` and `diff` read. `checkpoint` takes no argument at all: the
+   * branch is whatever is already checked out, the message is generated by
+   * the main process, and the command vector is fixed — so nothing here can
+   * name a ref, a remote, a branch or a commit message, and there is no
+   * function for a reset, a checkout, a push or a delete.
+   */
+  /**
+   * Agent profiles and runs (Phase 2, Milestone 7).
+   *
+   * Eight functions, eight fixed channels, and — the property worth checking
+   * first — **none of them can grant a permission**. `create` and `update`
+   * carry a profile whose own permission entries are `confirm` or `deny`;
+   * `allow` is not a member of that enum, so "permit this" is not
+   * expressible through this bridge at all.
+   *
+   * `run` takes a run id and an objective. It cannot carry a step list, a
+   * tool, a path, a command or a limit: what a run may do comes from the
+   * profile the main process reads from disk, so a compromised renderer can
+   * ask for a run and cannot widen one. `cancel` is fire-and-forget best
+   * effort, exactly like `chat.cancel` and `command.cancel`.
+   */
+  agent: {
+    list: async (): Promise<AgentRegistryResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_AGENT_LIST_CHANNEL);
+      return agentListResponseSchema.parse(result);
+    },
+    select: async (profileId: string): Promise<AgentRegistryResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_AGENT_SELECT_CHANNEL, { profileId });
+      return agentSelectResponseSchema.parse(result);
+    },
+    create: async (profile: AgentProfileInput): Promise<AgentRegistryResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_AGENT_CREATE_CHANNEL, { profile });
+      return agentCreateResponseSchema.parse(result);
+    },
+    update: async (
+      profileId: string,
+      profile: AgentProfileInput,
+    ): Promise<AgentRegistryResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_AGENT_UPDATE_CHANNEL, {
+        profileId,
+        profile,
+      });
+      return agentUpdateResponseSchema.parse(result);
+    },
+    remove: async (profileId: string): Promise<AgentRegistryResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_AGENT_DELETE_CHANNEL, { profileId });
+      return agentDeleteResponseSchema.parse(result);
+    },
+    setEnabled: async (profileId: string, enabled: boolean): Promise<AgentRegistryResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_AGENT_SET_ENABLED_CHANNEL, {
+        profileId,
+        enabled,
+      });
+      return agentSetEnabledResponseSchema.parse(result);
+    },
+    run: async (runId: string, objective: string): Promise<AgentRunResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_AGENT_RUN_CHANNEL, {
+        runId,
+        objective,
+      });
+      return agentRunResponseSchema.parse(result);
+    },
+    cancel: async (runId: string): Promise<void> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_AGENT_CANCEL_CHANNEL, { runId });
+      agentCancelResponseSchema.parse(result);
+    },
+  },
+  git: {
+    status: async (): Promise<GitStatusResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_GIT_STATUS_CHANNEL);
+      return gitStatusResponseSchema.parse(result);
+    },
+    diff: async (path: string | null): Promise<GitDiffResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_GIT_DIFF_CHANNEL, { path });
+      return gitDiffResponseSchema.parse(result);
+    },
+    checkpoint: async (): Promise<GitCheckpointResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_GIT_CHECKPOINT_CHANNEL);
+      return gitCheckpointResponseSchema.parse(result);
     },
   },
 };

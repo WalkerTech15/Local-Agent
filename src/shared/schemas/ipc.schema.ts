@@ -38,13 +38,46 @@ import { z } from 'zod';
 
 import { CHAT_PROVIDER_ERROR_CODES } from '../chat/provider';
 import {
+  AGENT_MAX_PROFILES,
   API_KEY_MAX_LENGTH,
   API_KEY_MIN_LENGTH,
   AUDIT_OUTCOMES,
   CHAT_CONVERSATION_MAX_MESSAGES,
   CONTROL_CHARACTER_PATTERN,
+  WORKSPACE_MAX_CHANGE_FILES,
 } from '../constants';
+import { AGENT_ERROR_CODES } from '../agent/errors';
+import {
+  agentProfileIdSchema,
+  agentProfileInputSchema,
+  agentProfileSchema,
+  agentRunSchema,
+} from './agent.schema';
+import {
+  commandCatalogSchema,
+  commandIdSchema,
+  commandRunResultSchema,
+  gitCheckpointSchema,
+  gitDiffSchema,
+  gitStatusSchema,
+  workspaceChangeHistorySchema,
+  workspaceChangeIdSchema,
+  workspaceChangeSetSchema,
+  workspaceEditSchema,
+} from './coding.schema';
 import { chatContentSchema, chatMessageSchema, chatStreamDeltaSchema } from './chat.schema';
+import {
+  codingPlanSchema,
+  workspaceEntryPathSchema,
+  workspaceFileSchema,
+  workspaceObjectiveSchema,
+  workspaceProjectSummarySchema,
+  workspaceRelativePathSchema,
+  workspaceSearchQuerySchema,
+  workspaceSearchResultSchema,
+  workspaceTreeSchema,
+} from './workspace.schema';
+import { WORKSPACE_ERROR_CODES } from '../workspace/errors';
 import {
   assistantSettingsSchema,
   languageSettingsSchema,
@@ -262,3 +295,464 @@ export const chatChunkEventSchema = z.strictObject({
 });
 
 export type ChatChunkEvent = z.infer<typeof chatChunkEventSchema>;
+
+// ---------------------------------------------------------------------------
+// Coding workspace: workspace.select / workspace.read / workspace.plan
+// (Phase 2, Milestone 5)
+//
+// The first channels in this codebase that read the user's own filesystem.
+// Three properties are worth stating before the shapes, because they are what
+// keep "read-only workspace" a structural claim rather than a promise:
+//
+//  - **No request carries a project path.** `workspace:select` takes no
+//    arguments at all: the main process opens a native directory picker and
+//    the *user* chooses. A renderer — or anything that has compromised one —
+//    therefore cannot name a directory to open, only ask that the user be
+//    asked. Every other request carries a path *relative* to whatever the
+//    user already approved, validated by `workspaceRelativePathSchema` before
+//    it reaches the filesystem and re-checked for containment after
+//    resolution.
+//  - **No request can modify anything.** There is no content field, no
+//    destination, no patch and no write channel. The absence is the control.
+//  - **Every response is bounded.** Trees, matches, file text and generated
+//    plans are all capped by `workspace.schema.ts`, so a project with a
+//    million files produces a truncated response or an error, never an
+//    unbounded one.
+//
+// All six channels are routed through `main/action-runtime.ts`'s `runAction`
+// and the unmodified `handleActionProposal`, so each is permission-gated,
+// blocked by an engaged emergency stop, and audited — see `main/ipc.ts`.
+// ---------------------------------------------------------------------------
+
+export const IPC_WORKSPACE_STATUS_CHANNEL = 'workspace:status';
+export const IPC_WORKSPACE_SELECT_CHANNEL = 'workspace:select';
+export const IPC_WORKSPACE_TREE_CHANNEL = 'workspace:tree';
+export const IPC_WORKSPACE_FILE_CHANNEL = 'workspace:file';
+export const IPC_WORKSPACE_SEARCH_CHANNEL = 'workspace:search';
+export const IPC_WORKSPACE_PLAN_CHANNEL = 'workspace:plan';
+
+export const workspaceStatusRequestSchema = z.tuple([]);
+
+/**
+ * Takes no arguments on purpose. The directory is chosen by the user in a
+ * native dialog the main process owns and the renderer cannot see, forge or
+ * dismiss — the same reasoning that makes `main/confirm.ts`'s confirmation
+ * dialog native rather than HTML.
+ */
+export const workspaceSelectRequestSchema = z.tuple([]);
+
+export const workspaceTreeRequestSchema = z.tuple([
+  z.strictObject({
+    /** `''` lists the project root. */
+    path: workspaceRelativePathSchema,
+  }),
+]);
+
+export const workspaceFileRequestSchema = z.tuple([
+  z.strictObject({
+    path: workspaceEntryPathSchema,
+  }),
+]);
+
+export const workspaceSearchRequestSchema = z.tuple([
+  z.strictObject({
+    query: workspaceSearchQuerySchema,
+    /** The subtree to search; `''` searches the whole approved project. */
+    path: workspaceRelativePathSchema,
+  }),
+]);
+
+export const workspacePlanRequestSchema = z.tuple([
+  z.strictObject({
+    objective: workspaceObjectiveSchema,
+  }),
+]);
+
+export type WorkspaceTreeRequestInput = z.infer<typeof workspaceTreeRequestSchema>[0];
+export type WorkspaceFileRequestInput = z.infer<typeof workspaceFileRequestSchema>[0];
+export type WorkspaceSearchRequestInput = z.infer<typeof workspaceSearchRequestSchema>[0];
+export type WorkspacePlanRequestInput = z.infer<typeof workspacePlanRequestSchema>[0];
+
+/**
+ * `errorCode` is always one of {@link WORKSPACE_ERROR_CODES} — the same
+ * normalized vocabulary the workspace layer already throws, reused rather
+ * than re-invented at this boundary, exactly as `chatSendResponseSchema`
+ * reuses the provider vocabulary. Never a raw error, an `errno`, or a
+ * filesystem path.
+ */
+const workspaceErrorCodeSchema = z.enum(WORKSPACE_ERROR_CODES);
+
+/** Response for the two channels that answer with the approved project. */
+export const workspaceProjectResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  /** `null` means "no project approved", which is a success, not a failure. */
+  project: workspaceProjectSummarySchema.nullable().optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export const workspaceStatusResponseSchema = workspaceProjectResponseSchema;
+export const workspaceSelectResponseSchema = workspaceProjectResponseSchema;
+
+export type WorkspaceProjectResponse = z.infer<typeof workspaceProjectResponseSchema>;
+
+export const workspaceTreeResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  tree: workspaceTreeSchema.optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export type WorkspaceTreeResponse = z.infer<typeof workspaceTreeResponseSchema>;
+
+export const workspaceFileResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  file: workspaceFileSchema.optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export type WorkspaceFileResponse = z.infer<typeof workspaceFileResponseSchema>;
+
+export const workspaceSearchResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  results: workspaceSearchResultSchema.optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export type WorkspaceSearchResponse = z.infer<typeof workspaceSearchResponseSchema>;
+
+export const workspacePlanResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  plan: codingPlanSchema.optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export type WorkspacePlanResponse = z.infer<typeof workspacePlanResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Controlled coding actions (Phase 2, Milestone 6)
+//
+// The first channels in this codebase that can change something outside
+// `%APPDATA%\Local-Agent`. Four properties hold across all of them, and each
+// is a shape rather than a check:
+//
+//  - **A change is applied by reference.** `workspace:propose` is the only
+//    channel that carries file content, and it writes nothing.
+//    `workspace:apply` carries a change *id* and nothing else — no path, no
+//    content, no destination — so the bytes written are necessarily the bytes
+//    that were diffed and shown. A renderer compromised between the two calls
+//    can re-request an already-reviewed change; it cannot substitute one.
+//  - **A command is named, never spelled.** `commandRunRequestSchema` carries
+//    an identifier from a five-value enum. There is no field here for a
+//    command string, an argument, a shell, a working directory, or an
+//    environment variable, so "no arbitrary command strings" is a property of
+//    the type rather than a filter applied to one.
+//  - **Git is not addressable.** No schema here carries a git subcommand,
+//    a ref, a branch name, a remote or a commit message. `git:checkpoint`
+//    takes no arguments at all.
+//  - **Every one of them except the read-only pair is on the confirmation
+//    floor**, which no policy edit can downgrade, so the operation is stated
+//    in a native dialog the main process owns before anything happens.
+//
+// `command:cancel` is the one channel with no permission gate, for exactly
+// the reason `chat:cancel` has none: it cannot start anything, reach anything
+// or read anything — it can only ask an already-authorized run to stop early.
+// ---------------------------------------------------------------------------
+
+export const IPC_WORKSPACE_PROPOSE_CHANNEL = 'workspace:propose';
+export const IPC_WORKSPACE_APPLY_CHANNEL = 'workspace:apply';
+export const IPC_WORKSPACE_ROLLBACK_CHANNEL = 'workspace:rollback';
+export const IPC_WORKSPACE_CHANGES_CHANNEL = 'workspace:changes';
+export const IPC_COMMAND_LIST_CHANNEL = 'command:list';
+export const IPC_COMMAND_RUN_CHANNEL = 'command:run';
+export const IPC_COMMAND_CANCEL_CHANNEL = 'command:cancel';
+export const IPC_GIT_STATUS_CHANNEL = 'git:status';
+export const IPC_GIT_DIFF_CHANNEL = 'git:diff';
+export const IPC_GIT_CHECKPOINT_CHANNEL = 'git:checkpoint';
+
+/**
+ * The one request that carries file content, and it produces a diff rather
+ * than a write.
+ *
+ * Duplicate paths are refused outright: two edits naming the same file would
+ * make "what will this change set do to that file" ambiguous, and an
+ * ambiguous change is not one a person can meaningfully approve.
+ */
+export const workspaceProposeRequestSchema = z.tuple([
+  z.strictObject({
+    edits: z
+      .array(workspaceEditSchema)
+      .min(1)
+      .max(WORKSPACE_MAX_CHANGE_FILES)
+      .superRefine((edits, ctx) => {
+        const seen = new Set<string>();
+        edits.forEach((edit, index) => {
+          if (seen.has(edit.path)) {
+            ctx.addIssue({
+              code: 'custom',
+              path: [index, 'path'],
+              message: 'a change set must not name the same file twice',
+            });
+          }
+          seen.add(edit.path);
+        });
+      }),
+  }),
+]);
+
+export type WorkspaceProposeRequestInput = z.infer<typeof workspaceProposeRequestSchema>[0];
+
+/** Applying and rolling back both carry an identifier and nothing else. */
+const changeReferenceRequestSchema = z.tuple([
+  z.strictObject({ changeId: workspaceChangeIdSchema }),
+]);
+
+export const workspaceApplyRequestSchema = changeReferenceRequestSchema;
+export const workspaceRollbackRequestSchema = changeReferenceRequestSchema;
+export const workspaceChangesRequestSchema = z.tuple([]);
+
+export const workspaceChangeResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  change: workspaceChangeSetSchema.optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export const workspaceProposeResponseSchema = workspaceChangeResponseSchema;
+export const workspaceApplyResponseSchema = workspaceChangeResponseSchema;
+export const workspaceRollbackResponseSchema = workspaceChangeResponseSchema;
+
+export type WorkspaceChangeResponse = z.infer<typeof workspaceChangeResponseSchema>;
+
+export const workspaceChangesResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  history: workspaceChangeHistorySchema.optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export type WorkspaceChangesResponse = z.infer<typeof workspaceChangesResponseSchema>;
+
+export const commandListRequestSchema = z.tuple([]);
+
+/**
+ * `runId` correlates a later `command:cancel` to this specific run, exactly
+ * as `chat:send`'s `requestId` does. `commandId` is an enum member; there is
+ * no other field, and in particular no argument vector.
+ */
+export const commandRunRequestSchema = z.tuple([
+  z.strictObject({
+    runId: z.uuid(),
+    commandId: commandIdSchema,
+  }),
+]);
+
+export type CommandRunRequestInput = z.infer<typeof commandRunRequestSchema>[0];
+
+export const commandCancelRequestSchema = z.tuple([z.strictObject({ runId: z.uuid() })]);
+
+export const commandListResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  catalog: commandCatalogSchema.optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export type CommandListResponse = z.infer<typeof commandListResponseSchema>;
+
+export const commandRunResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  run: commandRunResultSchema.optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export type CommandRunResponse = z.infer<typeof commandRunResponseSchema>;
+
+/** Best-effort and idempotent, exactly like {@link chatCancelResponseSchema}. */
+export const commandCancelResponseSchema = z.strictObject({
+  acknowledged: z.literal(true),
+});
+
+export type CommandCancelResponse = z.infer<typeof commandCancelResponseSchema>;
+
+export const gitStatusRequestSchema = z.tuple([]);
+
+/** `null` diffs the whole working tree; a path narrows it to one file. */
+export const gitDiffRequestSchema = z.tuple([
+  z.strictObject({ path: workspaceEntryPathSchema.nullable() }),
+]);
+
+export type GitDiffRequestInput = z.infer<typeof gitDiffRequestSchema>[0];
+
+/** Takes no arguments: the message, the branch and the commands are all fixed. */
+export const gitCheckpointRequestSchema = z.tuple([]);
+
+export const gitStatusResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  status: gitStatusSchema.optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export type GitStatusResponse = z.infer<typeof gitStatusResponseSchema>;
+
+export const gitDiffResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  diff: gitDiffSchema.optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export type GitDiffResponse = z.infer<typeof gitDiffResponseSchema>;
+
+export const gitCheckpointResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  checkpoint: gitCheckpointSchema.optional(),
+  errorCode: workspaceErrorCodeSchema.optional(),
+});
+
+export type GitCheckpointResponse = z.infer<typeof gitCheckpointResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Agent profiles and runs (Phase 2, Milestone 7)
+//
+// Eight channels. None of them introduces a capability: the four write
+// channels change *configuration*, and `agent:run` executes a bounded
+// sequence of actions that the interface could already have taken one at a
+// time, each still decided by the permission engine on its own action type.
+//
+// Four properties hold across all of them, and each is a shape rather than a
+// check:
+//
+//  - **A request cannot grant a permission.** `agentProfileInputSchema`'s
+//    `permissionPolicy` entries are `confirm` or `deny`; `allow` is not a
+//    member of the enum, so "permit this" is not expressible in a payload.
+//  - **A request cannot name a capability.** `allowedTools` is an enum of
+//    seven tool ids, each bound in reviewed source to an action type that
+//    already existed. There is no field for an action type, a command string,
+//    an argument, a shell, an absolute path or a URL.
+//  - **A request cannot carry a credential.** Every object is a
+//    `strictObject` with no field capable of holding one, so a payload with
+//    an `apiKey` is rejected rather than stored and ignored.
+//  - **A run is named, never described.** `agent:run` carries a run id and an
+//    objective string. It cannot carry a step list, a tool, a path or a
+//    command — the steps are derived in the main process from the *stored*
+//    profile, so a compromised renderer cannot substitute a plan.
+//
+// `agent:cancel` is the one channel with no permission gate, for exactly the
+// reason `chat:cancel` and `command:cancel` have none: it cannot start
+// anything, read anything or reach anything — it can only ask an
+// already-authorized run to stop early.
+// ---------------------------------------------------------------------------
+
+export const IPC_AGENT_LIST_CHANNEL = 'agent:list';
+export const IPC_AGENT_SELECT_CHANNEL = 'agent:select';
+export const IPC_AGENT_CREATE_CHANNEL = 'agent:create';
+export const IPC_AGENT_UPDATE_CHANNEL = 'agent:update';
+export const IPC_AGENT_DELETE_CHANNEL = 'agent:delete';
+export const IPC_AGENT_SET_ENABLED_CHANNEL = 'agent:setEnabled';
+export const IPC_AGENT_RUN_CHANNEL = 'agent:run';
+export const IPC_AGENT_CANCEL_CHANNEL = 'agent:cancel';
+
+/**
+ * `errorCode` is always one of {@link AGENT_ERROR_CODES} — the same
+ * normalized vocabulary the agent layer throws, reused rather than restated.
+ * Never a raw error, a profile name, or a filesystem path.
+ */
+const agentErrorCodeSchema = z.enum(AGENT_ERROR_CODES);
+
+export const agentListRequestSchema = z.tuple([]);
+
+/** Selecting, deleting and enabling all address a profile by id and nothing else. */
+const agentProfileReferenceRequestSchema = z.tuple([
+  z.strictObject({ profileId: agentProfileIdSchema }),
+]);
+
+export const agentSelectRequestSchema = agentProfileReferenceRequestSchema;
+export const agentDeleteRequestSchema = agentProfileReferenceRequestSchema;
+
+export const agentSetEnabledRequestSchema = z.tuple([
+  z.strictObject({ profileId: agentProfileIdSchema, enabled: z.boolean() }),
+]);
+
+export const agentCreateRequestSchema = z.tuple([
+  z.strictObject({ profile: agentProfileInputSchema }),
+]);
+
+/**
+ * Updating carries the target id *and* the submitted profile.
+ *
+ * The two must agree — the main process refuses a mismatch rather than
+ * picking one — so a payload cannot rename a profile by addressing one id and
+ * submitting another, which would otherwise be a way to overwrite a
+ * profile the caller did not name.
+ */
+export const agentUpdateRequestSchema = z.tuple([
+  z.strictObject({
+    profileId: agentProfileIdSchema,
+    profile: agentProfileInputSchema,
+  }),
+]);
+
+export type AgentProfileReferenceInput = z.infer<typeof agentSelectRequestSchema>[0];
+export type AgentSetEnabledInput = z.infer<typeof agentSetEnabledRequestSchema>[0];
+export type AgentCreateInput = z.infer<typeof agentCreateRequestSchema>[0];
+export type AgentUpdateInput = z.infer<typeof agentUpdateRequestSchema>[0];
+
+/**
+ * The registry as the renderer sees it: every profile, and which is active.
+ *
+ * Safe to send in full — a profile carries no credential, by construction.
+ * The interface needs the whole document to show a profile's tools, its
+ * workspace scope and its limits, which is the milestone's own requirement
+ * that active permissions and limits be clearly visible.
+ */
+export const agentRegistryResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  registry: z
+    .strictObject({
+      activeProfileId: agentProfileIdSchema,
+      profiles: z.array(agentProfileSchema).max(AGENT_MAX_PROFILES),
+    })
+    .optional(),
+  errorCode: agentErrorCodeSchema.optional(),
+});
+
+export const agentListResponseSchema = agentRegistryResponseSchema;
+export const agentSelectResponseSchema = agentRegistryResponseSchema;
+export const agentCreateResponseSchema = agentRegistryResponseSchema;
+export const agentUpdateResponseSchema = agentRegistryResponseSchema;
+export const agentDeleteResponseSchema = agentRegistryResponseSchema;
+export const agentSetEnabledResponseSchema = agentRegistryResponseSchema;
+
+export type AgentRegistryResponse = z.infer<typeof agentRegistryResponseSchema>;
+
+/**
+ * Starting a run.
+ *
+ * `runId` correlates a later `agent:cancel` to this run, exactly as
+ * `chat:send`'s `requestId` and `command:run`'s `runId` do. `objective` is
+ * the request in the user's own words, bounded by the same schema
+ * `workspace:plan` already uses. There is deliberately no `steps`, no
+ * `tools`, no `profile` and no `limits` field: everything a run is permitted
+ * to do comes from the *stored* profile, read in the main process, so a
+ * renderer cannot widen a run by describing it differently.
+ */
+export const agentRunRequestSchema = z.tuple([
+  z.strictObject({
+    runId: z.uuid(),
+    objective: workspaceObjectiveSchema,
+  }),
+]);
+
+export type AgentRunRequestInput = z.infer<typeof agentRunRequestSchema>[0];
+
+export const agentCancelRequestSchema = z.tuple([z.strictObject({ runId: z.uuid() })]);
+
+export const agentRunResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  run: agentRunSchema.optional(),
+  errorCode: agentErrorCodeSchema.optional(),
+});
+
+export type AgentRunResponse = z.infer<typeof agentRunResponseSchema>;
+
+/** Best-effort and idempotent, exactly like {@link commandCancelResponseSchema}. */
+export const agentCancelResponseSchema = z.strictObject({
+  acknowledged: z.literal(true),
+});
+
+export type AgentCancelResponse = z.infer<typeof agentCancelResponseSchema>;

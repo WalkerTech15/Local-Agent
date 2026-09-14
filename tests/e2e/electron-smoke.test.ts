@@ -41,10 +41,70 @@ interface ExposedLocalAgentBridge {
  * channel — in Milestone 4. Every one stays a narrow, explicitly named
  * sub-object, never a generic invoke or listen surface.
  */
-const EXPECTED_BRIDGE_KEYS = ['chat', 'health', 'secrets', 'settings'] as const;
+const EXPECTED_BRIDGE_KEYS = [
+  'agent',
+  'chat',
+  'command',
+  'git',
+  'health',
+  'secrets',
+  'settings',
+  'workspace',
+] as const;
 const EXPECTED_SETTINGS_KEYS = ['get', 'update'] as const;
 const EXPECTED_SECRETS_KEYS = ['clear', 'status', 'write'] as const;
 const EXPECTED_CHAT_KEYS = ['cancel', 'onChunk', 'send'] as const;
+/**
+ * The coding workspace (Phase 2, Milestones 5-6).
+ *
+ * `select` takes no argument at all, so the directory that becomes readable
+ * is chosen by the user in a native dialog the main process owns. `propose`
+ * is the only function that carries file content, and it writes nothing;
+ * `apply` takes a change identifier and nothing else, so the bytes written
+ * are necessarily the bytes that were diffed and shown. There is no
+ * `create`, no `delete` and no `patch`.
+ */
+const EXPECTED_WORKSPACE_KEYS = [
+  'apply',
+  'changes',
+  'file',
+  'plan',
+  'propose',
+  'rollback',
+  'search',
+  'select',
+  'status',
+  'tree',
+] as const;
+/**
+ * The command registry (Phase 2, Milestone 6). `run` takes a run id and an
+ * identifier from a five-value enum — there is no function here through which
+ * a command string, an argument, a shell or a working directory could be
+ * supplied.
+ */
+const EXPECTED_COMMAND_KEYS = ['cancel', 'list', 'run'] as const;
+/**
+ * Git (Phase 2, Milestone 6). Two reads and one commit. There is no reset, no
+ * checkout, no branch, no push and no remote — not disabled, absent.
+ */
+const EXPECTED_GIT_KEYS = ['checkpoint', 'diff', 'status'] as const;
+/**
+ * Agent profiles (Phase 2, Milestone 7). Six configuration functions, one
+ * bounded run and one cancel. `run` takes a run id and an objective — there
+ * is no function here through which a step, a tool, a path, a command or a
+ * limit could be supplied, because what a run may do comes from the stored
+ * profile the main process reads.
+ */
+const EXPECTED_AGENT_KEYS = [
+  'cancel',
+  'create',
+  'list',
+  'remove',
+  'run',
+  'select',
+  'setEnabled',
+  'update',
+] as const;
 
 function launchEnv(): Record<string, string> {
   const env: Record<string, string> = {};
@@ -117,13 +177,18 @@ describe('Electron desktop shell — security and health-check smoke test', () =
     expect(hasIpcRenderer).toBe(false);
   });
 
-  it('exposes exactly one bridge object with exactly the narrow, named functions of Phase 2 Milestone 3', async () => {
+  it('exposes exactly one bridge object with exactly the narrow, named functions of Phase 2 Milestone 7', async () => {
     const bridgeShape = await page.evaluate(() => {
       const w = window as unknown as {
-        localAgent?: { settings?: object; secrets?: object; chat?: object } & Record<
-          string,
-          unknown
-        >;
+        localAgent?: {
+          settings?: object;
+          secrets?: object;
+          chat?: object;
+          workspace?: object;
+          command?: object;
+          git?: object;
+          agent?: object;
+        } & Record<string, unknown>;
       };
       const localAgent = w.localAgent;
       return {
@@ -132,6 +197,10 @@ describe('Electron desktop shell — security and health-check smoke test', () =
         settingsKeys: localAgent?.settings ? Object.keys(localAgent.settings).sort() : [],
         secretsKeys: localAgent?.secrets ? Object.keys(localAgent.secrets).sort() : [],
         chatKeys: localAgent?.chat ? Object.keys(localAgent.chat).sort() : [],
+        workspaceKeys: localAgent?.workspace ? Object.keys(localAgent.workspace).sort() : [],
+        commandKeys: localAgent?.command ? Object.keys(localAgent.command).sort() : [],
+        gitKeys: localAgent?.git ? Object.keys(localAgent.git).sort() : [],
+        agentKeys: localAgent?.agent ? Object.keys(localAgent.agent).sort() : [],
       };
     });
     expect(bridgeShape).toEqual({
@@ -140,7 +209,161 @@ describe('Electron desktop shell — security and health-check smoke test', () =
       settingsKeys: [...EXPECTED_SETTINGS_KEYS],
       secretsKeys: [...EXPECTED_SECRETS_KEYS],
       chatKeys: [...EXPECTED_CHAT_KEYS],
+      workspaceKeys: [...EXPECTED_WORKSPACE_KEYS],
+      commandKeys: [...EXPECTED_COMMAND_KEYS],
+      gitKeys: [...EXPECTED_GIT_KEYS],
+      agentKeys: [...EXPECTED_AGENT_KEYS],
     });
+  });
+
+  it('exposes no function that can create, delete or patch a file', async () => {
+    // Milestone 6 can overwrite a file the user approved, after a native
+    // confirmation. It still cannot bring one into existence or remove one,
+    // and the absence is the control — so it is asserted against the real
+    // built bridge rather than only against the source that produces it.
+    const present = await page.evaluate(() => {
+      const w = window as unknown as {
+        localAgent?: { workspace?: Record<string, unknown> };
+      };
+      const workspace = w.localAgent?.workspace;
+      if (workspace === undefined) return ['(no workspace object at all)'];
+      const forbidden = [
+        'write',
+        'writeFile',
+        'create',
+        'createFile',
+        'delete',
+        'remove',
+        'unlink',
+        'rename',
+        'move',
+        'copy',
+        'mkdir',
+        'patch',
+        'exec',
+        'execute',
+        'spawn',
+        'shell',
+        'commit',
+      ];
+      return forbidden.filter((key) => key in workspace);
+    });
+    expect(present).toEqual([]);
+  });
+
+  it('exposes every changing operation as a plain function carrying no extra surface', async () => {
+    // `contextBridge` clones functions into the isolated world, so a
+    // function's declared arity is *not* observable here — every bridge
+    // function reports `length === 0` regardless of its signature. What can
+    // be checked from the renderer is that each one is a plain function with
+    // no own properties through which further capability could be reached.
+    // That a change is applied by identifier, and that a request carrying a
+    // path or content is rejected, is enforced by the request schemas in the
+    // main process and asserted in `tests/unit/shared/coding.schema.test.ts`
+    // and `tests/unit/main/ipc-coding.test.ts`.
+    const report = await page.evaluate(() => {
+      const w = window as unknown as {
+        localAgent?: {
+          workspace?: Record<string, unknown>;
+          command?: Record<string, unknown>;
+          git?: Record<string, unknown>;
+        };
+      };
+      const targets: [string, unknown][] = [
+        ['workspace.apply', w.localAgent?.workspace?.apply],
+        ['workspace.rollback', w.localAgent?.workspace?.rollback],
+        ['workspace.propose', w.localAgent?.workspace?.propose],
+        ['command.run', w.localAgent?.command?.run],
+        ['git.checkpoint', w.localAgent?.git?.checkpoint],
+      ];
+      // Only the intrinsic properties every function has. Anything beyond
+      // these would be a further capability hanging off the bridge.
+      const intrinsic = ['length', 'name', 'prototype'];
+      return targets.map(([name, value]) => ({
+        name,
+        isFunction: typeof value === 'function',
+        extraKeys:
+          typeof value === 'function'
+            ? Object.getOwnPropertyNames(value).filter((key) => !intrinsic.includes(key))
+            : ['(not a function)'],
+      }));
+    });
+
+    for (const entry of report) {
+      expect(entry.isFunction, entry.name).toBe(true);
+      expect(entry.extraKeys, entry.name).toEqual([]);
+    }
+  });
+
+  it('exposes no generic command runner and no destructive Git operation', async () => {
+    const present = await page.evaluate(() => {
+      const w = window as unknown as {
+        localAgent?: { command?: Record<string, unknown>; git?: Record<string, unknown> };
+      };
+      const command = w.localAgent?.command;
+      const git = w.localAgent?.git;
+      if (command === undefined || git === undefined) return ['(a required object is missing)'];
+
+      const forbiddenCommands = ['exec', 'execute', 'spawn', 'shell', 'raw', 'eval', 'powershell'];
+      const forbiddenGit = [
+        'reset',
+        'checkout',
+        'switch',
+        'restore',
+        'clean',
+        'branch',
+        'push',
+        'pull',
+        'fetch',
+        'remote',
+        'rebase',
+        'merge',
+        'stash',
+        'tag',
+        'config',
+        'commit',
+      ];
+      return [
+        ...forbiddenCommands.filter((key) => key in command).map((key) => `command.${key}`),
+        ...forbiddenGit.filter((key) => key in git).map((key) => `git.${key}`),
+      ];
+    });
+    expect(present).toEqual([]);
+  });
+
+  it('exposes no agent function that could grant a permission or write anything', async () => {
+    // Milestone 7's central claim, checked against the real built bridge: an
+    // agent profile is configuration that narrows, and a run inspects, plans
+    // and verifies. Nothing named like a grant or a write may appear.
+    const present = await page.evaluate(() => {
+      const w = window as unknown as { localAgent?: { agent?: Record<string, unknown> } };
+      const agent = w.localAgent?.agent;
+      if (agent === undefined) return ['(no agent object at all)'];
+
+      const forbidden = [
+        'grant',
+        'allow',
+        'permit',
+        'authorize',
+        'elevate',
+        'write',
+        'apply',
+        'rollback',
+        'checkpoint',
+        'commit',
+        'execute',
+        'exec',
+        'spawn',
+        'invoke',
+        'setPolicy',
+        'setPermission',
+        'addTool',
+        'registerTool',
+      ];
+      return forbidden.filter((key) => key in agent);
+    });
+
+    expect(present).toEqual([]);
   });
 
   it('has no generic invoke-any-channel function anywhere on window, including its sub-objects', async () => {
@@ -152,11 +375,17 @@ describe('Electron desktop shell — security and health-check smoke test', () =
             settings?: Record<string, unknown>;
             secrets?: Record<string, unknown>;
             chat?: Record<string, unknown>;
+            workspace?: Record<string, unknown>;
+            agent?: Record<string, unknown>;
           })
         | undefined;
-      const nested = [localAgent?.settings, localAgent?.secrets, localAgent?.chat].filter(
-        (value): value is Record<string, unknown> => value !== undefined,
-      );
+      const nested = [
+        localAgent?.settings,
+        localAgent?.secrets,
+        localAgent?.chat,
+        localAgent?.workspace,
+        localAgent?.agent,
+      ].filter((value): value is Record<string, unknown> => value !== undefined);
       return (
         candidates.some((key) => key in w) ||
         (localAgent !== undefined && 'invoke' in localAgent) ||
@@ -178,9 +407,18 @@ describe('Electron desktop shell — security and health-check smoke test', () =
             settings?: Record<string, unknown>;
             secrets?: Record<string, unknown>;
             chat?: Record<string, unknown>;
+            workspace?: Record<string, unknown>;
+            agent?: Record<string, unknown>;
           })
         | undefined;
-      const surfaces = [localAgent, localAgent?.settings, localAgent?.secrets, localAgent?.chat];
+      const surfaces = [
+        localAgent,
+        localAgent?.settings,
+        localAgent?.secrets,
+        localAgent?.chat,
+        localAgent?.workspace,
+        localAgent?.agent,
+      ];
       return surfaces.some(
         (surface) => surface !== undefined && generic.some((key) => key in surface),
       );

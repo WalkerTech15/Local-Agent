@@ -23,9 +23,14 @@
 > and Ollama, the latter refused unless its endpoint is a local address) and
 > adds bounded streaming, introducing `chat:chunk` — the first and only
 > main → renderer _push_ channel — while adding **no** new action type, no
-> new permission decision and no new secret-store access. Controls below are
-> marked **[implemented]**, **[enforced by schema]** or **[planned, milestone
-> N]**. Nothing here is claimed as working before it exists.
+> new permission decision and no new secret-store access. Phase 2, Milestone 5
+> adds the **read-only coding workspace** — the first time this application
+> reads a file outside `%APPDATA%\Local-Agent\` — under three new action types
+> (`workspace.select`, `workspace.read`, `workspace.plan`), six new channels,
+> and a permission engine, executor, pipeline and audit writer that once again
+> needed **zero code changes**. Controls below are marked **[implemented]**,
+> **[enforced by schema]** or **[planned, milestone N]**. Nothing here is
+> claimed as working before it exists.
 
 ---
 
@@ -90,8 +95,23 @@ that is safe without a permission decision of its own.
 cannot declare anything else. An action with no matching rule is denied.
 
 **[enforced by schema]** A confirmation floor: `secrets.write`,
-`secrets.clear`, `emergency.reset` and `app.exit` cannot be downgraded to
-`allow` by editing the policy file. The schema rejects such a file.
+`secrets.clear`, `emergency.reset`, `app.exit`, and — since Phase 2
+Milestone 6 — `workspace.write`, `workspace.rollback`, `command.run` and
+`git.checkpoint`, plus — since Milestone 7 — `agent.write` and `agent.run`,
+cannot be downgraded to `allow` by editing the policy file. The schema rejects
+such a file.
+
+**[enforced by type]** An **agent profile can never grant a permission.** A
+profile is user-editable configuration describing which of a fixed set of
+tools an agent may reach for, and its own decision vocabulary is
+`confirm | deny` — `allow` is not a member of the enum, so "permit this" is
+not expressible in a profile at all. Every tool a profile may name maps to an
+action type that already existed, so the maximum an agent can do is never
+larger than what the permission policy already allowed, and the orchestrator
+takes the stricter of the two decisions. A profile that raises a step to
+`confirm` causes an **additional** native dialog in front of the pipeline; it
+never replaces one. See
+[phase-2-agent-profiles.md](phase-2-agent-profiles.md).
 
 **[enforced by schema]** An **emergency availability floor**: the policy file
 is user-editable, so without a floor it could remove the user's own emergency
@@ -216,6 +236,107 @@ by default rather than `confirm`, since the send itself is already a
 direct, per-message user action, unlike the rare, one-time changes the
 confirmation floor (`secrets.write`, `secrets.clear`, `emergency.reset`,
 `app.exit`) protects.
+
+### Filesystem access
+
+**[implemented, Phase 2 Milestone 5]** Before this milestone, every path this
+application touched derived from `app.getPath('appData')` and none was
+user-supplied — "path traversal: not reachable" was literally true. The coding
+workspace changes that, so the controls that make it safe are stated in full.
+
+**The renderer cannot name a directory.** `workspace:select` takes no
+arguments at all — not a path it validates, none. `main/directory-picker.ts`
+opens `dialog.showOpenDialog` and whatever the _user_ clicks is the only
+candidate, which is then still canonicalised, confirmed to be a directory, and
+refused if it is (or contains) the application's own data directory. A
+compromised renderer can ask that the user be asked, and nothing more. This is
+the same reasoning that makes the confirmation dialog native rather than HTML,
+and it is why `workspace.select` is `allow` by default: the picker **is** the
+consent, and a stronger form of it than a renderer-side click.
+
+**Containment is enforced twice, by two mechanisms that fail differently.**
+Every renderer-supplied path is relative to the approved root and passes:
+
+1. `src/shared/workspace/path-safety.ts` — pure and lexical. Refuses `..`,
+   `.`, absolute paths, UNC prefixes, drive letters, `\` (without which
+   `..\..\Windows` is a single segment that passes a `/`-oriented check while
+   `path.resolve` still treats it as separators), `:` (a drive letter, and the
+   NTFS alternate-data-stream separator — `notes.txt:hidden` is a different
+   file no listing ever showed), wildcards, control characters, bidirectional
+   overrides, Windows reserved device names, and any trailing dot or space
+   (Windows strips both, so `secrets.` and `secrets` are the same file — a
+   second spelling around every name-based rule).
+2. `src/main/workspace-paths.ts` — joins onto the real root, checks
+   containment, canonicalises with `realpath`, and **checks containment
+   again**. This is the check that catches a symbolic link: a lexical rule
+   cannot see one, and `realpath` cannot run on a string that has not been
+   joined onto a root yet. Verified against a real filesystem with real links.
+
+Containment comparison uses `path.relative`, not a string prefix: on Windows
+that compares case-insensitively and normalises separators, and it does not
+mistake `…\project-backup` for something inside `…\project`.
+
+**The tree walk never follows a link.** It keeps only entries that are a
+regular file or a real directory, which excludes symbolic links (and with them
+directory loops and escapes), sockets, FIFOs and device nodes. A symlinked file
+can still be opened directly by path, where the canonical check proves it stays
+inside; the walk simply does not offer it.
+
+**Excluded paths are never opened**, at any depth, and the check runs on every
+segment rather than only the last — `node_modules/pkg/index.js` is refused even
+though `index.js` alone would be fine. Three lists, for three reasons
+(`src/shared/workspace/exclusions.ts`): dependency and build directories
+(listed but never descended into, so a tree does not silently misrepresent the
+project); credential files (`.env*`, `.netrc`, `.npmrc`, `id_rsa`, `*.pem`,
+`*.p12`, `secrets.json` — never listed as readable, never read, never
+searched); and binary extensions, as a pre-filter ahead of the real test, which
+is a NUL byte in the first bytes read plus a strict UTF-8 decode.
+
+**Everything is bounded**, and every bound reports itself rather than silently
+shortening a result: tree depth (8), entries (2,000), entries per directory
+(500), file size (512,000 bytes — **refused**, not truncated, for the same
+reason an oversized audit record is rejected), search matches (200), files
+opened by one search (1,000), and match excerpt length (240). A search query is
+matched as a **literal substring, never compiled as a regular expression** —
+compiling user input as a pattern is how a search box becomes a denial of
+service against the process that owns every privileged operation here.
+
+**Nothing in this milestone can modify a file**, and that is structural rather
+than a policy: there is no `workspace.write` action type, no write channel, no
+preload function, and no request schema field capable of carrying content or a
+destination. `main/workspace-inspector.ts` imports exactly `readdir`,
+`readFile` and `stat` from `node:fs/promises`, and that import list is the
+whole of its filesystem capability. A test snapshots a project before and after
+a full listing, read, search and plan — including when every operation fails —
+and asserts it is unchanged; another asserts the module logs nothing at all.
+
+**No path, name, query or file content reaches an audit record or an error.**
+Audit parameters carry `{operation}` and at most a _length_
+(`{operation: 'search', queryLength: 6}`); a directory path can name a person,
+a client or an unreleased product, and a search term is user content.
+Filesystem errors are mapped by `code` alone — never `message`, which contains
+the full path — into a twelve-code normalized vocabulary, and the sentence a
+user reads is one of the renderer's own reviewed strings, never anything that
+crossed the boundary.
+
+**The approved path is never persisted.** It lives in memory, per
+`registerIpcHandlers` call, for one application run. Read access to someone's
+source tree is a grant the user makes by clicking through a dialog, not a
+preference restored silently on the next launch.
+
+**A coding plan is inert.** `codingPlanSchema` pins `diff` to `null` (declared,
+not omitted, so a later edit that starts producing one must change the schema
+and therefore be reviewed), `approvalRequired` to `true`, and `status` to
+`'awaiting-approval'`; `changeType` admits only `'modify'` and `'review'`. The
+plan is produced deterministically from observation, with **no model call** —
+see [phase-2-coding-workspace.md](phase-2-coding-workspace.md) for why. Nothing
+in this milestone consumes a plan, so approving one unlocks nothing; the gate
+exists so whichever milestone adds a modification has one to route through.
+
+**Every workspace action is denied while the emergency stop is engaged.** None
+of the three is on `EMERGENCY_STOP_EXEMPT_ACTION_TYPES`, and a test walks all
+six channels to confirm it — including that the native picker is never even
+shown, since `execute` never reaches `perform`.
 
 ### Secret handling
 
@@ -621,55 +742,96 @@ exposes no way to address one. No generic pass-through channel exists.
 
 ## Threats and status
 
-| Threat                                                                                       | Status                                                                                                                                                                                                             |
-| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Renderer compromise (XSS, malicious UI dependency)                                           | Addressed, M2 — process isolation and CSP; asserted by an end-to-end test                                                                                                                                          |
-| Malicious or malformed IPC payload                                                           | Addressed, M2–M7 — schema validation on every registered channel (`health`, `settings:get`, `settings:update`, `secrets:status`, `secrets:write`, `secrets:clear`); no unvalidated or generic channel exists       |
-| Secret exfiltration through the interface                                                    | Addressed — no channel returns a key; asserted by test                                                                                                                                                             |
-| Secret leakage into logs or errors                                                           | Addressed, M4 — schema-level redaction contract plus writer-side redaction, both verified                                                                                                                          |
-| Credential persisted inside a settings _value_                                               | Addressed — `baseUrl` rejects embedded userinfo                                                                                                                                                                    |
-| Log injection via a crafted user name                                                        | Addressed — control characters rejected                                                                                                                                                                            |
-| Display spoofing via bidirectional overrides                                                 | Addressed — bidi overrides and isolates rejected in display strings                                                                                                                                                |
-| Forged audit record                                                                          | Addressed — biconditional cross-field integrity rules                                                                                                                                                              |
-| Unbounded or non-serialisable audit payload                                                  | Addressed — bounded JSON-safe parameter schema; writer-side scan bounds the whole record                                                                                                                           |
-| Audit record overwritten or truncated by a write                                             | Addressed, M4 — append-only file handle; proven under concurrent writes by test                                                                                                                                    |
-| Prototype-pollution key bypassing schema validation                                          | Addressed, M4 — explicit writer-side scan; schema-only reliance was verified insufficient                                                                                                                          |
-| Settings tampering or corruption                                                             | Addressed, M3 — strict validation, fail-safe loading to defaults, atomic writes                                                                                                                                    |
-| Policy tampering or corruption                                                               | Addressed, M5 — fail-closed loading (`main/policy.ts`) plus engine-side floor enforcement independent of it                                                                                                        |
-| Policy file removing the user's emergency controls                                           | Addressed, M5 — availability floor enforced at both the schema layer and, independently, by `decidePermission`                                                                                                     |
-| Policy bypassing schema validation before reaching the engine                                | Addressed, M5 — floors re-verified by the engine regardless of validation history                                                                                                                                  |
-| Corruption of a shared security default in memory                                            | Addressed — exported defaults deeply frozen; resolvers return fresh objects                                                                                                                                        |
-| `src/shared` reaching the OS, network or eval                                                | Addressed — lint boundary, verified by probe; not a runtime sandbox                                                                                                                                                |
-| Privilege escalation via the executor                                                        | Addressed, M5 — `execute` requires a verdict as an explicit argument; proven by tests that no denial or rejection reaches `perform`                                                                                |
-| A side effect running without a permission decision                                          | Addressed, M5 — structural: no code path in `execute` calls `perform` without an authorizing verdict                                                                                                               |
-| Model rationale/confidence used as authorization                                             | Addressed, M5 — `decidePermission` never reads `proposal.parameters`; proven by test                                                                                                                               |
-| Emergency-stop bypass (decision logic)                                                       | Addressed, M5 — engine denies non-exempt actions when engaged, evaluated after both floors                                                                                                                         |
-| Emergency-stop bypass (persistence)                                                          | Addressed, M6 — atomic writes, fail-safe loading; reset requires an approved confirmation the pipeline already enforces                                                                                            |
-| Emergency-stop state corruption fails open instead of closed                                 | Addressed, M6 — malformed or unreadable state resolves engaged, not disengaged; proven by test                                                                                                                     |
-| Emergency reset triggered by a model or a policy rule alone                                  | Addressed, M6 — always resolves to `confirm`; proven across a policy × emergency-state test matrix                                                                                                                 |
-| Plaintext API key stored as a fallback when encryption is unavailable                        | Addressed, M7 — `writeSecret` throws `SecretStoreUnavailableError` before any disk write when `safeStorage.isEncryptionAvailable()` is `false`; proven by test                                                     |
-| Plaintext API key reaching settings.json, an audit record, an error message, or the renderer | Addressed, M7 — `apiKey` never enters `proposal.parameters`; secrets IPC responses carry only `{present: boolean}`; proven by test                                                                                 |
-| `hasApiKey` reported as `true` for a provider that does not use a key (`none`, `ollama`)     | Addressed, M7 — forced `false` regardless of the secret store; proven by test                                                                                                                                      |
-| A denied or rejected secret operation still mutating the store or `hasApiKey`                | Addressed, M7 — `perform` is structurally unreachable on `deny`/`reject`; `hasApiKey` is only refreshed after the store write already succeeded; proven by test                                                    |
-| Renderer-supplied `hasApiKey` reaching a persisted document                                  | Addressed, M7 — `settingsUpdateRequestSchema` has no such field; `strictObject` rejects the extra key outright                                                                                                     |
-| Path traversal                                                                               | Not reachable — all paths derive from the app-data directory; none is user-supplied                                                                                                                                |
-| Prompt injection, untrusted model or tool output                                             | Reachable from Phase 2 M3 (a real provider replies) — no tool exists for a model to invoke, so untrusted assistant text still cannot authorize or perform an action; see the proposal/executor split               |
-| Renderer or a compromised dependency making a network request directly                       | Addressed, Phase 2 M3 — CSP `connect-src 'none'` (unmodified since M2) plus the `src/shared` and `src/renderer/chat` purity/scan boundaries; only `src/main/openai-compatible-provider.ts` can reach the network   |
-| Plaintext API key reaching the renderer through a real provider call                         | Addressed, Phase 2 M3 — stays inside `resolveMainChatProvider`/`openai-compatible-provider.ts`; never in `ActionProposal.parameters`, `chatSendResponseSchema`, an audit record, or a thrown error; proven by test |
-| A real provider call bypassing the permission engine or the emergency stop                   | Addressed, Phase 2 M3 — reached only through the unmodified `runAction`/`handleActionProposal`; denied while the emergency stop is engaged                                                                         |
-| Message content or a raw provider error leaking into the audit trail                         | Addressed, Phase 2 M3 — the `chat.send` proposal carries only `{provider, messageCount}`; every provider failure normalizes to one of five fixed codes first                                                       |
-| A "local" provider silently reaching a cloud service                                         | Addressed, Phase 2 M4 — an Ollama endpoint must be a loopback, private or link-local literal (or localhost); a name that merely looks local is refused, and a refused endpoint never falls back to the default     |
-| A credential stored for one provider being sent to another                                   | Addressed, Phase 2 M4 — the secret read is skipped entirely for providers outside PROVIDERS_REQUIRING_API_KEY, and the Ollama adapter has no config field that could carry a key                                   |
-| Unbounded memory or output from a hostile streaming endpoint                                 | Addressed, Phase 2 M4 — bytes read, line length, delta size and accumulated content are each capped independently, in the main process and again in the renderer                                                   |
-| Streamed model output treated as a message, or as authorization                              | Addressed, Phase 2 M4 — deltas are previews held outside the message list; the committed reply is the separately validated whole, and no path exists from either to the executor                                   |
-| The renderer subscribing to arbitrary IPC events through the new push channel                | Addressed, Phase 2 M4 — chat.onChunk fixes the channel in the preload, validates every payload, hands back only an unsubscribe function, and never exposes ipcRenderer or the raw event                            |
-| Supply-chain compromise via npm                                                              | Mitigated, not eliminated — see below                                                                                                                                                                              |
+| Threat                                                                                       | Status                                                                                                                                                                                                               |
+| -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Renderer compromise (XSS, malicious UI dependency)                                           | Addressed, M2 — process isolation and CSP; asserted by an end-to-end test                                                                                                                                            |
+| Malicious or malformed IPC payload                                                           | Addressed, M2–M7 — schema validation on every registered channel (`health`, `settings:get`, `settings:update`, `secrets:status`, `secrets:write`, `secrets:clear`); no unvalidated or generic channel exists         |
+| Secret exfiltration through the interface                                                    | Addressed — no channel returns a key; asserted by test                                                                                                                                                               |
+| Secret leakage into logs or errors                                                           | Addressed, M4 — schema-level redaction contract plus writer-side redaction, both verified                                                                                                                            |
+| Credential persisted inside a settings _value_                                               | Addressed — `baseUrl` rejects embedded userinfo                                                                                                                                                                      |
+| Log injection via a crafted user name                                                        | Addressed — control characters rejected                                                                                                                                                                              |
+| Display spoofing via bidirectional overrides                                                 | Addressed — bidi overrides and isolates rejected in display strings                                                                                                                                                  |
+| Forged audit record                                                                          | Addressed — biconditional cross-field integrity rules                                                                                                                                                                |
+| Unbounded or non-serialisable audit payload                                                  | Addressed — bounded JSON-safe parameter schema; writer-side scan bounds the whole record                                                                                                                             |
+| Audit record overwritten or truncated by a write                                             | Addressed, M4 — append-only file handle; proven under concurrent writes by test                                                                                                                                      |
+| Prototype-pollution key bypassing schema validation                                          | Addressed, M4 — explicit writer-side scan; schema-only reliance was verified insufficient                                                                                                                            |
+| Settings tampering or corruption                                                             | Addressed, M3 — strict validation, fail-safe loading to defaults, atomic writes                                                                                                                                      |
+| Policy tampering or corruption                                                               | Addressed, M5 — fail-closed loading (`main/policy.ts`) plus engine-side floor enforcement independent of it                                                                                                          |
+| Policy file removing the user's emergency controls                                           | Addressed, M5 — availability floor enforced at both the schema layer and, independently, by `decidePermission`                                                                                                       |
+| Policy bypassing schema validation before reaching the engine                                | Addressed, M5 — floors re-verified by the engine regardless of validation history                                                                                                                                    |
+| Corruption of a shared security default in memory                                            | Addressed — exported defaults deeply frozen; resolvers return fresh objects                                                                                                                                          |
+| `src/shared` reaching the OS, network or eval                                                | Addressed — lint boundary, verified by probe; not a runtime sandbox                                                                                                                                                  |
+| Privilege escalation via the executor                                                        | Addressed, M5 — `execute` requires a verdict as an explicit argument; proven by tests that no denial or rejection reaches `perform`                                                                                  |
+| A side effect running without a permission decision                                          | Addressed, M5 — structural: no code path in `execute` calls `perform` without an authorizing verdict                                                                                                                 |
+| Model rationale/confidence used as authorization                                             | Addressed, M5 — `decidePermission` never reads `proposal.parameters`; proven by test                                                                                                                                 |
+| Emergency-stop bypass (decision logic)                                                       | Addressed, M5 — engine denies non-exempt actions when engaged, evaluated after both floors                                                                                                                           |
+| Emergency-stop bypass (persistence)                                                          | Addressed, M6 — atomic writes, fail-safe loading; reset requires an approved confirmation the pipeline already enforces                                                                                              |
+| Emergency-stop state corruption fails open instead of closed                                 | Addressed, M6 — malformed or unreadable state resolves engaged, not disengaged; proven by test                                                                                                                       |
+| Emergency reset triggered by a model or a policy rule alone                                  | Addressed, M6 — always resolves to `confirm`; proven across a policy × emergency-state test matrix                                                                                                                   |
+| Plaintext API key stored as a fallback when encryption is unavailable                        | Addressed, M7 — `writeSecret` throws `SecretStoreUnavailableError` before any disk write when `safeStorage.isEncryptionAvailable()` is `false`; proven by test                                                       |
+| Plaintext API key reaching settings.json, an audit record, an error message, or the renderer | Addressed, M7 — `apiKey` never enters `proposal.parameters`; secrets IPC responses carry only `{present: boolean}`; proven by test                                                                                   |
+| `hasApiKey` reported as `true` for a provider that does not use a key (`none`, `ollama`)     | Addressed, M7 — forced `false` regardless of the secret store; proven by test                                                                                                                                        |
+| A denied or rejected secret operation still mutating the store or `hasApiKey`                | Addressed, M7 — `perform` is structurally unreachable on `deny`/`reject`; `hasApiKey` is only refreshed after the store write already succeeded; proven by test                                                      |
+| Renderer-supplied `hasApiKey` reaching a persisted document                                  | Addressed, M7 — `settingsUpdateRequestSchema` has no such field; `strictObject` rejects the extra key outright                                                                                                       |
+| Path traversal                                                                               | Addressed, Phase 2 M5 — user-supplied paths exist for the first time; contained lexically and again after `realpath`, both verified against a real filesystem                                                        |
+| Symbolic link leading outside the approved project                                           | Addressed, Phase 2 M5 — refused after canonicalisation; the tree walk keeps only regular files and real directories, so it cannot follow or loop on one                                                              |
+| A credential file in the user's project being read or displayed                              | Addressed, Phase 2 M5 — `.env*`, key, keystore and credential-stemmed data files are never listed as readable, opened or searched, at any depth                                                                      |
+| The renderer choosing which directory becomes readable                                       | Addressed, Phase 2 M5 — `workspace.select` takes no argument; the user chooses in a native dialog the main process owns, which is then still canonicalised and validated                                             |
+| The application's own data directory opened as a "project"                                   | Addressed, Phase 2 M5 — refused in both directions, with both sides canonicalised first so a short (8.3) Windows ancestor cannot defeat the comparison                                                               |
+| A file modified, created or deleted by the workspace                                         | Addressed, Phase 2 M5 — structurally absent: no action type, channel, preload function or schema field can express one; proven by before/after snapshots across success and failure                                  |
+| A project path, file content or search query reaching the audit log                          | Addressed, Phase 2 M5 — parameters carry `{operation}` and at most a length; asserted by test                                                                                                                        |
+| Unbounded memory or time from a hostile project tree                                         | Addressed, Phase 2 M5 — depth, entry, per-directory, file-size, match and scanned-file caps, each reporting when it stopped; search is literal substring matching, never a compiled pattern                          |
+| Prompt injection, untrusted model or tool output                                             | Reachable from Phase 2 M3 (a real provider replies) — no tool exists for a model to invoke, so untrusted assistant text still cannot authorize or perform an action; see the proposal/executor split                 |
+| Renderer or a compromised dependency making a network request directly                       | Addressed, Phase 2 M3 — CSP `connect-src 'none'` (unmodified since M2) plus the `src/shared` and `src/renderer/chat` purity/scan boundaries; only `src/main/openai-compatible-provider.ts` can reach the network     |
+| Plaintext API key reaching the renderer through a real provider call                         | Addressed, Phase 2 M3 — stays inside `resolveMainChatProvider`/`openai-compatible-provider.ts`; never in `ActionProposal.parameters`, `chatSendResponseSchema`, an audit record, or a thrown error; proven by test   |
+| A real provider call bypassing the permission engine or the emergency stop                   | Addressed, Phase 2 M3 — reached only through the unmodified `runAction`/`handleActionProposal`; denied while the emergency stop is engaged                                                                           |
+| Message content or a raw provider error leaking into the audit trail                         | Addressed, Phase 2 M3 — the `chat.send` proposal carries only `{provider, messageCount}`; every provider failure normalizes to one of five fixed codes first                                                         |
+| A "local" provider silently reaching a cloud service                                         | Addressed, Phase 2 M4 — an Ollama endpoint must be a loopback, private or link-local literal (or localhost); a name that merely looks local is refused, and a refused endpoint never falls back to the default       |
+| A credential stored for one provider being sent to another                                   | Addressed, Phase 2 M4 — the secret read is skipped entirely for providers outside PROVIDERS_REQUIRING_API_KEY, and the Ollama adapter has no config field that could carry a key                                     |
+| Unbounded memory or output from a hostile streaming endpoint                                 | Addressed, Phase 2 M4 — bytes read, line length, delta size and accumulated content are each capped independently, in the main process and again in the renderer                                                     |
+| Streamed model output treated as a message, or as authorization                              | Addressed, Phase 2 M4 — deltas are previews held outside the message list; the committed reply is the separately validated whole, and no path exists from either to the executor                                     |
+| The renderer subscribing to arbitrary IPC events through the new push channel                | Addressed, Phase 2 M4 — chat.onChunk fixes the channel in the preload, validates every payload, hands back only an unsubscribe function, and never exposes ipcRenderer or the raw event                              |
+| A file written outside the approved project                                                  | Addressed, Phase 2 M6 — the Milestone 5 containment layers are re-run at write time, after the diff and after the approval, so a link planted in between is refused rather than followed                             |
+| The renderer naming what gets written, or substituting content after approval                | Addressed, Phase 2 M6 — `workspace:apply` carries a change _id_ and nothing else; the bytes written are the bytes the main process already held and already diffed                                                   |
+| A change silently discarding an edit the user made in another editor                         | Addressed, Phase 2 M6 — the file's hash must still match what was diffed, or the write is refused as `WORKSPACE_CHANGE_STALE`                                                                                        |
+| A half-applied multi-file change                                                             | Addressed, Phase 2 M6 — a change set is all-or-nothing; files already written are restored from the backup before the failure is reported                                                                            |
+| A file created or deleted in the user's project                                              | Addressed, Phase 2 M6 — structurally absent: a change modifies files that already exist, and no action type, channel, preload function or schema field can express a create or a delete                              |
+| A backup polluting the user's project or its next commit                                     | Addressed, Phase 2 M6 — backups are written under `%APPDATA%\Local-Agent\backups`, never inside the project                                                                                                          |
+| An arbitrary command, a shell, PowerShell or elevation reached from the renderer             | Addressed, Phase 2 M6 — `commandId` is a five-value enum and every argument is a literal; `spawn` runs with `shell: false` in every case, and an argument carrying interpreter syntax is refused rather than escaped |
+| A command running outside the approved project                                               | Addressed, Phase 2 M6 — the working directory is always the approved root; there is no parameter for anything else                                                                                                   |
+| A project's build script inheriting the user's exported secrets                              | Addressed, Phase 2 M6 — only an allowlist of environment variables is passed through; no `*_TOKEN`, no `*_KEY`, no `NODE_OPTIONS`. Asserted by test with a sentinel value                                            |
+| A command hanging on input, printing forever, or outliving its request                       | Addressed, Phase 2 M6 — no terminal (`stdin: 'ignore'`), timeout, byte/line caps with continued draining so a full pipe cannot wedge the child, and a process-**tree** kill on Windows                               |
+| A command that was already running when the emergency stop was engaged                       | Addressed, Phase 2 M6 — the stop is polled during the run and kills the process; reported as `stopped`, never as a test failure                                                                                      |
+| A repository's own hooks or diff filters executing because the user opened it                | Addressed, Phase 2 M6 — every `git` invocation redirects `core.hooksPath` to an empty directory this application owns, and diffs run `--no-ext-diff --no-textconv`; proven by a test with a real `pre-commit` hook   |
+| A destructive Git operation (reset, checkout, branch delete, push, remote)                   | Addressed, Phase 2 M6 — structurally absent: no schema carries a subcommand, every vector is a literal, and a source scan asserts none of the forbidden subcommands appears in either Git module                     |
+| `git add --all` staging files outside the directory the user approved                        | Addressed, Phase 2 M6 — a checkpoint is refused unless `--show-toplevel` canonically equals the approved root, so a subdirectory of a repository is never checkpointed                                               |
+| A checkpoint commit that is easy to lose, or that is empty                                   | Addressed, Phase 2 M6 — refused on a detached HEAD and refused when there is nothing uncommitted                                                                                                                     |
+| A diff line that renders differently from how it is stored                                   | Addressed, Phase 2 M6 — diff lines are sanitized before display and any alteration is reported in `warnings`; `diffLineSchema` refuses a control character or bidi override outright                                 |
+| Unbounded CPU from diffing two unrelated files                                               | Addressed, Phase 2 M6 — a shared prefix and suffix are stripped first and the alignment matrix is capped; past the cap the differ reports one coarse replacement and says so                                         |
+| A path, file content or a project script reaching the audit log                              | Addressed, Phase 2 M6 — parameters carry `{operation}` and a count; the only identifier recorded is `commandId`, an enum member. Asserted by test                                                                    |
+| A project's `package.json` misleading a confirmation dialog                                  | Partly addressed, Phase 2 M6 — the script text is sanitized to one bounded single line and risk-flagged, but it is still attacker-influenced text in a security prompt; see limitation 26                            |
+| Supply-chain compromise via npm                                                              | Mitigated, not eliminated — see below                                                                                                                                                                                |
 
 ---
 
 ## Known limitations
 
 These are real and are stated plainly rather than described as solved.
+
+0. **An agent run executes several actions after one approval.** Phase 2
+   Milestone 7's `agent.run` is on the confirmation floor, so a run is
+   approved in a native dialog that states the profile's tools, its workspace
+   scope and its three ceilings before the first step — and every individual
+   step is still decided by the permission engine on its own action type, with
+   anything on the confirmation floor still prompting separately. But the
+   approval is nonetheless _per run_, not per read: a person approving a run
+   is approving a bounded sequence they did not see itemised. The bounds are
+   what make that acceptable — a fixed seven-tool registry containing nothing
+   that can write a file, apply a change or create a commit; a step ceiling; a
+   time ceiling; an output ceiling; and an emergency stop re-read from disk
+   between every step. It is a real widening of what one approval covers, and
+   it is recorded here rather than presented as equivalent to approving each
+   action.
 
 1. **The audit log is append-only by API, not tamper-proof.** A local user
    with the same privileges can edit the file directly with a text editor.
@@ -841,6 +1003,116 @@ These are real and are stated plainly rather than described as solved.
     surface) that touch no side effect; full behavioural coverage of the five
     channels is in `tests/unit/main/ipc.test.ts`, against temporary
     directories, not the real application process.
+
+20. **The workspace has a time-of-check/time-of-use gap.** Between `realpath`
+    returning and the subsequent `open`/`readdir`, a path component could in
+    principle be replaced with a symbolic link. Closing it properly needs
+    handle-based, `O_NOFOLLOW`-style APIs that Node does not expose portably.
+    The exposure is narrow — the attacker must already be able to write inside
+    the user's own approved project, on the user's own machine, between two
+    adjacent syscalls — and the consequence is bounded by everything else in
+    the layer: the result is still read-only, still size-capped, and still
+    refused if it is not text. Stated rather than described as solved.
+
+21. **The file viewer warns about bidirectional control characters; it does
+    not neutralise them.** A source file containing an override is shown
+    exactly as stored, with a prominent warning, because refusing would make
+    legitimate Arabic, Hebrew and Persian source unopenable and rewriting it
+    would mean the viewer lied about what is on disk. The text can therefore
+    still _render_ differently from how it is stored. File **names** and search
+    **excerpts** are handled more strictly — a name carrying one is refused
+    outright, and an excerpt is sanitised — because a name can disguise an
+    extension and a results list is where a reordered line would be most
+    convincing.
+
+22. **Credential detection in a project is name-based, like the audit log's
+    redaction, and inherits the same limitation.** `.env*`, known credential
+    file names, key and keystore extensions, and credential-stemmed _data_
+    files are excluded. A credential pasted into an ordinary source file —
+    `src/config.ts` — is not caught, and the stem rule is deliberately skipped
+    for source and documentation extensions so that files _about_ credential
+    handling (this repository's own `src/main/secrets.ts`) stay readable. That
+    is the safe direction for an inspector whose job is to show a project
+    truthfully, but it is a real gap and is not closed by a value-level check.
+
+23. **A coding plan is keyword matching, not understanding.** It is derived
+    deterministically from bounded searches and the project's structure, with
+    no model call (see
+    [phase-2-coding-workspace.md](phase-2-coding-workspace.md) for why). It
+    will miss a file that is relevant without sharing vocabulary with the
+    request, and it says so in its own risks when nothing matched or when a
+    search was truncated. It is a grounded starting point, not an analysis.
+
+24. **The workspace bounds each operation, not the rate of operations.** One
+    listing, read or search is capped in every dimension, but nothing limits
+    how many a renderer may issue in succession. In a single-user desktop
+    application whose renderer is driven by the same person who approved the
+    project, this is acceptable; it would not be in a multi-user or remote
+    context, neither of which this project has.
+
+25. **No component-level render test for `Workspace.tsx`**, for the same reason
+    as limitation 18 and with the same mitigation: every state transition
+    (loading, empty, error, retry, staleness, the approval gate) lives in the
+    framework-independent `WorkspaceController` and is fully covered there.
+    What remains untested by an automated test is the JSX and event wiring
+    itself. The e2e suite likewise does not drive the six workspace channels
+    against the real built application — like `settings:*` and `secrets:*`
+    (limitation 19), they have real side effects against the developer's actual
+    `%APPDATA%\Local-Agent\`, and would additionally open a native dialog no
+    headless run can answer. Their behavioural coverage is in
+    `tests/unit/main/ipc.test.ts`, against temporary directories; the e2e suite
+    asserts only the bridge's static shape and the absence of any mutator.
+
+26. **Running a project's own command executes that project's code, and this
+    application cannot make that safe.** This is the central limitation of
+    Milestone 6 and it is inherent, not an oversight: `npm run test` runs
+    whatever the project's `package.json` says, and a project is untrusted
+    input in exactly the sense `AGENTS.md` §5 means. The registry restricts
+    _which of five named scripts_ may be started; it cannot restrict what the
+    script then does — it could delete files, reach the network, or read
+    anything the user can read.
+
+    What is actually controlled: the command must be one of five; the project
+    must already declare it; `command.run` is on the confirmation floor, which
+    no policy edit can downgrade; the native dialog states the exact program,
+    arguments, directory and the project's own script text; risky-looking
+    scripts are flagged; the run is bounded in time and output, inherits
+    neither a terminal nor the parent's environment, and is killed by the
+    emergency stop. The residual risk is that a user approves a command in a
+    project whose `package.json` is hostile. The script preview is sanitized
+    and bounded precisely because it is attacker-influenced text appearing in
+    a security prompt, but a determined author can still write a plausible
+    one-line script that does something else.
+
+27. **`describeScriptRisks` is a heuristic, and its silence proves nothing.**
+    It flags command chaining, common network and deletion tools, elevation
+    and inline code by pattern. A script can do any of those through spellings
+    it does not enumerate. It exists to warn, never to authorize — its output
+    changes no decision the permission engine makes.
+
+28. **A Git checkpoint stages everything, including work the user had
+    deliberately left unstaged.** `git add --all` followed by `git commit` is
+    non-destructive — nothing is lost, and the content is in the commit either
+    way — but it does change the index, which could surprise someone who had
+    carefully staged a subset. The confirmation dialog states both commands
+    verbatim before it runs. Undoing a checkpoint is left to the user's own
+    tools, because every Git command that would undo one is on the forbidden
+    list.
+
+29. **Tab characters in `git diff` output are shown as spaces.** Every line
+    crossing to the renderer is sanitized, and a tab is a control character,
+    so indentation in the Git diff view is approximate for tab-indented
+    projects. This is a display trade-off taken deliberately rather than
+    loosening the rule that no control character reaches the interface; the
+    workspace's own diff is unaffected, since it is built from text this
+    application decoded itself.
+
+30. **The change store is per-session and in memory.** Proposals and the
+    applied-change history do not survive a restart, so a rollback is only
+    possible within the run that applied the change. The backup files
+    themselves do persist under `%APPDATA%\Local-Agent\backups`, and nothing
+    deletes them — recovering from an older one is a manual operation the user
+    performs with their own tools.
 
 ---
 

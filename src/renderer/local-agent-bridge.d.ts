@@ -9,13 +9,30 @@
  */
 
 import type {
+  AgentProfileInput,
+  AgentRegistryResponse,
+  AgentRunResponse,
   ChatChunkEvent,
   ChatMessage,
   ChatSendResponse,
+  CommandIdValue,
+  CommandListResponse,
+  CommandRunResponse,
+  GitCheckpointResponse,
+  GitDiffResponse,
+  GitStatusResponse,
   HealthCheckResponse,
   SecretsActionResponse,
   SettingsActionResponse,
   SettingsUpdateInput,
+  WorkspaceChangeResponse,
+  WorkspaceChangesResponse,
+  WorkspaceEdit,
+  WorkspaceFileResponse,
+  WorkspacePlanResponse,
+  WorkspaceProjectResponse,
+  WorkspaceSearchResponse,
+  WorkspaceTreeResponse,
 } from '../shared/schemas';
 
 export {};
@@ -41,6 +58,67 @@ declare global {
         readonly cancel: (requestId: string) => Promise<void>;
         /** Subscribe to streaming previews; returns an unsubscribe function. */
         readonly onChunk: (listener: (event: ChatChunkEvent) => void) => () => void;
+      };
+      /**
+       * The read-only coding workspace (Phase 2, Milestone 5). Note that
+       * `select` takes no argument: the directory is chosen by the user in a
+       * native picker the main process owns, never named by the renderer.
+       */
+      readonly workspace: {
+        readonly status: () => Promise<WorkspaceProjectResponse>;
+        readonly select: () => Promise<WorkspaceProjectResponse>;
+        readonly tree: (path: string) => Promise<WorkspaceTreeResponse>;
+        readonly file: (path: string) => Promise<WorkspaceFileResponse>;
+        readonly search: (query: string, path: string) => Promise<WorkspaceSearchResponse>;
+        readonly plan: (objective: string) => Promise<WorkspacePlanResponse>;
+        /** Produces a diff. Writes nothing — see `apply` (Milestone 6). */
+        readonly propose: (edits: readonly WorkspaceEdit[]) => Promise<WorkspaceChangeResponse>;
+        /** Takes a change id only, so what was shown is what is written. */
+        readonly apply: (changeId: string) => Promise<WorkspaceChangeResponse>;
+        readonly rollback: (changeId: string) => Promise<WorkspaceChangeResponse>;
+        readonly changes: () => Promise<WorkspaceChangesResponse>;
+      };
+      /**
+       * The command registry (Phase 2, Milestone 6). Note that `run` takes an
+       * identifier from an enum: there is no parameter for a command string,
+       * an argument, a shell or a working directory.
+       */
+      readonly command: {
+        readonly list: () => Promise<CommandListResponse>;
+        readonly run: (runId: string, commandId: CommandIdValue) => Promise<CommandRunResponse>;
+        readonly cancel: (runId: string) => Promise<void>;
+      };
+      /**
+       * Agent profiles and runs (Phase 2, Milestone 7). Note that `run` takes
+       * an objective and nothing else: there is no parameter for a step, a
+       * tool, a path, a command or a limit, because what a run may do comes
+       * from the stored profile the main process reads, never from here.
+       */
+      readonly agent: {
+        readonly list: () => Promise<AgentRegistryResponse>;
+        readonly select: (profileId: string) => Promise<AgentRegistryResponse>;
+        readonly create: (profile: AgentProfileInput) => Promise<AgentRegistryResponse>;
+        readonly update: (
+          profileId: string,
+          profile: AgentProfileInput,
+        ) => Promise<AgentRegistryResponse>;
+        readonly remove: (profileId: string) => Promise<AgentRegistryResponse>;
+        readonly setEnabled: (
+          profileId: string,
+          enabled: boolean,
+        ) => Promise<AgentRegistryResponse>;
+        readonly run: (runId: string, objective: string) => Promise<AgentRunResponse>;
+        readonly cancel: (runId: string) => Promise<void>;
+      };
+      /**
+       * Git (Phase 2, Milestone 6). `checkpoint` takes no argument: nothing
+       * here can name a ref, a branch, a remote or a commit message, and
+       * there is no reset, checkout, push or delete.
+       */
+      readonly git: {
+        readonly status: () => Promise<GitStatusResponse>;
+        readonly diff: (path: string | null) => Promise<GitDiffResponse>;
+        readonly checkpoint: () => Promise<GitCheckpointResponse>;
       };
     };
   }
