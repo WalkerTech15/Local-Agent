@@ -38,6 +38,7 @@ import { z } from 'zod';
 
 import { CHAT_PROVIDER_ERROR_CODES } from '../chat/provider';
 import {
+  AGENT_MAX_PROFILES,
   API_KEY_MAX_LENGTH,
   API_KEY_MIN_LENGTH,
   AUDIT_OUTCOMES,
@@ -45,6 +46,13 @@ import {
   CONTROL_CHARACTER_PATTERN,
   WORKSPACE_MAX_CHANGE_FILES,
 } from '../constants';
+import { AGENT_ERROR_CODES } from '../agent/errors';
+import {
+  agentProfileIdSchema,
+  agentProfileInputSchema,
+  agentProfileSchema,
+  agentRunSchema,
+} from './agent.schema';
 import {
   commandCatalogSchema,
   commandIdSchema,
@@ -597,3 +605,154 @@ export const gitCheckpointResponseSchema = z.strictObject({
 });
 
 export type GitCheckpointResponse = z.infer<typeof gitCheckpointResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Agent profiles and runs (Phase 2, Milestone 7)
+//
+// Eight channels. None of them introduces a capability: the four write
+// channels change *configuration*, and `agent:run` executes a bounded
+// sequence of actions that the interface could already have taken one at a
+// time, each still decided by the permission engine on its own action type.
+//
+// Four properties hold across all of them, and each is a shape rather than a
+// check:
+//
+//  - **A request cannot grant a permission.** `agentProfileInputSchema`'s
+//    `permissionPolicy` entries are `confirm` or `deny`; `allow` is not a
+//    member of the enum, so "permit this" is not expressible in a payload.
+//  - **A request cannot name a capability.** `allowedTools` is an enum of
+//    seven tool ids, each bound in reviewed source to an action type that
+//    already existed. There is no field for an action type, a command string,
+//    an argument, a shell, an absolute path or a URL.
+//  - **A request cannot carry a credential.** Every object is a
+//    `strictObject` with no field capable of holding one, so a payload with
+//    an `apiKey` is rejected rather than stored and ignored.
+//  - **A run is named, never described.** `agent:run` carries a run id and an
+//    objective string. It cannot carry a step list, a tool, a path or a
+//    command — the steps are derived in the main process from the *stored*
+//    profile, so a compromised renderer cannot substitute a plan.
+//
+// `agent:cancel` is the one channel with no permission gate, for exactly the
+// reason `chat:cancel` and `command:cancel` have none: it cannot start
+// anything, read anything or reach anything — it can only ask an
+// already-authorized run to stop early.
+// ---------------------------------------------------------------------------
+
+export const IPC_AGENT_LIST_CHANNEL = 'agent:list';
+export const IPC_AGENT_SELECT_CHANNEL = 'agent:select';
+export const IPC_AGENT_CREATE_CHANNEL = 'agent:create';
+export const IPC_AGENT_UPDATE_CHANNEL = 'agent:update';
+export const IPC_AGENT_DELETE_CHANNEL = 'agent:delete';
+export const IPC_AGENT_SET_ENABLED_CHANNEL = 'agent:setEnabled';
+export const IPC_AGENT_RUN_CHANNEL = 'agent:run';
+export const IPC_AGENT_CANCEL_CHANNEL = 'agent:cancel';
+
+/**
+ * `errorCode` is always one of {@link AGENT_ERROR_CODES} — the same
+ * normalized vocabulary the agent layer throws, reused rather than restated.
+ * Never a raw error, a profile name, or a filesystem path.
+ */
+const agentErrorCodeSchema = z.enum(AGENT_ERROR_CODES);
+
+export const agentListRequestSchema = z.tuple([]);
+
+/** Selecting, deleting and enabling all address a profile by id and nothing else. */
+const agentProfileReferenceRequestSchema = z.tuple([
+  z.strictObject({ profileId: agentProfileIdSchema }),
+]);
+
+export const agentSelectRequestSchema = agentProfileReferenceRequestSchema;
+export const agentDeleteRequestSchema = agentProfileReferenceRequestSchema;
+
+export const agentSetEnabledRequestSchema = z.tuple([
+  z.strictObject({ profileId: agentProfileIdSchema, enabled: z.boolean() }),
+]);
+
+export const agentCreateRequestSchema = z.tuple([
+  z.strictObject({ profile: agentProfileInputSchema }),
+]);
+
+/**
+ * Updating carries the target id *and* the submitted profile.
+ *
+ * The two must agree — the main process refuses a mismatch rather than
+ * picking one — so a payload cannot rename a profile by addressing one id and
+ * submitting another, which would otherwise be a way to overwrite a
+ * profile the caller did not name.
+ */
+export const agentUpdateRequestSchema = z.tuple([
+  z.strictObject({
+    profileId: agentProfileIdSchema,
+    profile: agentProfileInputSchema,
+  }),
+]);
+
+export type AgentProfileReferenceInput = z.infer<typeof agentSelectRequestSchema>[0];
+export type AgentSetEnabledInput = z.infer<typeof agentSetEnabledRequestSchema>[0];
+export type AgentCreateInput = z.infer<typeof agentCreateRequestSchema>[0];
+export type AgentUpdateInput = z.infer<typeof agentUpdateRequestSchema>[0];
+
+/**
+ * The registry as the renderer sees it: every profile, and which is active.
+ *
+ * Safe to send in full — a profile carries no credential, by construction.
+ * The interface needs the whole document to show a profile's tools, its
+ * workspace scope and its limits, which is the milestone's own requirement
+ * that active permissions and limits be clearly visible.
+ */
+export const agentRegistryResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  registry: z
+    .strictObject({
+      activeProfileId: agentProfileIdSchema,
+      profiles: z.array(agentProfileSchema).max(AGENT_MAX_PROFILES),
+    })
+    .optional(),
+  errorCode: agentErrorCodeSchema.optional(),
+});
+
+export const agentListResponseSchema = agentRegistryResponseSchema;
+export const agentSelectResponseSchema = agentRegistryResponseSchema;
+export const agentCreateResponseSchema = agentRegistryResponseSchema;
+export const agentUpdateResponseSchema = agentRegistryResponseSchema;
+export const agentDeleteResponseSchema = agentRegistryResponseSchema;
+export const agentSetEnabledResponseSchema = agentRegistryResponseSchema;
+
+export type AgentRegistryResponse = z.infer<typeof agentRegistryResponseSchema>;
+
+/**
+ * Starting a run.
+ *
+ * `runId` correlates a later `agent:cancel` to this run, exactly as
+ * `chat:send`'s `requestId` and `command:run`'s `runId` do. `objective` is
+ * the request in the user's own words, bounded by the same schema
+ * `workspace:plan` already uses. There is deliberately no `steps`, no
+ * `tools`, no `profile` and no `limits` field: everything a run is permitted
+ * to do comes from the *stored* profile, read in the main process, so a
+ * renderer cannot widen a run by describing it differently.
+ */
+export const agentRunRequestSchema = z.tuple([
+  z.strictObject({
+    runId: z.uuid(),
+    objective: workspaceObjectiveSchema,
+  }),
+]);
+
+export type AgentRunRequestInput = z.infer<typeof agentRunRequestSchema>[0];
+
+export const agentCancelRequestSchema = z.tuple([z.strictObject({ runId: z.uuid() })]);
+
+export const agentRunResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  run: agentRunSchema.optional(),
+  errorCode: agentErrorCodeSchema.optional(),
+});
+
+export type AgentRunResponse = z.infer<typeof agentRunResponseSchema>;
+
+/** Best-effort and idempotent, exactly like {@link commandCancelResponseSchema}. */
+export const agentCancelResponseSchema = z.strictObject({
+  acknowledged: z.literal(true),
+});
+
+export type AgentCancelResponse = z.infer<typeof agentCancelResponseSchema>;

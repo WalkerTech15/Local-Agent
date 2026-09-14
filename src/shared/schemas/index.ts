@@ -286,3 +286,75 @@ export type {
   WorkspaceChangesResponse,
   WorkspaceProposeRequestInput,
 } from './ipc.schema';
+
+// ---------------------------------------------------------------------------
+// Agent profiles and runs (Phase 2, Milestone 7)
+// ---------------------------------------------------------------------------
+
+export {
+  AGENT_PROFILE_DECISIONS,
+  AGENT_RUN_STATUSES,
+  AGENT_STOP_REASONS,
+  agentLimitsSchema,
+  agentPermissionRuleSchema,
+  agentProfileIdSchema,
+  agentProfileInputSchema,
+  agentProfileSchema,
+  agentProfileStoreSchema,
+  agentRunSchema,
+  agentRunStepSchema,
+  agentToolIdSchema,
+  agentVerificationRequirementSchema,
+  agentVerificationResultSchema,
+} from './agent.schema';
+export type {
+  AgentLimits,
+  AgentPermissionRule,
+  AgentProfile,
+  AgentProfileDecision,
+  AgentProfileInput,
+  AgentProfileStore,
+  AgentRun,
+  AgentRunStatus,
+  AgentRunStep,
+  AgentStopReason,
+  AgentVerificationResult,
+} from './agent.schema';
+
+export {
+  agentCancelRequestSchema,
+  agentCancelResponseSchema,
+  agentCreateRequestSchema,
+  agentCreateResponseSchema,
+  agentDeleteRequestSchema,
+  agentDeleteResponseSchema,
+  agentListRequestSchema,
+  agentListResponseSchema,
+  agentRegistryResponseSchema,
+  agentRunRequestSchema,
+  agentRunResponseSchema,
+  agentSelectRequestSchema,
+  agentSelectResponseSchema,
+  agentSetEnabledRequestSchema,
+  agentSetEnabledResponseSchema,
+  agentUpdateRequestSchema,
+  agentUpdateResponseSchema,
+  IPC_AGENT_CANCEL_CHANNEL,
+  IPC_AGENT_CREATE_CHANNEL,
+  IPC_AGENT_DELETE_CHANNEL,
+  IPC_AGENT_LIST_CHANNEL,
+  IPC_AGENT_RUN_CHANNEL,
+  IPC_AGENT_SELECT_CHANNEL,
+  IPC_AGENT_SET_ENABLED_CHANNEL,
+  IPC_AGENT_UPDATE_CHANNEL,
+} from './ipc.schema';
+export type {
+  AgentCancelResponse,
+  AgentCreateInput,
+  AgentProfileReferenceInput,
+  AgentRegistryResponse,
+  AgentRunRequestInput,
+  AgentRunResponse,
+  AgentSetEnabledInput,
+  AgentUpdateInput,
+} from './ipc.schema';

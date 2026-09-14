@@ -29,24 +29,33 @@ const SHARED_CHAT_DIR = join(REPO_ROOT, 'src', 'shared', 'chat');
 const RENDERER_CHAT_DIR = join(REPO_ROOT, 'src', 'renderer', 'chat');
 const SHARED_WORKSPACE_DIR = join(REPO_ROOT, 'src', 'shared', 'workspace');
 const RENDERER_WORKSPACE_DIR = join(REPO_ROOT, 'src', 'renderer', 'workspace');
+const SHARED_AGENT_DIR = join(REPO_ROOT, 'src', 'shared', 'agent');
+const RENDERER_AGENT_DIR = join(REPO_ROOT, 'src', 'renderer', 'agent');
 const SCAN_DIRECTORIES = [
   SHARED_CHAT_DIR,
   RENDERER_CHAT_DIR,
   SHARED_WORKSPACE_DIR,
   RENDERER_WORKSPACE_DIR,
+  SHARED_AGENT_DIR,
+  RENDERER_AGENT_DIR,
 ];
 
 /** The directories whose files may never reference `window.localAgent` at all. */
-const SHARED_SCAN_DIRECTORIES = [SHARED_CHAT_DIR, SHARED_WORKSPACE_DIR];
+const SHARED_SCAN_DIRECTORIES = [SHARED_CHAT_DIR, SHARED_WORKSPACE_DIR, SHARED_AGENT_DIR];
 
 /**
- * The only two files in the renderer permitted to reference
+ * The only three files in the renderer permitted to reference
  * `window.localAgent` — one per feature, each the single seam through which
  * its privileged main-process counterpart is reached.
  */
 const IPC_CHAT_PROVIDER_FILE = join(RENDERER_CHAT_DIR, 'ipc-chat-provider.ts');
 const IPC_WORKSPACE_CLIENT_FILE = join(RENDERER_WORKSPACE_DIR, 'ipc-workspace-client.ts');
-const BRIDGE_CALLER_FILES = [IPC_CHAT_PROVIDER_FILE, IPC_WORKSPACE_CLIENT_FILE].sort();
+const IPC_AGENT_CLIENT_FILE = join(RENDERER_AGENT_DIR, 'ipc-agent-client.ts');
+const BRIDGE_CALLER_FILES = [
+  IPC_CHAT_PROVIDER_FILE,
+  IPC_WORKSPACE_CLIENT_FILE,
+  IPC_AGENT_CLIENT_FILE,
+].sort();
 
 const WINDOW_LOCAL_AGENT_SUBSTRING = 'window.localAgent';
 
@@ -130,7 +139,7 @@ describe('chat/provider layer source-scan boundary', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('window.localAgent is referenced by exactly, and only, the two named bridge callers', () => {
+  it('window.localAgent is referenced by exactly, and only, the named bridge callers', () => {
     // One seam per feature, each named here. A future file that starts
     // calling the bridge fails this test immediately, independent of review.
     const offenders = [...codeByFile.entries()]
@@ -140,7 +149,7 @@ describe('chat/provider layer source-scan boundary', () => {
     expect(offenders).toEqual(BRIDGE_CALLER_FILES);
   });
 
-  it('scans both features, so neither directory can be silently dropped', () => {
+  it('scans every feature, so no directory can be silently dropped', () => {
     for (const directory of SCAN_DIRECTORIES) {
       expect(
         files.some((file) => file.startsWith(directory)),

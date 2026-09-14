@@ -40,8 +40,15 @@
 > `main/project-commands.ts`), and read-only Git plus a checkpoint commit
 > (`main/git-runner.ts`) — ten more channels, four of them on the
 > confirmation floor, and the permission engine, executor, pipeline and audit
-> writer have **zero diff** for the fifth consecutive milestone. This document
-> marks which parts exist today.
+> writer have **zero diff** for the fifth consecutive milestone. Phase 2
+> Milestone 7 adds agent profiles (`main/agent-profiles.ts`) and a minimal
+> bounded orchestrator (`main/agent-orchestrator.ts`, over the pure
+> `shared/agent/orchestration.ts`) — eight more channels and four more action
+> types, none of which is a new capability: every tool a profile may name maps
+> to an action type Milestones 5 and 6 already defined, so a profile can only
+> ever _narrow_ what the permission policy already allowed. The permission
+> engine, executor, pipeline and audit writer have **zero diff** for the sixth
+> consecutive milestone. This document marks which parts exist today.
 
 ---
 
@@ -120,6 +127,8 @@ call. See `docs/phase-2-coding-workspace.md`.
 | `main/process-runner` **(exists)**      | The only module that starts a process. `shell: false`, bounded in time and output, no terminal, allowlisted environment, tree-killed.             | Use a shell; build a command from a request; inherit the parent environment; leave output unread.       |
 | `main/project-commands` **(exists)**    | Reads the project's declared scripts and runs one registry entry inside the approved root.                                                        | Run a script the registry does not name; take an argument vector from anywhere but a literal.           |
 | `main/git-runner` **(exists)**          | Read-only `status`/`diff`, plus one checkpoint commit on the branch already checked out. Hooks disabled for every invocation.                     | Reset, checkout, switch, clean, delete a branch, rewrite history, or contact a remote.                  |
+| `main/agent-profiles` **(exists)**      | Loads, validates and atomically writes agent profiles. Fails closed to the built-ins. Never persists a built-in.                                  | Store a credential; merge a partially-valid document; let a stored profile claim a built-in identifier. |
+| `main/agent-orchestrator` **(exists)**  | Drives one bounded run: asks the pure decider what to do next, calls the injected step executor, classifies the result.                           | Decide that anything is permitted; call a model; reach the filesystem or a process itself.              |
 
 ## Dependency direction
 

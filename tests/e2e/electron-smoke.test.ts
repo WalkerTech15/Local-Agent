@@ -42,6 +42,7 @@ interface ExposedLocalAgentBridge {
  * sub-object, never a generic invoke or listen surface.
  */
 const EXPECTED_BRIDGE_KEYS = [
+  'agent',
   'chat',
   'command',
   'git',
@@ -87,6 +88,23 @@ const EXPECTED_COMMAND_KEYS = ['cancel', 'list', 'run'] as const;
  * checkout, no branch, no push and no remote — not disabled, absent.
  */
 const EXPECTED_GIT_KEYS = ['checkpoint', 'diff', 'status'] as const;
+/**
+ * Agent profiles (Phase 2, Milestone 7). Six configuration functions, one
+ * bounded run and one cancel. `run` takes a run id and an objective — there
+ * is no function here through which a step, a tool, a path, a command or a
+ * limit could be supplied, because what a run may do comes from the stored
+ * profile the main process reads.
+ */
+const EXPECTED_AGENT_KEYS = [
+  'cancel',
+  'create',
+  'list',
+  'remove',
+  'run',
+  'select',
+  'setEnabled',
+  'update',
+] as const;
 
 function launchEnv(): Record<string, string> {
   const env: Record<string, string> = {};
@@ -159,7 +177,7 @@ describe('Electron desktop shell — security and health-check smoke test', () =
     expect(hasIpcRenderer).toBe(false);
   });
 
-  it('exposes exactly one bridge object with exactly the narrow, named functions of Phase 2 Milestone 6', async () => {
+  it('exposes exactly one bridge object with exactly the narrow, named functions of Phase 2 Milestone 7', async () => {
     const bridgeShape = await page.evaluate(() => {
       const w = window as unknown as {
         localAgent?: {
@@ -169,6 +187,7 @@ describe('Electron desktop shell — security and health-check smoke test', () =
           workspace?: object;
           command?: object;
           git?: object;
+          agent?: object;
         } & Record<string, unknown>;
       };
       const localAgent = w.localAgent;
@@ -181,6 +200,7 @@ describe('Electron desktop shell — security and health-check smoke test', () =
         workspaceKeys: localAgent?.workspace ? Object.keys(localAgent.workspace).sort() : [],
         commandKeys: localAgent?.command ? Object.keys(localAgent.command).sort() : [],
         gitKeys: localAgent?.git ? Object.keys(localAgent.git).sort() : [],
+        agentKeys: localAgent?.agent ? Object.keys(localAgent.agent).sort() : [],
       };
     });
     expect(bridgeShape).toEqual({
@@ -192,6 +212,7 @@ describe('Electron desktop shell — security and health-check smoke test', () =
       workspaceKeys: [...EXPECTED_WORKSPACE_KEYS],
       commandKeys: [...EXPECTED_COMMAND_KEYS],
       gitKeys: [...EXPECTED_GIT_KEYS],
+      agentKeys: [...EXPECTED_AGENT_KEYS],
     });
   });
 
@@ -310,6 +331,41 @@ describe('Electron desktop shell — security and health-check smoke test', () =
     expect(present).toEqual([]);
   });
 
+  it('exposes no agent function that could grant a permission or write anything', async () => {
+    // Milestone 7's central claim, checked against the real built bridge: an
+    // agent profile is configuration that narrows, and a run inspects, plans
+    // and verifies. Nothing named like a grant or a write may appear.
+    const present = await page.evaluate(() => {
+      const w = window as unknown as { localAgent?: { agent?: Record<string, unknown> } };
+      const agent = w.localAgent?.agent;
+      if (agent === undefined) return ['(no agent object at all)'];
+
+      const forbidden = [
+        'grant',
+        'allow',
+        'permit',
+        'authorize',
+        'elevate',
+        'write',
+        'apply',
+        'rollback',
+        'checkpoint',
+        'commit',
+        'execute',
+        'exec',
+        'spawn',
+        'invoke',
+        'setPolicy',
+        'setPermission',
+        'addTool',
+        'registerTool',
+      ];
+      return forbidden.filter((key) => key in agent);
+    });
+
+    expect(present).toEqual([]);
+  });
+
   it('has no generic invoke-any-channel function anywhere on window, including its sub-objects', async () => {
     const hasGenericInvoke = await page.evaluate(() => {
       const w = window as unknown as Record<string, unknown>;
@@ -320,6 +376,7 @@ describe('Electron desktop shell — security and health-check smoke test', () =
             secrets?: Record<string, unknown>;
             chat?: Record<string, unknown>;
             workspace?: Record<string, unknown>;
+            agent?: Record<string, unknown>;
           })
         | undefined;
       const nested = [
@@ -327,6 +384,7 @@ describe('Electron desktop shell — security and health-check smoke test', () =
         localAgent?.secrets,
         localAgent?.chat,
         localAgent?.workspace,
+        localAgent?.agent,
       ].filter((value): value is Record<string, unknown> => value !== undefined);
       return (
         candidates.some((key) => key in w) ||
@@ -350,6 +408,7 @@ describe('Electron desktop shell — security and health-check smoke test', () =
             secrets?: Record<string, unknown>;
             chat?: Record<string, unknown>;
             workspace?: Record<string, unknown>;
+            agent?: Record<string, unknown>;
           })
         | undefined;
       const surfaces = [
@@ -358,6 +417,7 @@ describe('Electron desktop shell — security and health-check smoke test', () =
         localAgent?.secrets,
         localAgent?.chat,
         localAgent?.workspace,
+        localAgent?.agent,
       ];
       return surfaces.some(
         (surface) => surface !== undefined && generic.some((key) => key in surface),

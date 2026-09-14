@@ -825,3 +825,157 @@ main.app-ready {
   gap: 0.45rem;
   font-size: 0.78rem;
 }
+
+/* Agent profiles (Phase 2, Milestone 7).
+   Reuses the workspace panel, badge, hint and error classes; only the
+   profile card, the run report and the editor need shapes of their own. */
+.agent-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid #2a3750;
+  border-radius: 0.6rem;
+  background: #0c1626;
+}
+.agent-card--active {
+  border-color: #73d5c8;
+}
+.agent-card__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.agent-card__head h4 {
+  margin: 0;
+  font-size: 0.95rem;
+  letter-spacing: 0.04em;
+}
+.agent-card__facts {
+  display: grid;
+  grid-template-columns: 9rem 1fr;
+  gap: 0.25rem 0.75rem;
+  margin: 0;
+  font-size: 0.8rem;
+}
+.agent-card__facts dt {
+  color: #73d5c8;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 0.7rem;
+}
+.agent-card__facts dd {
+  margin: 0;
+  color: #aebbd0;
+  word-break: break-word;
+}
+.agent-card__tools {
+  margin: 0;
+  padding-left: 1rem;
+}
+.agent-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.agent-card__actions button {
+  padding: 0.3rem 0.6rem;
+  border: 1px solid #2a3750;
+  border-radius: 0.4rem;
+  background: #101d31;
+  color: #e8edf5;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.agent-card__actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.agent-run {
+  margin-top: 0.75rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid #2a3750;
+  border-radius: 0.6rem;
+  background: #0c1626;
+}
+.agent-run h4 {
+  margin: 0 0 0.3rem;
+  font-size: 0.95rem;
+}
+.agent-run__steps {
+  margin: 0.5rem 0 0;
+  padding-left: 1.2rem;
+  font-size: 0.8rem;
+}
+.agent-run__step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.45rem;
+  margin-bottom: 0.25rem;
+  color: #aebbd0;
+}
+.agent-run__step-tool {
+  color: #e8edf5;
+}
+.agent-run__step-outcome {
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 0.7rem;
+}
+.agent-run__step--success .agent-run__step-outcome {
+  color: #73d5c8;
+}
+.agent-run__step--failure .agent-run__step-outcome,
+.agent-run__step--denied .agent-run__step-outcome,
+.agent-run__step--aborted .agent-run__step-outcome {
+  color: #e88;
+}
+.agent-editor {
+  margin-top: 0.75rem;
+}
+.agent-editor__group {
+  margin: 0.6rem 0;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid #2a3750;
+  border-radius: 0.5rem;
+}
+.agent-editor__group legend {
+  padding: 0 0.3rem;
+  color: #73d5c8;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.agent-editor__check {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.2rem 0;
+  font-size: 0.82rem;
+}
+.agent-editor__limits {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+@media (max-width: 700px) {
+  .agent-editor__limits {
+    grid-template-columns: 1fr;
+  }
+  .agent-card__facts {
+    grid-template-columns: 1fr;
+  }
+}
+.agent-editor__issues {
+  margin: 0.6rem 0;
+  padding: 0.5rem 0.8rem 0.5rem 1.6rem;
+  border: 1px solid #6b2a2a;
+  border-radius: 0.5rem;
+  background: #2a1414;
+  color: #e88;
+  font-size: 0.8rem;
+}

@@ -270,8 +270,12 @@ src/shared/     Pure schemas, types and constants, plus chat/ (the
                 decorator, and the local-endpoint classifier that keeps
                 Ollama local), plus workspace/ (the lexical path-safety rules,
                 the exclusion lists, the normalized error vocabulary, and the
-                pure coding-plan builder). No I/O, no Electron, no network —
-                safe to import from any process, including the renderer.
+                pure coding-plan builder), plus agent/ (the fixed tool
+                registry and its capability ceiling, the profile registry with
+                its built-ins and fail-closed resolution, the normalized error
+                vocabulary, and the pure bounded-orchestration decider). No
+                I/O, no Electron, no network — safe to import from any
+                process, including the renderer.
 src/main/       Privileged Electron main process. Owns the BrowserWindow,
                 the Content-Security-Policy, navigation/window-open/webview
                 hardening, non-secret settings storage (paths.ts,
@@ -295,9 +299,12 @@ src/main/       Privileged Electron main process. Owns the BrowserWindow,
                 workspace-paths.ts — canonical path containment;
                 workspace-session.ts — the approved project, in memory only;
                 workspace-inspector.ts — the only module that reads a user's
-                file; workspace-planner.ts), and the fourteen registered IPC
-                channels (ipc.ts), of which chat:chunk is the only
-                main-to-renderer event.
+                file; workspace-planner.ts), agent profiles and the bounded
+                orchestrator (agent-profiles.ts — fail-safe, atomic storage
+                that never persists a built-in; agent-orchestrator.ts — the
+                run loop, which decides nothing about permissions), and the
+                registered IPC channels (ipc.ts), of which chat:chunk is the
+                only main-to-renderer event.
 src/preload/    The single contextBridge. Exposes a narrow, explicitly
                 enumerated, typed API — never ipcRenderer, never a generic
                 invoke-any-channel function. Bundled into one file: a
@@ -313,10 +320,14 @@ src/renderer/   React interface: App.tsx gates on onboardingCompleted,
                 provider through chat.send/chat.cancel), and workspace/ is the
                 Milestone 5 read-only coding surface (Workspace.tsx, the
                 framework-independent workspace-controller.ts, useWorkspace.ts,
-                and ipc-workspace-client.ts — the second and only other file
-                permitted to call window.localAgent). No Node, no Electron, no
-                direct filesystem or network access anywhere else in this
-                directory — only the bridge at window.localAgent.
+                and ipc-workspace-client.ts — the second file permitted to
+                call window.localAgent), and agent/ is the Milestone 7 profile
+                and run surface (Agents.tsx, the framework-independent
+                agent-controller.ts, useAgent.ts, and ipc-agent-client.ts —
+                the third and last file permitted to call window.localAgent).
+                No Node, no Electron, no direct filesystem or network access
+                anywhere else in this directory — only the bridge at
+                window.localAgent.
 tests/unit/     Unit tests. `npm test`.
 tests/e2e/      Playwright + Electron smoke test against the built app.
                 `npm run test:e2e`.

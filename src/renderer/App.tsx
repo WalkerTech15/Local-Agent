@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 
+import { Agents } from './agent/Agents';
 import { Chat } from './chat/Chat';
 import { Onboarding } from './Onboarding';
 import { Workspace } from './workspace/Workspace';
@@ -7,8 +8,8 @@ import { createDefaultSettings } from '../shared/schemas';
 import type { Settings } from '../shared/schemas';
 
 type Phase = 'loading' | 'onboarding' | 'ready';
-/** Which surface the shell is showing (Phase 2, Milestone 5). */
-type View = 'chat' | 'workspace';
+/** Which surface the shell is showing (Phase 2, Milestones 5 and 7). */
+type View = 'chat' | 'workspace' | 'agents';
 
 /**
  * Used only when `settings.get` itself did not succeed (denied, or the
@@ -105,13 +106,22 @@ export function App() {
           >
             Workspace
           </button>
+          <button
+            type="button"
+            aria-pressed={view === 'agents'}
+            onClick={() => {
+              setView('agents');
+            }}
+          >
+            Agents
+          </button>
         </nav>
       </header>
-      {view === 'chat' ? (
-        <Chat assistantName={assistantName} modelProvider={modelProvider} />
-      ) : (
+      {view === 'chat' && <Chat assistantName={assistantName} modelProvider={modelProvider} />}
+      {view === 'workspace' && (
         <Workspace assistantName={assistantName} modelProvider={modelProvider} />
       )}
+      {view === 'agents' && <Agents />}
     </main>
   );
 }

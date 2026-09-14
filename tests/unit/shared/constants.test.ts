@@ -167,6 +167,8 @@ describe('permission model', () => {
   it('requires confirmation for the destructive and privacy-sensitive actions', () => {
     expect([...CONFIRMATION_REQUIRED_ACTION_TYPES].sort()).toEqual(
       [
+        'agent.run',
+        'agent.write',
         'app.exit',
         'command.run',
         'emergency.reset',
@@ -205,6 +207,61 @@ describe('permission model', () => {
     expect(exempt).not.toContain('settings.write');
     expect(exempt).not.toContain('secrets.write');
     expect(exempt).not.toContain('secrets.clear');
+  });
+
+  it('names exactly four agent actions, none of which is a capability', () => {
+    const actions: readonly string[] = ACTION_TYPES;
+    const agentActions = actions.filter((action) => action.startsWith('agent.'));
+    expect([...agentActions].sort()).toEqual([
+      'agent.read',
+      'agent.run',
+      'agent.select',
+      'agent.write',
+    ]);
+  });
+
+  it('adds no agent action through which authority could be handed out', () => {
+    const actions: readonly string[] = ACTION_TYPES;
+    // Milestone 7 governs *configuration* and the bounded orchestration of
+    // actions that already existed. There is no action type through which an
+    // agent could be given an operation of its own, granted a permission, or
+    // allowed to define a tool.
+    for (const forbidden of [
+      'agent.execute',
+      'agent.grant',
+      'agent.permit',
+      'agent.authorize',
+      'agent.elevate',
+      'agent.tool',
+      'agent.spawn',
+      'agent.policy',
+      'agent.write.permission',
+    ]) {
+      expect(actions, forbidden).not.toContain(forbidden);
+    }
+  });
+
+  it('puts editing a profile and starting a run on the confirmation floor', () => {
+    // Neither performs a side effect outside the app's own data directory by
+    // itself; both shape what happens *later*, which is why they are here.
+    const floor: readonly string[] = CONFIRMATION_REQUIRED_ACTION_TYPES;
+    expect(floor).toContain('agent.write');
+    expect(floor).toContain('agent.run');
+  });
+
+  it('leaves listing and selecting a profile off the confirmation floor', () => {
+    // Listing changes nothing, and selecting cannot widen any permission: the
+    // engine still decides every action a run takes, against the same policy.
+    const floor: readonly string[] = CONFIRMATION_REQUIRED_ACTION_TYPES;
+    expect(floor).not.toContain('agent.read');
+    expect(floor).not.toContain('agent.select');
+  });
+
+  it('leaves every agent action blocked by an engaged emergency stop', () => {
+    const exempt: readonly string[] = EMERGENCY_STOP_EXEMPT_ACTION_TYPES;
+    for (const action of ['agent.read', 'agent.select', 'agent.write', 'agent.run']) {
+      expect(exempt, action).not.toContain(action);
+    }
   });
 
   it('only names real action types in the emergency exemption list', () => {

@@ -95,8 +95,23 @@ that is safe without a permission decision of its own.
 cannot declare anything else. An action with no matching rule is denied.
 
 **[enforced by schema]** A confirmation floor: `secrets.write`,
-`secrets.clear`, `emergency.reset` and `app.exit` cannot be downgraded to
-`allow` by editing the policy file. The schema rejects such a file.
+`secrets.clear`, `emergency.reset`, `app.exit`, and — since Phase 2
+Milestone 6 — `workspace.write`, `workspace.rollback`, `command.run` and
+`git.checkpoint`, plus — since Milestone 7 — `agent.write` and `agent.run`,
+cannot be downgraded to `allow` by editing the policy file. The schema rejects
+such a file.
+
+**[enforced by type]** An **agent profile can never grant a permission.** A
+profile is user-editable configuration describing which of a fixed set of
+tools an agent may reach for, and its own decision vocabulary is
+`confirm | deny` — `allow` is not a member of the enum, so "permit this" is
+not expressible in a profile at all. Every tool a profile may name maps to an
+action type that already existed, so the maximum an agent can do is never
+larger than what the permission policy already allowed, and the orchestrator
+takes the stricter of the two decisions. A profile that raises a step to
+`confirm` causes an **additional** native dialog in front of the pipeline; it
+never replaces one. See
+[phase-2-agent-profiles.md](phase-2-agent-profiles.md).
 
 **[enforced by schema]** An **emergency availability floor**: the policy file
 is user-editable, so without a floor it could remove the user's own emergency
@@ -802,6 +817,21 @@ exposes no way to address one. No generic pass-through channel exists.
 ## Known limitations
 
 These are real and are stated plainly rather than described as solved.
+
+0. **An agent run executes several actions after one approval.** Phase 2
+   Milestone 7's `agent.run` is on the confirmation floor, so a run is
+   approved in a native dialog that states the profile's tools, its workspace
+   scope and its three ceilings before the first step — and every individual
+   step is still decided by the permission engine on its own action type, with
+   anything on the confirmation floor still prompting separately. But the
+   approval is nonetheless _per run_, not per read: a person approving a run
+   is approving a bounded sequence they did not see itemised. The bounds are
+   what make that acceptable — a fixed seven-tool registry containing nothing
+   that can write a file, apply a change or create a commit; a step ceiling; a
+   time ceiling; an output ceiling; and an emergency stop re-read from disk
+   between every step. It is a real widening of what one approval covers, and
+   it is recorded here rather than presented as equivalent to approving each
+   action.
 
 1. **The audit log is append-only by API, not tamper-proof.** A local user
    with the same privileges can edit the file directly with a text editor.

@@ -9,6 +9,9 @@
  */
 
 import type {
+  AgentProfileInput,
+  AgentRegistryResponse,
+  AgentRunResponse,
   ChatChunkEvent,
   ChatMessage,
   ChatSendResponse,
@@ -83,6 +86,28 @@ declare global {
       readonly command: {
         readonly list: () => Promise<CommandListResponse>;
         readonly run: (runId: string, commandId: CommandIdValue) => Promise<CommandRunResponse>;
+        readonly cancel: (runId: string) => Promise<void>;
+      };
+      /**
+       * Agent profiles and runs (Phase 2, Milestone 7). Note that `run` takes
+       * an objective and nothing else: there is no parameter for a step, a
+       * tool, a path, a command or a limit, because what a run may do comes
+       * from the stored profile the main process reads, never from here.
+       */
+      readonly agent: {
+        readonly list: () => Promise<AgentRegistryResponse>;
+        readonly select: (profileId: string) => Promise<AgentRegistryResponse>;
+        readonly create: (profile: AgentProfileInput) => Promise<AgentRegistryResponse>;
+        readonly update: (
+          profileId: string,
+          profile: AgentProfileInput,
+        ) => Promise<AgentRegistryResponse>;
+        readonly remove: (profileId: string) => Promise<AgentRegistryResponse>;
+        readonly setEnabled: (
+          profileId: string,
+          enabled: boolean,
+        ) => Promise<AgentRegistryResponse>;
+        readonly run: (runId: string, objective: string) => Promise<AgentRunResponse>;
         readonly cancel: (runId: string) => Promise<void>;
       };
       /**

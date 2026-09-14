@@ -65,6 +65,17 @@ export const USER_DATA_PATHS = {
    * directory the user merely opened — never run.
    */
   gitHooksDir: 'state/git-hooks-disabled',
+  /**
+   * Agent profiles (Phase 2, Milestone 7).
+   *
+   * Its own file, beside the permission policy rather than inside
+   * `settings.json`, for the same reason the policy has its own: a profile
+   * describes what an agent may reach for, and configuration that shapes
+   * authority does not belong in the same document as a display name. It
+   * holds no credential — see `agentProfileSchema`, which declares no field
+   * capable of carrying one.
+   */
+  agentProfilesFile: 'agents/profiles.json',
 } as const;
 
 /** Audit log file name pattern, one file per UTC day. */
@@ -208,10 +219,29 @@ export const BIDI_CONTROL_PATTERN = /[\u202A-\u202E\u2066-\u2069]/;
  *  - `git.read` reads `git status` and `git diff`.
  *  - `git.checkpoint` creates one commit on the current branch.
  *
+ * Phase 2, Milestone 7 adds four actions for agent profiles, and not one of
+ * them is a new capability — they govern *configuration* and the bounded
+ * orchestration of actions that already existed:
+ *
+ *  - `agent.read` lists profiles and the active selection. Read-only.
+ *  - `agent.select` changes which profile is active. It cannot widen
+ *    anything: every action a run later takes is still decided by the
+ *    permission engine against the same policy, so selecting a profile
+ *    grants nothing that was not already grantable.
+ *  - `agent.write` creates, edits, deletes, enables or disables a profile.
+ *    A profile names which tools a run may reach for, so changing one shapes
+ *    future authority — it is on the confirmation floor for that reason.
+ *  - `agent.run` starts one bounded run. Also on the confirmation floor: the
+ *    user is shown the profile, its tools, its workspace scope and its limits
+ *    before any step executes, and every individual step inside the run is
+ *    then decided by the permission engine on its own action type anyway.
+ *
  * There is still no `fs.read`, no `fs.write`, no `shell.execute`, and no
  * generic "run this string" action anywhere in this list: a caller cannot
  * express an arbitrary filesystem or process operation, because no action
- * type here has the shape to carry one.
+ * type here has the shape to carry one. In particular there is no
+ * `agent.execute` and no `agent.grant` — an agent cannot be handed an
+ * action type of its own, and cannot be given a permission.
  */
 export const ACTION_TYPES = [
   'settings.read',
@@ -232,6 +262,10 @@ export const ACTION_TYPES = [
   'command.run',
   'git.read',
   'git.checkpoint',
+  'agent.read',
+  'agent.select',
+  'agent.write',
+  'agent.run',
 ] as const;
 export type ActionType = (typeof ACTION_TYPES)[number];
 
@@ -258,6 +292,20 @@ export const DEFAULT_PERMISSION_DECISION: PermissionDecision = 'deny';
  *
  * `git.read` is deliberately absent: reading `git status` and `git diff`
  * changes nothing, exactly as `workspace.read` does not.
+ *
+ * Phase 2, Milestone 7 adds `agent.write` and `agent.run`. Neither performs a
+ * side effect outside this application's own data directory by itself, so
+ * they are here for a different reason than the Milestone 6 entries: both
+ * shape what happens *later*. Editing a profile changes which tools a future
+ * run may reach for, and starting a run begins a sequence the user is not
+ * individually approving step by step. Both are therefore stated plainly in a
+ * native dialog first — the profile's tools, workspace scope and limits for
+ * `agent.run`, and the resulting allowlists for `agent.write` — and no policy
+ * edit can turn either into an `allow`.
+ *
+ * `agent.read` and `agent.select` are deliberately absent. Listing profiles
+ * changes nothing, and selecting one cannot widen any permission: the engine
+ * still decides every action a run takes, against the same policy.
  */
 export const CONFIRMATION_REQUIRED_ACTION_TYPES: readonly ActionType[] = [
   'secrets.write',
@@ -268,6 +316,8 @@ export const CONFIRMATION_REQUIRED_ACTION_TYPES: readonly ActionType[] = [
   'workspace.rollback',
   'command.run',
   'git.checkpoint',
+  'agent.write',
+  'agent.run',
 ] as const;
 
 /**
@@ -782,3 +832,95 @@ export const GIT_MAX_DIFF_BYTES = 200_000;
  * repository history.
  */
 export const GIT_CHECKPOINT_MESSAGE_PREFIX = 'Local Agent checkpoint';
+
+// ---------------------------------------------------------------------------
+// Agent profiles and orchestration (Phase 2, Milestone 7)
+//
+// An agent profile is configuration, not code and not authority. It can only
+// ever *narrow* what the permission policy already allows: it names which of
+// a fixed set of tools an agent run may reach for, which parts of the
+// approved project it may look at, and how long, how many steps and how much
+// output a run may consume. Every bound below exists so that a profile file —
+// which is user-editable, exactly like the permission policy — cannot express
+// an unbounded run.
+//
+// Nothing here is a capability. Each tool a profile may name maps to an
+// action type that already existed before this milestone, so a profile grants
+// nothing that the permission engine would not already have had to approve.
+// ---------------------------------------------------------------------------
+
+export const AGENT_PROFILE_SCHEMA_VERSION = 1;
+
+/**
+ * A profile identifier: lowercase, stable, and usable as a file-safe key.
+ *
+ * The same shape as a permission rule id, and for the same reason — it is
+ * recorded in the audit trail, so it must never be able to carry a control
+ * character, a path separator or a bidirectional override.
+ */
+export const AGENT_ID_MIN_LENGTH = 3;
+export const AGENT_ID_MAX_LENGTH = 64;
+export const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
+
+export const AGENT_NAME_MIN_LENGTH = 1;
+export const AGENT_NAME_MAX_LENGTH = 64;
+export const AGENT_DESCRIPTION_MAX_LENGTH = 280;
+
+/**
+ * A profile's standing instructions.
+ *
+ * Bounded because it is persisted, displayed, and — in a later milestone —
+ * would be sent to a model as a system prompt. It is **never** authorization:
+ * text in this field cannot widen `allowedTools`, cannot reach a workspace
+ * path outside `approvedWorkspacePaths`, and cannot change a permission
+ * decision, because none of those are read from it. See
+ * `docs/phase-2-agent-profiles.md`.
+ */
+export const AGENT_INSTRUCTIONS_MAX_LENGTH = 4_000;
+
+/** How many profiles the store will hold, built-ins included. */
+export const AGENT_MAX_PROFILES = 32;
+
+/** How many fallback providers one profile may list, beyond its primary. */
+export const AGENT_MAX_FALLBACK_PROVIDERS = 3;
+
+/** Bounds on the two allowlists. Neither may be unbounded, and neither may be widened at runtime. */
+export const AGENT_MAX_ALLOWED_TOOLS = 16;
+export const AGENT_MAX_WORKSPACE_PATHS = 16;
+export const AGENT_MAX_VERIFICATION_REQUIREMENTS = 8;
+
+/**
+ * Step, duration and output ceilings.
+ *
+ * A profile chooses a value inside these ranges; it cannot choose one outside
+ * them, so "bounded" is a property of the schema rather than a check the
+ * orchestrator remembers to perform. The orchestrator enforces the chosen
+ * value as well — two layers, because the profile file is user-editable.
+ */
+export const AGENT_MIN_STEPS = 1;
+export const AGENT_MAX_STEPS = 24;
+export const AGENT_MIN_DURATION_MS = 5_000;
+export const AGENT_MAX_DURATION_MS = 600_000;
+export const AGENT_MIN_OUTPUT_BYTES = 1_000;
+export const AGENT_MAX_OUTPUT_BYTES = 200_000;
+
+/** Defaults used by a newly created profile and by the built-ins. */
+export const AGENT_DEFAULT_MAX_STEPS = 8;
+export const AGENT_DEFAULT_MAX_DURATION_MS = 120_000;
+export const AGENT_DEFAULT_MAX_OUTPUT_BYTES = 50_000;
+
+/** One step's human-readable summary, kept short because it is displayed and stored. */
+export const AGENT_STEP_SUMMARY_MAX_LENGTH = 200;
+
+/** How many steps one run record may carry back to the renderer. */
+export const AGENT_RUN_MAX_RECORDED_STEPS = AGENT_MAX_STEPS;
+
+/**
+ * The largest profile store this application will read.
+ *
+ * `agents/profiles.json` is loaded on every profile operation, so a file that
+ * grew without bound — by hand, or by a bug — would become a startup cost and
+ * a memory cost. Past this size the store is treated as unreadable and the
+ * built-in profiles are used instead, exactly as a corrupt file is.
+ */
+export const AGENT_PROFILE_STORE_MAX_BYTES = 256_000;

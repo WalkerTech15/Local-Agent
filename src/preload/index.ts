@@ -51,6 +51,25 @@ import {
   workspaceChangesResponseSchema,
   workspaceProposeResponseSchema,
   workspaceRollbackResponseSchema,
+  agentCancelResponseSchema,
+  agentCreateResponseSchema,
+  agentDeleteResponseSchema,
+  agentListResponseSchema,
+  agentRunResponseSchema,
+  agentSelectResponseSchema,
+  agentSetEnabledResponseSchema,
+  agentUpdateResponseSchema,
+  IPC_AGENT_CANCEL_CHANNEL,
+  IPC_AGENT_CREATE_CHANNEL,
+  IPC_AGENT_DELETE_CHANNEL,
+  IPC_AGENT_LIST_CHANNEL,
+  IPC_AGENT_RUN_CHANNEL,
+  IPC_AGENT_SELECT_CHANNEL,
+  IPC_AGENT_SET_ENABLED_CHANNEL,
+  IPC_AGENT_UPDATE_CHANNEL,
+  type AgentProfileInput,
+  type AgentRegistryResponse,
+  type AgentRunResponse,
   type CommandIdValue,
   type CommandListResponse,
   type CommandRunResponse,
@@ -305,6 +324,67 @@ const bridge = {
    * name a ref, a remote, a branch or a commit message, and there is no
    * function for a reset, a checkout, a push or a delete.
    */
+  /**
+   * Agent profiles and runs (Phase 2, Milestone 7).
+   *
+   * Eight functions, eight fixed channels, and — the property worth checking
+   * first — **none of them can grant a permission**. `create` and `update`
+   * carry a profile whose own permission entries are `confirm` or `deny`;
+   * `allow` is not a member of that enum, so "permit this" is not
+   * expressible through this bridge at all.
+   *
+   * `run` takes a run id and an objective. It cannot carry a step list, a
+   * tool, a path, a command or a limit: what a run may do comes from the
+   * profile the main process reads from disk, so a compromised renderer can
+   * ask for a run and cannot widen one. `cancel` is fire-and-forget best
+   * effort, exactly like `chat.cancel` and `command.cancel`.
+   */
+  agent: {
+    list: async (): Promise<AgentRegistryResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_AGENT_LIST_CHANNEL);
+      return agentListResponseSchema.parse(result);
+    },
+    select: async (profileId: string): Promise<AgentRegistryResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_AGENT_SELECT_CHANNEL, { profileId });
+      return agentSelectResponseSchema.parse(result);
+    },
+    create: async (profile: AgentProfileInput): Promise<AgentRegistryResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_AGENT_CREATE_CHANNEL, { profile });
+      return agentCreateResponseSchema.parse(result);
+    },
+    update: async (
+      profileId: string,
+      profile: AgentProfileInput,
+    ): Promise<AgentRegistryResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_AGENT_UPDATE_CHANNEL, {
+        profileId,
+        profile,
+      });
+      return agentUpdateResponseSchema.parse(result);
+    },
+    remove: async (profileId: string): Promise<AgentRegistryResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_AGENT_DELETE_CHANNEL, { profileId });
+      return agentDeleteResponseSchema.parse(result);
+    },
+    setEnabled: async (profileId: string, enabled: boolean): Promise<AgentRegistryResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_AGENT_SET_ENABLED_CHANNEL, {
+        profileId,
+        enabled,
+      });
+      return agentSetEnabledResponseSchema.parse(result);
+    },
+    run: async (runId: string, objective: string): Promise<AgentRunResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_AGENT_RUN_CHANNEL, {
+        runId,
+        objective,
+      });
+      return agentRunResponseSchema.parse(result);
+    },
+    cancel: async (runId: string): Promise<void> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_AGENT_CANCEL_CHANNEL, { runId });
+      agentCancelResponseSchema.parse(result);
+    },
+  },
   git: {
     status: async (): Promise<GitStatusResponse> => {
       const result: unknown = await ipcRenderer.invoke(IPC_GIT_STATUS_CHANNEL);

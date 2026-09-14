@@ -267,6 +267,37 @@ export function createDefaultPermissionPolicy(): PermissionPolicy {
         reason:
           'Creating a commit changes the user’s repository history, so the exact commands are shown before it runs.',
       },
+      {
+        id: 'agent.read',
+        actionType: 'agent.read',
+        decision: 'allow',
+        priority: 100,
+        reason: 'Listing agent profiles is read-only and reveals no credential.',
+      },
+      {
+        id: 'agent.select',
+        actionType: 'agent.select',
+        decision: 'allow',
+        priority: 100,
+        reason:
+          'Choosing which profile is active grants nothing: every action a run takes is still decided by this policy.',
+      },
+      {
+        id: 'agent.write',
+        actionType: 'agent.write',
+        decision: 'confirm',
+        priority: 100,
+        reason:
+          'A profile shapes what a later run may reach for, so its tools and scope are stated in a native dialog before it is saved.',
+      },
+      {
+        id: 'agent.run',
+        actionType: 'agent.run',
+        decision: 'confirm',
+        priority: 100,
+        reason:
+          'A run takes several steps the user is not approving individually, so the profile, its tools, its scope and its limits are shown before the first one.',
+      },
     ],
   };
 }
