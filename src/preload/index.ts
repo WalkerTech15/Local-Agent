@@ -67,6 +67,32 @@ import {
   IPC_AGENT_SELECT_CHANNEL,
   IPC_AGENT_SET_ENABLED_CHANNEL,
   IPC_AGENT_UPDATE_CHANNEL,
+  IPC_MEMORY_ADD_CHANNEL,
+  IPC_MEMORY_CLEAR_CHANNEL,
+  IPC_MEMORY_DELETE_CHANNEL,
+  IPC_MEMORY_EXPORT_CHANNEL,
+  IPC_MEMORY_IMPORT_CHANNEL,
+  IPC_MEMORY_LIST_CHANNEL,
+  IPC_MEMORY_RETRIEVE_CHANNEL,
+  IPC_MEMORY_SEARCH_CHANNEL,
+  IPC_MEMORY_SET_PINNED_CHANNEL,
+  IPC_MEMORY_UPDATE_CHANNEL,
+  memoryAddResponseSchema,
+  memoryClearResponseSchema,
+  memoryDeleteResponseSchema,
+  memoryExportResponseSchema,
+  memoryImportResponseSchema,
+  memoryListResponseSchema,
+  memoryRetrieveResponseSchema,
+  memorySearchResponseSchema,
+  memorySetPinnedResponseSchema,
+  memoryUpdateResponseSchema,
+  type MemoryMutationResponse,
+  type MemoryQueryResponse,
+  type MemoryRecordInput,
+  type MemoryRecordResponse,
+  type MemoryRetrieveResponse,
+  type MemoryScopeValue,
   type AgentProfileInput,
   type AgentRegistryResponse,
   type AgentRunResponse,
@@ -383,6 +409,77 @@ const bridge = {
     cancel: async (runId: string): Promise<void> => {
       const result: unknown = await ipcRenderer.invoke(IPC_AGENT_CANCEL_CHANNEL, { runId });
       agentCancelResponseSchema.parse(result);
+    },
+  },
+  /**
+   * Local memory (Phase 2, Milestone 8).
+   *
+   * Ten functions, ten fixed channels, and three properties worth checking
+   * first:
+   *
+   *  - **Nothing here can name a file.** `exportScope` and `importScope` take
+   *    a scope and nothing else; the file is chosen by the user in a native
+   *    dialog the main process owns. There is no path parameter anywhere in
+   *    this object.
+   *  - **Nothing here can label a record's provenance.** The add and update
+   *    payloads have no `source` field — the main process stamps `user` or
+   *    `import`, so a compromised renderer cannot pass imported content off
+   *    as something the person typed.
+   *  - **Nothing here can move a record between scopes.** An update addresses
+   *    a record inside the scope its own record names, and a stored record
+   *    found elsewhere is refused rather than relocated.
+   */
+  memory: {
+    list: async (scope: MemoryScopeValue): Promise<MemoryQueryResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_MEMORY_LIST_CHANNEL, { scope });
+      return memoryListResponseSchema.parse(result);
+    },
+    search: async (scope: MemoryScopeValue, query: string): Promise<MemoryQueryResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_MEMORY_SEARCH_CHANNEL, {
+        scope,
+        query,
+      });
+      return memorySearchResponseSchema.parse(result);
+    },
+    retrieve: async (objective: string): Promise<MemoryRetrieveResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_MEMORY_RETRIEVE_CHANNEL, { objective });
+      return memoryRetrieveResponseSchema.parse(result);
+    },
+    add: async (record: MemoryRecordInput): Promise<MemoryRecordResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_MEMORY_ADD_CHANNEL, { record });
+      return memoryAddResponseSchema.parse(result);
+    },
+    update: async (id: string, record: MemoryRecordInput): Promise<MemoryRecordResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_MEMORY_UPDATE_CHANNEL, { id, record });
+      return memoryUpdateResponseSchema.parse(result);
+    },
+    setPinned: async (
+      id: string,
+      scope: MemoryScopeValue,
+      pinned: boolean,
+    ): Promise<MemoryRecordResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_MEMORY_SET_PINNED_CHANNEL, {
+        id,
+        scope,
+        pinned,
+      });
+      return memorySetPinnedResponseSchema.parse(result);
+    },
+    remove: async (id: string, scope: MemoryScopeValue): Promise<MemoryMutationResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_MEMORY_DELETE_CHANNEL, { id, scope });
+      return memoryDeleteResponseSchema.parse(result);
+    },
+    clear: async (scope: MemoryScopeValue): Promise<MemoryMutationResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_MEMORY_CLEAR_CHANNEL, { scope });
+      return memoryClearResponseSchema.parse(result);
+    },
+    exportScope: async (scope: MemoryScopeValue): Promise<MemoryMutationResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_MEMORY_EXPORT_CHANNEL, { scope });
+      return memoryExportResponseSchema.parse(result);
+    },
+    importScope: async (scope: MemoryScopeValue): Promise<MemoryMutationResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_MEMORY_IMPORT_CHANNEL, { scope });
+      return memoryImportResponseSchema.parse(result);
     },
   },
   git: {

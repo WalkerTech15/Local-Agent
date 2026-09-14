@@ -98,8 +98,31 @@ cannot declare anything else. An action with no matching rule is denied.
 `secrets.clear`, `emergency.reset`, `app.exit`, and — since Phase 2
 Milestone 6 — `workspace.write`, `workspace.rollback`, `command.run` and
 `git.checkpoint`, plus — since Milestone 7 — `agent.write` and `agent.run`,
+and — since Milestone 8 — `memory.clear`, `memory.export` and `memory.import`,
 cannot be downgraded to `allow` by editing the policy file. The schema rejects
 such a file.
+
+`memory.read` and `memory.write` are deliberately **not** on that floor.
+Saving or unpinning one note is an ordinary edit inside the application's own
+data directory, reversible by the same operation that made it — the same
+reasoning that keeps `settings.write` off the floor. The three that are on it
+each stop being ordinary: clearing destroys a whole scope at once, exporting
+writes the user's notes to a file outside the application where its
+protections no longer apply, and importing brings content from outside into a
+store. Prompting for every note saved would train people to click through
+dialogs, which is its own security problem.
+
+**[enforced by type]** A **memory can never be written by a model.** A memory
+record's `source` is an enum of exactly two members, `user` and `import`, and
+both are stamped in the main process by the one handler that performs each
+operation — the input schema has no `source` field at all. There is no value a
+chat reply, an agent step or an inference could be stored under, so "never
+silently save model output as memory" is a property of the type rather than a
+check somewhere that could be forgotten. In the same way, a memory record
+declares no field for a permission, a tool, an action type, a provider, a
+command or a path, and nothing in the codebase reads any of those out of its
+content: a note is stored, displayed and matched against a search query, and
+that is the entire set of things done with it.
 
 **[enforced by type]** An **agent profile can never grant a permission.** A
 profile is user-editable configuration describing which of a fixed set of
@@ -832,6 +855,33 @@ These are real and are stated plainly rather than described as solved.
    between every step. It is a real widening of what one approval covers, and
    it is recorded here rather than presented as equivalent to approving each
    action.
+
+0.5. **A memory record's content is stored in plain text, and the credential
+screen is best effort.** Phase 2 Milestone 8 keeps memory in
+`memory\personal.json` and `memory\projects\<key>.json`, both plain JSON
+readable by anything running under the same Windows account. That is the
+same exposure `settings.json` and `permissions\policy.json` already have,
+and it is deliberate — these files are meant to be inspectable and
+hand-editable — but memory holds notes _about a person_, which is a
+different kind of content than a display name. Two consequences follow.
+First, the store is not encrypted: DPAPI is reserved for the secret store,
+where the whole point is that the content must never be readable. Second,
+the value-level credential screen
+(`src/shared/memory/secret-scan.ts`) catches _recognisable_ shapes — a
+provider key with a known prefix, a pasted `Authorization: Bearer` header,
+a PEM block, a `password=…` line — and cannot catch a credential that
+looks like ordinary text. Someone determined to type a short database
+password into a note will succeed. The control reduces accidents; it is not
+a guarantee, and it is described that way in the interface as well as here.
+
+0.6. **Clearing or deleting a memory does not securely erase it.** Every write
+is one atomic rename over the previous file, so the _application_ retains
+nothing and no partial document is ever left behind — but the replaced
+file's old blocks are not overwritten, and on a journalling or
+copy-on-write filesystem, or with Volume Shadow Copy enabled, earlier
+content may survive on the disk. No application can promise otherwise from
+user space. A deleted note is gone from Local Agent; it is not guaranteed
+to be gone from the drive.
 
 1. **The audit log is append-only by API, not tamper-proof.** A local user
    with the same privileges can edit the file directly with a text editor.

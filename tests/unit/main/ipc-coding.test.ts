@@ -132,6 +132,10 @@ function buildRuntime(overrides: Partial<IpcHandlerRuntime> = {}): IpcHandlerRun
     // Default: the picker is dismissed, so no test approves a directory by
     // forgetting to configure one.
     selectProjectDirectory: () => Promise.resolve(null),
+    // Default: both memory file dialogs are dismissed, so no test exports or
+    // imports by forgetting to configure one.
+    selectMemoryExportFile: () => Promise.resolve(null),
+    selectMemoryImportFile: () => Promise.resolve(null),
     nowFn: () => NOW,
     ...overrides,
   };
@@ -193,6 +197,8 @@ beforeEach(async () => {
     backupsDir: join(dir, 'backups'),
     gitHooksDir: join(dir, 'state', 'git-hooks-disabled'),
     agentProfilesFile: join(dir, 'agents', 'profiles.json'),
+    memoryPersonalFile: join(dir, 'memory', 'personal.json'),
+    memoryProjectsDir: join(dir, 'memory', 'projects'),
   };
 
   projectRoot = await realpath(await mkdtemp(join(tmpdir(), 'local-agent-project6-')));

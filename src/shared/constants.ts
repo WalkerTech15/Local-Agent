@@ -51,6 +51,26 @@ export const USER_DATA_PATHS = {
   emergencyStateFile: 'state/emergency.json',
   memoryDir: 'memory',
   /**
+   * Personal memory (Phase 2, Milestone 8).
+   *
+   * The only memory scope that outlives both the session and the approved
+   * project. Its own file rather than a section of `settings.json`, for the
+   * reason the permission policy and the agent profiles each have one: a
+   * display name and a person's standing notes about themselves are not the
+   * same kind of data, and keeping them apart means exporting or sharing one
+   * never carries the other.
+   */
+  memoryPersonalFile: 'memory/personal.json',
+  /**
+   * Per-project memory (Phase 2, Milestone 8).
+   *
+   * One file per approved project, named from a hash of that project's
+   * canonical root path — see {@link MEMORY_PROJECT_KEY_LENGTH}. Isolation
+   * between projects is therefore a property of *which file is opened*, not
+   * of a scope filter applied after loading one shared store.
+   */
+  memoryProjectsDir: 'memory/projects',
+  /**
    * Pre-change backups (Phase 2, Milestone 6).
    *
    * Deliberately here rather than inside the user's project: a backup written
@@ -242,6 +262,31 @@ export const BIDI_CONTROL_PATTERN = /[\u202A-\u202E\u2066-\u2069]/;
  * type here has the shape to carry one. In particular there is no
  * `agent.execute` and no `agent.grant` — an agent cannot be handed an
  * action type of its own, and cannot be given a permission.
+ *
+ * Phase 2, Milestone 8 adds five actions for local memory. None of them is a
+ * new capability either: they read and write short user-authored notes inside
+ * this application's own data directory, and a note grants nothing, because
+ * nothing reads a permission, a tool, a path or a provider out of one.
+ *
+ *  - `memory.read` lists, searches and retrieves. Read-only.
+ *  - `memory.write` adds, edits, pins or deletes one record. Not on the
+ *    confirmation floor, for the reason `settings.write` is not: it stores
+ *    text the user typed into a field, inside this application's own data
+ *    directory, and it is reversible — the same operation can delete it
+ *    again.
+ *  - `memory.clear` empties a whole scope at once. Irreversible in bulk, so
+ *    it is on the confirmation floor even though a single delete is not.
+ *  - `memory.export` writes memory content to a file **outside** this
+ *    application's data directory, chosen by the user in a native save
+ *    dialog. Content leaving the application boundary is privacy-sensitive by
+ *    definition.
+ *  - `memory.import` reads records from a file outside this application
+ *    entirely — untrusted content, revalidated field by field — and is the
+ *    only way a record this application did not create can enter a store.
+ *
+ * There is no `memory.capture`, no `memory.infer` and no `memory.learn`: no
+ * action type here has the shape to record something automatically from a
+ * conversation, a file or a model reply.
  */
 export const ACTION_TYPES = [
   'settings.read',
@@ -266,6 +311,11 @@ export const ACTION_TYPES = [
   'agent.select',
   'agent.write',
   'agent.run',
+  'memory.read',
+  'memory.write',
+  'memory.clear',
+  'memory.export',
+  'memory.import',
 ] as const;
 export type ActionType = (typeof ACTION_TYPES)[number];
 
@@ -306,6 +356,17 @@ export const DEFAULT_PERMISSION_DECISION: PermissionDecision = 'deny';
  * `agent.read` and `agent.select` are deliberately absent. Listing profiles
  * changes nothing, and selecting one cannot widen any permission: the engine
  * still decides every action a run takes, against the same policy.
+ *
+ * Phase 2, Milestone 8 adds `memory.clear`, `memory.export` and
+ * `memory.import`, one for each of the three ways memory stops being an
+ * ordinary edit inside this application's own data directory: clearing
+ * destroys a whole scope at once and cannot be undone, exporting writes the
+ * user's notes to a file outside the application where this application's
+ * protections no longer apply, and importing brings content from outside into
+ * a store. `memory.read` and `memory.write` are deliberately absent — a
+ * native dialog for every note saved or unpinned would train people to click
+ * through dialogs, which is its own security problem, and a single record is
+ * reversible by the same operation that created it.
  */
 export const CONFIRMATION_REQUIRED_ACTION_TYPES: readonly ActionType[] = [
   'secrets.write',
@@ -318,6 +379,9 @@ export const CONFIRMATION_REQUIRED_ACTION_TYPES: readonly ActionType[] = [
   'git.checkpoint',
   'agent.write',
   'agent.run',
+  'memory.clear',
+  'memory.export',
+  'memory.import',
 ] as const;
 
 /**
@@ -924,3 +988,157 @@ export const AGENT_RUN_MAX_RECORDED_STEPS = AGENT_MAX_STEPS;
  * built-in profiles are used instead, exactly as a corrupt file is.
  */
 export const AGENT_PROFILE_STORE_MAX_BYTES = 256_000;
+
+// ---------------------------------------------------------------------------
+// Memory (Phase 2, Milestone 8)
+//
+// A memory record is a short, user-authored note the assistant may later be
+// reminded of. It is not a transcript, not a profile of anyone, and not
+// authority: nothing in this codebase reads a permission, a tool, a path or a
+// provider out of a memory, and a memory cannot be created by a model, by an
+// agent run, or by a chat reply — see MEMORY_SOURCES below, whose two members
+// are both reachable only from a deliberate user action.
+//
+// Every bound here exists because the thing it bounds is unbounded in
+// principle. Notes accumulate, a note can be pasted, an import file comes
+// from outside this application entirely, and a retrieval that returned
+// everything would be a way to hand a model the whole store.
+// ---------------------------------------------------------------------------
+
+export const MEMORY_SCHEMA_VERSION = 1;
+
+/**
+ * Where a memory lives, and therefore how long it lives and who can see it.
+ *
+ * These are not three labels on one pile. Each is a different **storage
+ * backend**, chosen so that isolation is a property of where the bytes are
+ * rather than of a filter someone has to remember to apply:
+ *
+ *  - `session` is held in memory for the lifetime of one run of the
+ *    application and is never written to disk at all. Closing Local Agent
+ *    ends it; there is no file to find afterwards.
+ *  - `project` is stored in a file addressed by the approved project's own
+ *    canonical root path, so one project's notes are in a file another
+ *    project's session never opens. Reading or writing one requires a project
+ *    to be approved in this session.
+ *  - `personal` is stored in one file and is the only scope that outlives
+ *    both the session and the project.
+ */
+export const MEMORY_SCOPES = ['session', 'project', 'personal'] as const;
+export type MemoryScope = (typeof MEMORY_SCOPES)[number];
+
+/**
+ * The scopes one retrieval spans, and the order they are gathered in.
+ *
+ * All three, because a reminder is only useful if it can come from wherever
+ * the user wrote it. `project` is skipped at run time when no project is
+ * approved — a retrieval is not worth refusing because one of three sources
+ * is unavailable — and that skip is the *only* way a scope is left out. The
+ * order here affects nothing but the order records are concatenated in before
+ * ranking; the ranking itself is total and deterministic.
+ */
+export const MEMORY_RETRIEVAL_SCOPES: readonly MemoryScope[] = [
+  'personal',
+  'project',
+  'session',
+] as const;
+
+/**
+ * What kind of thing a record is.
+ *
+ * A closed vocabulary rather than a free-text tag: a category is displayed,
+ * filtered on, and used to rank retrieval, and a free-text tag would be one
+ * more unbounded user-controlled string reaching all three.
+ */
+export const MEMORY_CATEGORIES = [
+  'user-preference',
+  'assistant-setting',
+  'project-decision',
+  'project-convention',
+  'active-task',
+  'completed-task',
+  'agent-preference',
+] as const;
+export type MemoryCategory = (typeof MEMORY_CATEGORIES)[number];
+
+/**
+ * Where a record came from.
+ *
+ * Note what is **not** a member: there is no `model`, no `chat`, no
+ * `agent-run` and no `inferred`. That absence is the milestone's "do not
+ * silently save model output as memory" rule expressed as a type rather than
+ * as a check — a provider reply or an agent step has no source value it could
+ * be stored under, so no code path can persist one even by mistake.
+ *
+ * `user` means a person typed it into the Memory Centre and saved it.
+ * `import` means it came from a file that person chose in a native dialog,
+ * and it is therefore **untrusted content**, revalidated field by field on
+ * the way in.
+ */
+export const MEMORY_SOURCES = ['user', 'import'] as const;
+export type MemorySource = (typeof MEMORY_SOURCES)[number];
+
+/** Bounds on a record's own text. Short by design: a note, never a transcript. */
+export const MEMORY_CONTENT_MIN_LENGTH = 1;
+export const MEMORY_CONTENT_MAX_LENGTH = 2_000;
+
+/**
+ * Importance and confidence, as bounded integers.
+ *
+ * Both are supplied by the person writing the note and both are used only for
+ * ordering — a higher importance surfaces earlier, a lower confidence sinks.
+ * Neither ever affects whether something is permitted.
+ */
+export const MEMORY_IMPORTANCE_MIN = 1;
+export const MEMORY_IMPORTANCE_MAX = 5;
+export const MEMORY_IMPORTANCE_DEFAULT = 3;
+export const MEMORY_CONFIDENCE_MIN = 0;
+export const MEMORY_CONFIDENCE_MAX = 100;
+export const MEMORY_CONFIDENCE_DEFAULT = 100;
+
+/** How many records one scope will hold before a further add is refused. */
+export const MEMORY_MAX_RECORDS_PER_SCOPE = 200;
+
+/**
+ * The largest memory file this application will read.
+ *
+ * Checked before the read, not after, exactly as the agent profile store is:
+ * a file that grew without bound should not be pulled into memory in order to
+ * discover that it is too large. Past this size the store is treated as
+ * unreadable and resolves to an empty one.
+ */
+export const MEMORY_STORE_MAX_BYTES = 512_000;
+
+/** Bounds on a search query. Substring matching only — never a regular expression. */
+export const MEMORY_SEARCH_QUERY_MIN_LENGTH = 2;
+export const MEMORY_SEARCH_QUERY_MAX_LENGTH = 200;
+/** Maximum records one search may return before the result is marked truncated. */
+export const MEMORY_MAX_SEARCH_RESULTS = 50;
+
+/**
+ * How many records one *retrieval* may return.
+ *
+ * Deliberately far smaller than a search result, and the reason is the
+ * milestone's own rule that the whole store must never be handed to a model.
+ * A search is a person looking through their own notes; a retrieval is the
+ * shape a model would eventually be given, so it is capped at a handful.
+ */
+export const MEMORY_MAX_RETRIEVED = 8;
+/** Maximum keywords a retrieval derives from an objective. */
+export const MEMORY_MAX_RETRIEVAL_KEYWORDS = 8;
+
+/** Bounds on an import file, which is content from outside this application. */
+export const MEMORY_IMPORT_MAX_BYTES = 512_000;
+export const MEMORY_MAX_IMPORT_RECORDS = MEMORY_MAX_RECORDS_PER_SCOPE;
+
+/**
+ * Length of the hexadecimal key that addresses one project's memory file.
+ *
+ * The file name is derived from a hash of the approved project's canonical
+ * root path, never from the path itself: a path is user data — it carries a
+ * user name, a client name, sometimes a project no one else should know
+ * exists — and a directory listing of `%APPDATA%` should not disclose it.
+ * Truncating the digest keeps the name short while leaving far more bits than
+ * a collision between the handful of projects one person opens would need.
+ */
+export const MEMORY_PROJECT_KEY_LENGTH = 32;

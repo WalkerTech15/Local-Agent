@@ -66,6 +66,16 @@ import {
   workspaceEditSchema,
 } from './coding.schema';
 import { chatContentSchema, chatMessageSchema, chatStreamDeltaSchema } from './chat.schema';
+import { MEMORY_ERROR_CODES } from '../memory/errors';
+import {
+  memoryMutationSummarySchema,
+  memoryQueryResultSchema,
+  memoryRecordInputSchema,
+  memoryRecordSchema,
+  memoryRetrievalResultSchema,
+  memoryScopeSchema,
+  memorySearchQuerySchema,
+} from './memory.schema';
 import {
   codingPlanSchema,
   workspaceEntryPathSchema,
@@ -756,3 +766,160 @@ export const agentCancelResponseSchema = z.strictObject({
 });
 
 export type AgentCancelResponse = z.infer<typeof agentCancelResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Local memory (Phase 2, Milestone 8)
+//
+// Ten channels. None of them introduces a capability: they read and write
+// short, user-authored notes inside this application's own data directory,
+// and a note grants nothing — nothing in this codebase reads a permission, a
+// tool, a path or a provider out of one.
+//
+// Five properties hold across all of them, and each is a shape rather than a
+// check:
+//
+//  - **A request cannot label its own provenance.** `memoryRecordInputSchema`
+//    has no `source` field. `user` is stamped by the add handler and `import`
+//    by the import handler, and those are the only two writers of either
+//    value, so a renderer cannot pass off imported content as something the
+//    user typed — or the reverse.
+//  - **A request cannot name a file.** `memory:export` and `memory:import`
+//    carry a scope and nothing else; the file is chosen by the user in a
+//    native dialog the main process owns, exactly as `workspace:select`
+//    already works. There is no path parameter anywhere in this section.
+//  - **A request cannot move a record between scopes.** An update addresses a
+//    record by id *within* the scope its own submitted record names, and a
+//    stored record found in a different scope is refused rather than
+//    relocated. A project note therefore cannot become a personal one by
+//    editing it, which is what keeps project isolation from depending on the
+//    renderer behaving.
+//  - **A retrieval cannot ask for everything.** `memoryRetrievalResultSchema`
+//    is capped at `MEMORY_MAX_RETRIEVED`, so the type itself cannot express
+//    "the whole store" — the milestone's rule about what a model may be
+//    handed, made structural.
+//  - **A failure carries a code and nothing else.** Never a record, never a
+//    fragment of one, never the path of a file that could not be read.
+// ---------------------------------------------------------------------------
+
+export const IPC_MEMORY_LIST_CHANNEL = 'memory:list';
+export const IPC_MEMORY_SEARCH_CHANNEL = 'memory:search';
+export const IPC_MEMORY_RETRIEVE_CHANNEL = 'memory:retrieve';
+export const IPC_MEMORY_ADD_CHANNEL = 'memory:add';
+export const IPC_MEMORY_UPDATE_CHANNEL = 'memory:update';
+export const IPC_MEMORY_SET_PINNED_CHANNEL = 'memory:setPinned';
+export const IPC_MEMORY_DELETE_CHANNEL = 'memory:delete';
+export const IPC_MEMORY_CLEAR_CHANNEL = 'memory:clear';
+export const IPC_MEMORY_EXPORT_CHANNEL = 'memory:export';
+export const IPC_MEMORY_IMPORT_CHANNEL = 'memory:import';
+
+/**
+ * `errorCode` is always one of {@link MEMORY_ERROR_CODES} — the same
+ * normalized vocabulary the memory layer throws, reused rather than restated.
+ * Never a raw error, a record's content, or a filesystem path.
+ */
+const memoryErrorCodeSchema = z.enum(MEMORY_ERROR_CODES);
+
+/** Every scoped operation addresses exactly one scope, and says which. */
+const memoryScopeRequestSchema = z.tuple([z.strictObject({ scope: memoryScopeSchema })]);
+
+export const memoryListRequestSchema = memoryScopeRequestSchema;
+export const memoryClearRequestSchema = memoryScopeRequestSchema;
+export const memoryExportRequestSchema = memoryScopeRequestSchema;
+export const memoryImportRequestSchema = memoryScopeRequestSchema;
+
+export const memorySearchRequestSchema = z.tuple([
+  z.strictObject({ scope: memoryScopeSchema, query: memorySearchQuerySchema }),
+]);
+
+/**
+ * Retrieval takes an objective and nothing else.
+ *
+ * No scope: a retrieval spans every scope the session can currently read,
+ * which is personal and session always, and project only while one is
+ * approved. Bounded by the same objective schema `workspace:plan` already
+ * uses, so this milestone adds no new free-text surface.
+ */
+export const memoryRetrieveRequestSchema = z.tuple([
+  z.strictObject({ objective: workspaceObjectiveSchema }),
+]);
+
+export const memoryAddRequestSchema = z.tuple([
+  z.strictObject({ record: memoryRecordInputSchema }),
+]);
+
+/**
+ * Updating carries the target id *and* the submitted record.
+ *
+ * The record's own `scope` is what addresses the store, and the stored record
+ * must already live there — a mismatch is a refusal, never a move. Editing a
+ * project note into a personal one is therefore not expressible.
+ */
+export const memoryUpdateRequestSchema = z.tuple([
+  z.strictObject({ id: z.uuid(), record: memoryRecordInputSchema }),
+]);
+
+export const memorySetPinnedRequestSchema = z.tuple([
+  z.strictObject({ id: z.uuid(), scope: memoryScopeSchema, pinned: z.boolean() }),
+]);
+
+export const memoryDeleteRequestSchema = z.tuple([
+  z.strictObject({ id: z.uuid(), scope: memoryScopeSchema }),
+]);
+
+export type MemoryScopeRequestInput = z.infer<typeof memoryListRequestSchema>[0];
+export type MemorySearchRequestInput = z.infer<typeof memorySearchRequestSchema>[0];
+export type MemoryRetrieveRequestInput = z.infer<typeof memoryRetrieveRequestSchema>[0];
+export type MemoryAddRequestInput = z.infer<typeof memoryAddRequestSchema>[0];
+export type MemoryUpdateRequestInput = z.infer<typeof memoryUpdateRequestSchema>[0];
+export type MemorySetPinnedRequestInput = z.infer<typeof memorySetPinnedRequestSchema>[0];
+export type MemoryDeleteRequestInput = z.infer<typeof memoryDeleteRequestSchema>[0];
+
+export const memoryQueryResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  result: memoryQueryResultSchema.optional(),
+  errorCode: memoryErrorCodeSchema.optional(),
+});
+
+export const memoryListResponseSchema = memoryQueryResponseSchema;
+export const memorySearchResponseSchema = memoryQueryResponseSchema;
+
+export type MemoryQueryResponse = z.infer<typeof memoryQueryResponseSchema>;
+
+export const memoryRetrieveResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  result: memoryRetrievalResultSchema.optional(),
+  errorCode: memoryErrorCodeSchema.optional(),
+});
+
+export type MemoryRetrieveResponse = z.infer<typeof memoryRetrieveResponseSchema>;
+
+/** What a single-record write answers with: the record as it was stored. */
+export const memoryRecordResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  record: memoryRecordSchema.optional(),
+  errorCode: memoryErrorCodeSchema.optional(),
+});
+
+export const memoryAddResponseSchema = memoryRecordResponseSchema;
+export const memoryUpdateResponseSchema = memoryRecordResponseSchema;
+export const memorySetPinnedResponseSchema = memoryRecordResponseSchema;
+
+export type MemoryRecordResponse = z.infer<typeof memoryRecordResponseSchema>;
+
+/**
+ * What a delete, a clear, an export or an import answers with: counts, and
+ * never the records themselves. An export in particular reports how many
+ * records were written and nothing about what they said.
+ */
+export const memoryMutationResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  summary: memoryMutationSummarySchema.optional(),
+  errorCode: memoryErrorCodeSchema.optional(),
+});
+
+export const memoryDeleteResponseSchema = memoryMutationResponseSchema;
+export const memoryClearResponseSchema = memoryMutationResponseSchema;
+export const memoryExportResponseSchema = memoryMutationResponseSchema;
+export const memoryImportResponseSchema = memoryMutationResponseSchema;
+
+export type MemoryMutationResponse = z.infer<typeof memoryMutationResponseSchema>;

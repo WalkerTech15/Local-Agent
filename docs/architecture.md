@@ -48,7 +48,18 @@
 > to an action type Milestones 5 and 6 already defined, so a profile can only
 > ever _narrow_ what the permission policy already allowed. The permission
 > engine, executor, pipeline and audit writer have **zero diff** for the sixth
-> consecutive milestone. This document marks which parts exist today.
+> consecutive milestone. Phase 2 Milestone 8 adds local memory
+> (`main/memory-store.ts`, `main/memory-service.ts`, `main/memory-transfer.ts`,
+> `main/memory-picker.ts`, over the pure `shared/memory/`) — ten more channels
+> and five more action types, none of which is a new capability either: they
+> read and write short user-authored notes inside `%APPDATA%\Local-Agent`,
+> and a note grants nothing, because no field of one can name a permission, a
+> tool or a path. Isolation between scopes is where the bytes are rather than
+> a filter: session notes live only in memory and are never written, and a
+> project's notes live in a file addressed by a hash of that project's own
+> canonical root. The permission engine, executor, pipeline and audit writer
+> have **zero diff** for the seventh consecutive milestone. This document marks
+> which parts exist today.
 
 ---
 
@@ -129,6 +140,10 @@ call. See `docs/phase-2-coding-workspace.md`.
 | `main/git-runner` **(exists)**          | Read-only `status`/`diff`, plus one checkpoint commit on the branch already checked out. Hooks disabled for every invocation.                     | Reset, checkout, switch, clean, delete a branch, rewrite history, or contact a remote.                  |
 | `main/agent-profiles` **(exists)**      | Loads, validates and atomically writes agent profiles. Fails closed to the built-ins. Never persists a built-in.                                  | Store a credential; merge a partially-valid document; let a stored profile claim a built-in identifier. |
 | `main/agent-orchestrator` **(exists)**  | Drives one bounded run: asks the pure decider what to do next, calls the injected step executor, classifies the result.                           | Decide that anything is permitted; call a model; reach the filesystem or a process itself.              |
+| `main/memory-store` **(exists)**        | Loads, validates and atomically writes one memory scope. Fails closed to an empty store. Holds the session scope in memory, never on disk.        | Take a project key or a path from a caller; merge a partially-valid document; write the session scope.  |
+| `main/memory-service` **(exists)**      | The scoped memory operations, over an injected store accessor. Screens content for credentials; prunes expired records on write.                  | Learn which file a scope lives in; move a record between scopes; let a filesystem error escape.         |
+| `main/memory-transfer` **(exists)**     | Reads an import file defensively and writes an export atomically, at a path the user chose in a native dialog.                                    | Choose a path; claim an imported file is a memory document; leave a partial export behind.              |
+| `main/memory-picker` **(exists)**       | The two native dialogs that gate memory content crossing the application boundary.                                                                | Take a path, a default directory or a suggestion from the renderer.                                     |
 
 ## Dependency direction
 

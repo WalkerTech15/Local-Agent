@@ -144,6 +144,8 @@ beforeEach(async () => {
     backupsDir: join(dir, 'backups'),
     gitHooksDir: join(dir, 'state', 'git-hooks-disabled'),
     agentProfilesFile: join(dir, 'agents', 'profiles.json'),
+    memoryPersonalFile: join(dir, 'memory', 'personal.json'),
+    memoryProjectsDir: join(dir, 'memory', 'projects'),
   };
 });
 
@@ -175,6 +177,10 @@ function buildRuntime(overrides: Partial<IpcHandlerRuntime> = {}): IpcHandlerRun
     safeStorage: fakeSafeStorage(true),
     requestConfirmation: approve,
     selectProjectDirectory: cancelDirectoryPicker,
+    // Default: both memory file dialogs are dismissed, so no test exports or
+    // imports by forgetting to configure one.
+    selectMemoryExportFile: () => Promise.resolve(null),
+    selectMemoryImportFile: () => Promise.resolve(null),
     nowFn: () => NOW,
     ...overrides,
   };

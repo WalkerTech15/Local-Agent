@@ -5,6 +5,7 @@ import { showNativeConfirmation } from './confirm';
 import { showDirectoryPicker } from './directory-picker';
 import { loadEmergencyState } from './emergency';
 import { registerIpcHandlers } from './ipc';
+import { showMemoryExportPicker, showMemoryImportPicker } from './memory-picker';
 import { resolveUserDataPaths } from './paths';
 import { loadPermissionPolicy } from './policy';
 import { loadSettings } from './settings';
@@ -129,6 +130,13 @@ app
       // because this is the one file that imports the live `electron` module
       // and holds the real window to parent the dialog to.
       selectProjectDirectory: () => showDirectoryPicker(window.isDestroyed() ? null : window),
+      // The two dialogs that gate memory content crossing the application
+      // boundary (Phase 2, Milestone 8). Built here for the same reason as
+      // the picker above: this is the one file holding the live `electron`
+      // module and the real window to parent a dialog to.
+      selectMemoryExportFile: (scope) =>
+        showMemoryExportPicker(window.isDestroyed() ? null : window, scope),
+      selectMemoryImportFile: () => showMemoryImportPicker(window.isDestroyed() ? null : window),
       nowFn: () => new Date().toISOString(),
     });
   })

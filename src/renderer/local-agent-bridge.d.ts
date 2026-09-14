@@ -22,6 +22,12 @@ import type {
   GitDiffResponse,
   GitStatusResponse,
   HealthCheckResponse,
+  MemoryMutationResponse,
+  MemoryQueryResponse,
+  MemoryRecordInput,
+  MemoryRecordResponse,
+  MemoryRetrieveResponse,
+  MemoryScopeValue,
   SecretsActionResponse,
   SettingsActionResponse,
   SettingsUpdateInput,
@@ -109,6 +115,31 @@ declare global {
         ) => Promise<AgentRegistryResponse>;
         readonly run: (runId: string, objective: string) => Promise<AgentRunResponse>;
         readonly cancel: (runId: string) => Promise<void>;
+      };
+      /**
+       * Local memory (Phase 2, Milestone 8). Note that `exportScope` and
+       * `importScope` take a scope and nothing else: the file is chosen by
+       * the user in a native dialog the main process owns, so there is no
+       * path parameter here to name a file to read or to overwrite. Note also
+       * that no write carries a `source`: whether a record was typed or
+       * imported is stamped in the main process, never claimed from here.
+       */
+      readonly memory: {
+        readonly list: (scope: MemoryScopeValue) => Promise<MemoryQueryResponse>;
+        readonly search: (scope: MemoryScopeValue, query: string) => Promise<MemoryQueryResponse>;
+        /** The small relevant set — never the whole store. */
+        readonly retrieve: (objective: string) => Promise<MemoryRetrieveResponse>;
+        readonly add: (record: MemoryRecordInput) => Promise<MemoryRecordResponse>;
+        readonly update: (id: string, record: MemoryRecordInput) => Promise<MemoryRecordResponse>;
+        readonly setPinned: (
+          id: string,
+          scope: MemoryScopeValue,
+          pinned: boolean,
+        ) => Promise<MemoryRecordResponse>;
+        readonly remove: (id: string, scope: MemoryScopeValue) => Promise<MemoryMutationResponse>;
+        readonly clear: (scope: MemoryScopeValue) => Promise<MemoryMutationResponse>;
+        readonly exportScope: (scope: MemoryScopeValue) => Promise<MemoryMutationResponse>;
+        readonly importScope: (scope: MemoryScopeValue) => Promise<MemoryMutationResponse>;
       };
       /**
        * Git (Phase 2, Milestone 6). `checkpoint` takes no argument: nothing

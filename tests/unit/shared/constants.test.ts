@@ -10,7 +10,12 @@ import {
   DEFAULT_PERMISSION_DECISION,
   DEFAULT_UI_LANGUAGE,
   EMERGENCY_STOP_EXEMPT_ACTION_TYPES,
+  MEMORY_CATEGORIES,
+  MEMORY_RETRIEVAL_SCOPES,
+  MEMORY_SCOPES,
+  MEMORY_SOURCES,
   MODEL_PROVIDERS,
+  USER_DATA_PATHS,
   UI_LANGUAGES,
 } from '../../../src/shared/constants';
 
@@ -173,12 +178,32 @@ describe('permission model', () => {
         'command.run',
         'emergency.reset',
         'git.checkpoint',
+        'memory.clear',
+        'memory.export',
+        'memory.import',
         'secrets.clear',
         'secrets.write',
         'workspace.rollback',
         'workspace.write',
       ].sort(),
     );
+  });
+
+  it('leaves reading and writing one memory off the confirmation floor', () => {
+    // A native dialog for every note saved or unpinned would train people to
+    // click through dialogs, and a single record is reversible by the same
+    // operation that created it. Clearing, exporting and importing are the
+    // three that are not ordinary edits, and those are on the floor above.
+    const floor: readonly string[] = CONFIRMATION_REQUIRED_ACTION_TYPES;
+    expect(floor).not.toContain('memory.read');
+    expect(floor).not.toContain('memory.write');
+  });
+
+  it('declares no action type that could record a memory automatically', () => {
+    const actions: readonly string[] = ACTION_TYPES;
+    for (const forbidden of ['memory.capture', 'memory.infer', 'memory.learn', 'memory.observe']) {
+      expect(actions, forbidden).not.toContain(forbidden);
+    }
   });
 
   it('leaves the two read-only additions off the confirmation floor', () => {
@@ -268,6 +293,60 @@ describe('permission model', () => {
     const actions: readonly string[] = ACTION_TYPES;
     for (const actionType of EMERGENCY_STOP_EXEMPT_ACTION_TYPES) {
       expect(actions).toContain(actionType);
+    }
+  });
+});
+
+describe('memory model (Phase 2, Milestone 8)', () => {
+  it('declares exactly three scopes', () => {
+    expect(MEMORY_SCOPES).toEqual(['session', 'project', 'personal']);
+  });
+
+  it('declares exactly the seven memory types the milestone asked for', () => {
+    expect([...MEMORY_CATEGORIES].sort()).toEqual(
+      [
+        'user-preference',
+        'assistant-setting',
+        'project-decision',
+        'project-convention',
+        'active-task',
+        'completed-task',
+        'agent-preference',
+      ].sort(),
+    );
+  });
+
+  it('offers no source a model, a chat reply or an agent run could be stored under', () => {
+    // The milestone's "never silently save model output as memory" rule,
+    // expressed as the absence of an enum member rather than as a check.
+    expect(MEMORY_SOURCES).toEqual(['user', 'import']);
+    const sources: readonly string[] = MEMORY_SOURCES;
+    for (const forbidden of ['model', 'assistant', 'chat', 'agent', 'inferred', 'auto']) {
+      expect(sources, forbidden).not.toContain(forbidden);
+    }
+  });
+
+  it('retrieves across every declared scope', () => {
+    expect([...MEMORY_RETRIEVAL_SCOPES].sort()).toEqual([...MEMORY_SCOPES].sort());
+  });
+
+  it('keeps memory in its own location, apart from settings and secrets', () => {
+    expect(USER_DATA_PATHS.memoryPersonalFile).toBe('memory/personal.json');
+    expect(USER_DATA_PATHS.memoryProjectsDir).toBe('memory/projects');
+    expect(USER_DATA_PATHS.memoryPersonalFile).not.toBe(USER_DATA_PATHS.settingsFile);
+    expect(USER_DATA_PATHS.memoryProjectsDir).not.toBe(USER_DATA_PATHS.secretsFile);
+  });
+
+  it('leaves every memory action blocked by an engaged emergency stop', () => {
+    const exempt: readonly string[] = EMERGENCY_STOP_EXEMPT_ACTION_TYPES;
+    for (const action of [
+      'memory.read',
+      'memory.write',
+      'memory.clear',
+      'memory.export',
+      'memory.import',
+    ]) {
+      expect(exempt, action).not.toContain(action);
     }
   });
 });

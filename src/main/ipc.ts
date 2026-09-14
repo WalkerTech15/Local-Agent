@@ -38,6 +38,26 @@ import {
 } from './agent-profiles';
 import { describeAgentRun, runAgentOrchestration } from './agent-orchestrator';
 import type { AgentStepOutcome, AgentStepRequest } from './agent-orchestrator';
+import {
+  addMemory,
+  buildMemoryExport,
+  clearMemoryScope,
+  deleteMemory,
+  importMemoryRecords,
+  listMemories,
+  retrieveRelevantMemories,
+  searchMemoryScope,
+  setMemoryPinned,
+  updateMemory,
+} from './memory-service';
+import type { MemoryStoreAccess } from './memory-service';
+import {
+  createSessionMemoryStore,
+  loadMemoryStore,
+  resolveProjectMemoryFile,
+  writeMemoryStore,
+} from './memory-store';
+import { readMemoryImportFile, writeMemoryExportFile } from './memory-transfer';
 import { runAction } from './action-runtime';
 import type { ActionRuntime } from './action-runtime';
 import { resolveMainChatProvider } from './chat-provider-registry';
@@ -71,14 +91,17 @@ import type { AgentRegistry } from '../shared/agent/registry';
 import { findAgentTool } from '../shared/agent/tools';
 import { CHAT_PROVIDER_ERROR_CODES, ChatProviderError } from '../shared/chat/provider';
 import type { ChatProviderResult } from '../shared/chat/provider';
+import { isMemoryErrorCode, MemoryError } from '../shared/memory/errors';
+import type { MemoryErrorCode } from '../shared/memory/errors';
 import {
   AGENT_NAME_MAX_LENGTH,
   AGENT_STEP_SUMMARY_MAX_LENGTH,
   CHAT_STREAM_MAX_DELTA_LENGTH,
   COMMAND_MAX_CONCURRENT_RUNS,
+  MEMORY_RETRIEVAL_SCOPES,
   PROVIDERS_REQUIRING_API_KEY,
 } from '../shared/constants';
-import type { ModelProvider } from '../shared/constants';
+import type { MemoryScope, ModelProvider } from '../shared/constants';
 import { describeCommandLine, findCodingCommand } from '../shared/workspace/command-registry';
 import { collapseToSingleLine } from '../shared/workspace/text-safety';
 import {
@@ -180,6 +203,36 @@ import {
   IPC_AGENT_SELECT_CHANNEL,
   IPC_AGENT_SET_ENABLED_CHANNEL,
   IPC_AGENT_UPDATE_CHANNEL,
+  IPC_MEMORY_ADD_CHANNEL,
+  IPC_MEMORY_CLEAR_CHANNEL,
+  IPC_MEMORY_DELETE_CHANNEL,
+  IPC_MEMORY_EXPORT_CHANNEL,
+  IPC_MEMORY_IMPORT_CHANNEL,
+  IPC_MEMORY_LIST_CHANNEL,
+  IPC_MEMORY_RETRIEVE_CHANNEL,
+  IPC_MEMORY_SEARCH_CHANNEL,
+  IPC_MEMORY_SET_PINNED_CHANNEL,
+  IPC_MEMORY_UPDATE_CHANNEL,
+  memoryAddRequestSchema,
+  memoryAddResponseSchema,
+  memoryClearRequestSchema,
+  memoryClearResponseSchema,
+  memoryDeleteRequestSchema,
+  memoryDeleteResponseSchema,
+  memoryExportRequestSchema,
+  memoryExportResponseSchema,
+  memoryImportRequestSchema,
+  memoryImportResponseSchema,
+  memoryListRequestSchema,
+  memoryListResponseSchema,
+  memoryRetrieveRequestSchema,
+  memoryRetrieveResponseSchema,
+  memorySearchRequestSchema,
+  memorySearchResponseSchema,
+  memorySetPinnedRequestSchema,
+  memorySetPinnedResponseSchema,
+  memoryUpdateRequestSchema,
+  memoryUpdateResponseSchema,
 } from '../shared/schemas';
 import type {
   AgentProfile,
@@ -200,6 +253,14 @@ import type {
   GitDiffValue,
   GitStatusResponse,
   GitStatusValue,
+  MemoryMutationResponse,
+  MemoryMutationSummary,
+  MemoryQueryResponse,
+  MemoryQueryResult,
+  MemoryRecord,
+  MemoryRecordResponse,
+  MemoryRetrievalResult,
+  MemoryRetrieveResponse,
   SecretsActionResponse,
   SecretStatusResult,
   SettingsActionResponse,
@@ -270,6 +331,24 @@ export interface IpcHandlerRuntime {
    * renderer sends can influence which directory is offered or chosen.
    */
   readonly selectProjectDirectory: () => Promise<string | null>;
+  /**
+   * Shows the native save dialog for a memory export and resolves to what the
+   * user chose, or `null` if they dismissed it (Phase 2, Milestone 8).
+   *
+   * Injected for the same reason `selectProjectDirectory` is, and narrow for
+   * the same reason: the only thing the caller may influence is the scope
+   * name in the suggested file name, which comes from an enum. The renderer
+   * cannot name a file to overwrite.
+   */
+  readonly selectMemoryExportFile: (scope: MemoryScope) => Promise<string | null>;
+  /**
+   * Shows the native open dialog for a memory import (Phase 2, Milestone 8).
+   *
+   * Takes no parameter at all: nothing the renderer sends can influence which
+   * file is offered or chosen, and the file that comes back is still treated
+   * as untrusted content by everything downstream.
+   */
+  readonly selectMemoryImportFile: () => Promise<string | null>;
 }
 
 /**
@@ -536,6 +615,65 @@ function toAgentRunResponse(result: ActionResult<AgentRun>): AgentRunResponse {
   return {
     outcome: result.outcome,
     ...(result.value === undefined ? {} : { run: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+/**
+ * The same defence in depth the workspace and agent vocabularies get, for the
+ * memory vocabulary (Phase 2, Milestone 8).
+ *
+ * A memory `perform` only ever throws a `MemoryError` translated to an
+ * `ActionExecutionError` carrying the same code, but `execute` has its own
+ * generic `EXECUTION_FAILED` for an unexpected throw, and that is not a
+ * member of this vocabulary. Degrading it keeps a response schema-valid
+ * rather than letting an internal code — whose text this milestone has not
+ * reviewed — cross into the renderer.
+ */
+function toMemoryErrorCode(
+  result: ActionResult,
+  fallback: MemoryErrorCode,
+): MemoryErrorCode | undefined {
+  if (result.errorCode === undefined) return undefined;
+  return isMemoryErrorCode(result.errorCode) ? result.errorCode : fallback;
+}
+
+function toMemoryQueryResponse(result: ActionResult<MemoryQueryResult>): MemoryQueryResponse {
+  const errorCode = toMemoryErrorCode(result, 'MEMORY_READ_FAILED');
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { result: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function toMemoryRetrieveResponse(
+  result: ActionResult<MemoryRetrievalResult>,
+): MemoryRetrieveResponse {
+  const errorCode = toMemoryErrorCode(result, 'MEMORY_READ_FAILED');
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { result: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function toMemoryRecordResponse(result: ActionResult<MemoryRecord>): MemoryRecordResponse {
+  const errorCode = toMemoryErrorCode(result, 'MEMORY_STORE_FAILED');
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { record: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function toMemoryMutationResponse(
+  result: ActionResult<MemoryMutationSummary>,
+): MemoryMutationResponse {
+  const errorCode = toMemoryErrorCode(result, 'MEMORY_STORE_FAILED');
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { summary: result.value }),
     ...(errorCode === undefined ? {} : { errorCode }),
   };
 }
@@ -1710,5 +1848,297 @@ export function registerIpcHandlers(ipcMain: IpcMain, runtime: IpcHandlerRuntime
     // kills a child process the run had started.
     inFlightAgentRuns.get(runId)?.abort();
     return agentCancelResponseSchema.parse({ acknowledged: true });
+  });
+
+  // -------------------------------------------------------------------------
+  // Local memory (Phase 2, Milestone 8)
+  // -------------------------------------------------------------------------
+
+  /**
+   * The session scope, held for the lifetime of this handler registration.
+   *
+   * Created per `registerIpcHandlers` call, exactly like
+   * {@link inFlightChatRequests} and the approved-project session, and for the
+   * same reason: one test's session notes can never leak into another's, and
+   * one application run's notes never survive into the next. Nothing writes
+   * this to disk — there is no branch below that could.
+   */
+  const sessionMemory = createSessionMemoryStore();
+
+  /**
+   * Where one project's notes live, or a refusal.
+   *
+   * This is the whole of project isolation, and it is deliberately one
+   * function: the file name is *derived* from the canonically-resolved root
+   * of the project approved in this session, never supplied by a caller.
+   * There is no parameter anywhere in the memory channels through which a
+   * renderer could name a different project's store, because there is no
+   * parameter here at all.
+   */
+  function requireProjectMemoryFile(): string {
+    const project = workspaceSession.get();
+    if (project === null) throw new MemoryError('MEMORY_NO_PROJECT');
+    return resolveProjectMemoryFile(runtime.userDataPaths.memoryProjectsDir, project.rootPath);
+  }
+
+  /**
+   * The one place that knows which backing store a scope has.
+   *
+   * `main/memory-service.ts` is given this and never learns a path, which is
+   * what keeps "session memory is never written to disk" and "a project's
+   * notes are in that project's file" properties of one reviewed object
+   * rather than habits every operation has to keep.
+   */
+  const memoryAccess: MemoryStoreAccess = {
+    read: (scope) => {
+      if (scope === 'session') return Promise.resolve(sessionMemory.read());
+      if (scope === 'personal') {
+        return loadMemoryStore(runtime.userDataPaths.memoryPersonalFile, 'personal');
+      }
+      return loadMemoryStore(requireProjectMemoryFile(), 'project');
+    },
+    write: (scope, store) => {
+      if (scope === 'session') {
+        sessionMemory.write(store);
+        return Promise.resolve();
+      }
+      if (scope === 'personal') {
+        return writeMemoryStore(runtime.userDataPaths.memoryPersonalFile, store);
+      }
+      return writeMemoryStore(requireProjectMemoryFile(), store);
+    },
+  };
+
+  /**
+   * Runs one memory operation as a permission-gated, audited action.
+   *
+   * The same shape as {@link runAgentAction}, differing only in which
+   * normalized error vocabulary it translates.
+   *
+   * The `parameters` every caller passes below are deliberately thin — an
+   * operation name, a scope, a bounded enum, and at most a *length*. **No
+   * record content, no search query, no objective and no file path ever
+   * enters an audit record.** The audit trail is meant to answer "what did
+   * this application do", and for memory that question is answerable without
+   * repeating the user's private notes into a second file that is
+   * append-only and therefore cannot be redacted afterwards.
+   */
+  async function runMemoryAction<TValue>(
+    actionType: ActionType,
+    parameters: Record<string, unknown>,
+    perform: (now: string) => TValue | Promise<TValue>,
+    buildConfirmation?: (now: string) => string | Promise<string>,
+  ): Promise<ActionResult<TValue>> {
+    const now = runtime.nowFn();
+    const actionRuntime = buildActionRuntime(runtime, now);
+    const confirmationMessage =
+      buildConfirmation === undefined ? null : await buildConfirmation(now);
+
+    return runAction(
+      actionRuntime,
+      newProposal(actionType, parameters),
+      confirmationMessage,
+      async () => {
+        try {
+          return await perform(now);
+        } catch (error) {
+          if (error instanceof MemoryError) {
+            throw new ActionExecutionError(error.code, error.message);
+          }
+          throw error;
+        }
+      },
+    );
+  }
+
+  /** Plain English for a scope, for the two dialogs that name one. */
+  function describeScope(scope: MemoryScope): string {
+    if (scope === 'session') return 'this session’s memory (never written to disk)';
+    if (scope === 'project') return 'this project’s memory';
+    return 'your personal memory';
+  }
+
+  /**
+   * How many records a scope currently holds, or `null` if that cannot be
+   * determined right now.
+   *
+   * The failure is swallowed deliberately: this only feeds a sentence in a
+   * confirmation dialog, and a dialog that cannot state a count should say so
+   * rather than turning a countable operation into an error before the user
+   * has even been asked. The real failure still surfaces — `perform` reads the
+   * same store and throws the normalized code.
+   */
+  async function countMemories(scope: MemoryScope): Promise<number | null> {
+    try {
+      return (await memoryAccess.read(scope)).records.length;
+    } catch {
+      return null;
+    }
+  }
+
+  ipcMain.handle(IPC_MEMORY_LIST_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ scope }] = memoryListRequestSchema.parse(args);
+
+    const result = await runMemoryAction<MemoryQueryResult>(
+      'memory.read',
+      { operation: 'list', scope },
+      (now) => listMemories(memoryAccess, scope, now),
+    );
+
+    return memoryListResponseSchema.parse(toMemoryQueryResponse(result));
+  });
+
+  ipcMain.handle(IPC_MEMORY_SEARCH_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ scope, query }] = memorySearchRequestSchema.parse(args);
+
+    const result = await runMemoryAction<MemoryQueryResult>(
+      'memory.read',
+      // The query's length, never the query. What someone searched their own
+      // notes for is exactly as private as the notes.
+      { operation: 'search', scope, queryLength: query.length },
+      (now) => searchMemoryScope(memoryAccess, scope, query, now),
+    );
+
+    return memorySearchResponseSchema.parse(toMemoryQueryResponse(result));
+  });
+
+  ipcMain.handle(IPC_MEMORY_RETRIEVE_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ objective }] = memoryRetrieveRequestSchema.parse(args);
+
+    const result = await runMemoryAction<MemoryRetrievalResult>(
+      'memory.read',
+      { operation: 'retrieve', objectiveLength: objective.length },
+      // Spans every readable scope, and is capped at `MEMORY_MAX_RETRIEVED`
+      // by the service — the response schema could not carry the whole store
+      // even if this asked for it.
+      (now) => retrieveRelevantMemories(memoryAccess, MEMORY_RETRIEVAL_SCOPES, objective, now),
+    );
+
+    return memoryRetrieveResponseSchema.parse(toMemoryRetrieveResponse(result));
+  });
+
+  ipcMain.handle(IPC_MEMORY_ADD_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ record }] = memoryAddRequestSchema.parse(args);
+
+    const result = await runMemoryAction<MemoryRecord>(
+      'memory.write',
+      {
+        operation: 'add',
+        scope: record.scope,
+        category: record.category,
+        contentLength: record.content.length,
+      },
+      // `source: 'user'` is stamped inside `addMemory`, never taken from the
+      // request — the input schema has no such field.
+      (now) => addMemory(memoryAccess, record, now, randomUUID),
+    );
+
+    return memoryAddResponseSchema.parse(toMemoryRecordResponse(result));
+  });
+
+  ipcMain.handle(IPC_MEMORY_UPDATE_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ id, record }] = memoryUpdateRequestSchema.parse(args);
+
+    const result = await runMemoryAction<MemoryRecord>(
+      'memory.write',
+      {
+        operation: 'update',
+        scope: record.scope,
+        category: record.category,
+        contentLength: record.content.length,
+      },
+      (now) => updateMemory(memoryAccess, id, record, now),
+    );
+
+    return memoryUpdateResponseSchema.parse(toMemoryRecordResponse(result));
+  });
+
+  ipcMain.handle(IPC_MEMORY_SET_PINNED_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ id, scope, pinned }] = memorySetPinnedRequestSchema.parse(args);
+
+    const result = await runMemoryAction<MemoryRecord>(
+      'memory.write',
+      { operation: 'set-pinned', scope, pinned },
+      (now) => setMemoryPinned(memoryAccess, id, scope, pinned, now),
+    );
+
+    return memorySetPinnedResponseSchema.parse(toMemoryRecordResponse(result));
+  });
+
+  ipcMain.handle(IPC_MEMORY_DELETE_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ id, scope }] = memoryDeleteRequestSchema.parse(args);
+
+    const result = await runMemoryAction<MemoryMutationSummary>(
+      'memory.write',
+      { operation: 'delete', scope },
+      (now) => deleteMemory(memoryAccess, id, scope, now),
+    );
+
+    return memoryDeleteResponseSchema.parse(toMemoryMutationResponse(result));
+  });
+
+  ipcMain.handle(IPC_MEMORY_CLEAR_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ scope }] = memoryClearRequestSchema.parse(args);
+
+    const result = await runMemoryAction<MemoryMutationSummary>(
+      'memory.clear',
+      { operation: 'clear', scope },
+      (now) => clearMemoryScope(memoryAccess, scope, now),
+      async () => {
+        const count = await countMemories(scope);
+        const subject = count === null ? 'every record' : `all ${String(count)} record(s)`;
+        return `Delete ${subject} in ${describeScope(scope)}? This cannot be undone.`;
+      },
+    );
+
+    return memoryClearResponseSchema.parse(toMemoryMutationResponse(result));
+  });
+
+  ipcMain.handle(IPC_MEMORY_EXPORT_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ scope }] = memoryExportRequestSchema.parse(args);
+
+    const result = await runMemoryAction<MemoryMutationSummary>(
+      'memory.export',
+      { operation: 'export', scope },
+      async (now) => {
+        const document = await buildMemoryExport(memoryAccess, scope, now);
+        // The file is chosen *after* the confirmation and by the user, in a
+        // native dialog this process owns. The renderer never sees a path and
+        // never supplies one.
+        const target = await runtime.selectMemoryExportFile(scope);
+        if (target === null) throw new MemoryError('MEMORY_FILE_SELECTION_CANCELLED');
+        await writeMemoryExportFile(target, document);
+        return { scope, affected: document.records.length, rejected: 0 };
+      },
+      async () => {
+        const count = await countMemories(scope);
+        const subject = count === null ? 'the records' : `${String(count)} record(s)`;
+        return `Write ${subject} from ${describeScope(scope)} to a file outside Local Agent? You will choose the file next. Once exported, this application’s protections no longer apply to them.`;
+      },
+    );
+
+    return memoryExportResponseSchema.parse(toMemoryMutationResponse(result));
+  });
+
+  ipcMain.handle(IPC_MEMORY_IMPORT_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ scope }] = memoryImportRequestSchema.parse(args);
+
+    const result = await runMemoryAction<MemoryMutationSummary>(
+      'memory.import',
+      { operation: 'import', scope },
+      async (now) => {
+        const source = await runtime.selectMemoryImportFile();
+        if (source === null) throw new MemoryError('MEMORY_FILE_SELECTION_CANCELLED');
+        // Returned as `unknown`: nothing has yet claimed this file is a
+        // memory export. `importMemoryRecords` decides that, against the
+        // schema, and re-stamps every record it accepts.
+        const document = await readMemoryImportFile(source);
+        return importMemoryRecords(memoryAccess, scope, document, now, randomUUID);
+      },
+      () =>
+        `Read memory records from a file outside Local Agent into ${describeScope(scope)}? You will choose the file next. Its contents are untrusted: every record is validated, and anything that looks like a credential is refused.`,
+    );
+
+    return memoryImportResponseSchema.parse(toMemoryMutationResponse(result));
   });
 }

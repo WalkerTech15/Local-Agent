@@ -47,6 +47,7 @@ const EXPECTED_BRIDGE_KEYS = [
   'command',
   'git',
   'health',
+  'memory',
   'secrets',
   'settings',
   'workspace',
@@ -105,6 +106,26 @@ const EXPECTED_AGENT_KEYS = [
   'setEnabled',
   'update',
 ] as const;
+/**
+ * Local memory (Phase 2, Milestone 8). Three reads, four single-record
+ * writes, and three bulk operations. Note what cannot be supplied through any
+ * of them: a file path — `exportScope` and `importScope` take a scope, and
+ * the file is chosen by the user in a native dialog the main process owns —
+ * and a record's `source`, which the main process stamps. There is no
+ * `capture`, no `learn` and no `observe`.
+ */
+const EXPECTED_MEMORY_KEYS = [
+  'add',
+  'clear',
+  'exportScope',
+  'importScope',
+  'list',
+  'remove',
+  'retrieve',
+  'search',
+  'setPinned',
+  'update',
+] as const;
 
 function launchEnv(): Record<string, string> {
   const env: Record<string, string> = {};
@@ -126,7 +147,9 @@ describe('Electron desktop shell — security and health-check smoke test', () =
       env: launchEnv(),
     });
     page = await app.firstWindow();
-    await page.waitForLoadState('domcontentloaded');
+    await page.waitForURL('file://**/dist/renderer/index.html', {
+      waitUntil: 'domcontentloaded',
+    });
   });
 
   afterAll(async () => {
@@ -177,7 +200,7 @@ describe('Electron desktop shell — security and health-check smoke test', () =
     expect(hasIpcRenderer).toBe(false);
   });
 
-  it('exposes exactly one bridge object with exactly the narrow, named functions of Phase 2 Milestone 7', async () => {
+  it('exposes exactly one bridge object with exactly the narrow, named functions of Phase 2 Milestone 8', async () => {
     const bridgeShape = await page.evaluate(() => {
       const w = window as unknown as {
         localAgent?: {
@@ -188,6 +211,7 @@ describe('Electron desktop shell — security and health-check smoke test', () =
           command?: object;
           git?: object;
           agent?: object;
+          memory?: object;
         } & Record<string, unknown>;
       };
       const localAgent = w.localAgent;
@@ -201,6 +225,7 @@ describe('Electron desktop shell — security and health-check smoke test', () =
         commandKeys: localAgent?.command ? Object.keys(localAgent.command).sort() : [],
         gitKeys: localAgent?.git ? Object.keys(localAgent.git).sort() : [],
         agentKeys: localAgent?.agent ? Object.keys(localAgent.agent).sort() : [],
+        memoryKeys: localAgent?.memory ? Object.keys(localAgent.memory).sort() : [],
       };
     });
     expect(bridgeShape).toEqual({
@@ -213,7 +238,39 @@ describe('Electron desktop shell — security and health-check smoke test', () =
       commandKeys: [...EXPECTED_COMMAND_KEYS],
       gitKeys: [...EXPECTED_GIT_KEYS],
       agentKeys: [...EXPECTED_AGENT_KEYS],
+      memoryKeys: [...EXPECTED_MEMORY_KEYS],
     });
+  });
+
+  it('exposes no memory function that could name a file or record something automatically', async () => {
+    // Two absences are the control here, so both are asserted against the
+    // real built bridge rather than only against the source. Nothing in the
+    // memory object can name a path — the export and import dialogs are owned
+    // by the main process — and nothing can capture a memory from a
+    // conversation, a file or a model reply.
+    const present = await page.evaluate(() => {
+      const w = window as unknown as { localAgent?: { memory?: Record<string, unknown> } };
+      const memory = w.localAgent?.memory;
+      if (memory === undefined) return ['(no memory object at all)'];
+      const forbidden = [
+        'capture',
+        'learn',
+        'observe',
+        'infer',
+        'remember',
+        'readFile',
+        'writeFile',
+        'exportTo',
+        'importFrom',
+        'path',
+        'file',
+        'sync',
+        'upload',
+        'grant',
+      ];
+      return forbidden.filter((key) => key in memory);
+    });
+    expect(present).toEqual([]);
   });
 
   it('exposes no function that can create, delete or patch a file', async () => {

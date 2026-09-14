@@ -358,3 +358,83 @@ export type {
   AgentSetEnabledInput,
   AgentUpdateInput,
 } from './ipc.schema';
+
+// ---------------------------------------------------------------------------
+// Local memory (Phase 2, Milestone 8)
+// ---------------------------------------------------------------------------
+
+export {
+  MEMORY_EXPORT_KIND,
+  createEmptyMemoryStore,
+  memoryCategorySchema,
+  memoryContentSchema,
+  memoryExportSchema,
+  memoryMutationSummarySchema,
+  memoryQueryResultSchema,
+  memoryRecordInputSchema,
+  memoryRecordSchema,
+  memoryRetrievalResultSchema,
+  memoryScopeSchema,
+  memorySearchQuerySchema,
+  memorySourceSchema,
+  memoryStoreSchema,
+} from './memory.schema';
+export type {
+  MemoryExport,
+  MemoryMutationSummary,
+  MemoryScopeValue,
+  MemoryQueryResult,
+  MemoryRecord,
+  MemoryRecordInput,
+  MemoryRetrievalResult,
+  MemoryStore,
+} from './memory.schema';
+
+export {
+  IPC_MEMORY_ADD_CHANNEL,
+  IPC_MEMORY_CLEAR_CHANNEL,
+  IPC_MEMORY_DELETE_CHANNEL,
+  IPC_MEMORY_EXPORT_CHANNEL,
+  IPC_MEMORY_IMPORT_CHANNEL,
+  IPC_MEMORY_LIST_CHANNEL,
+  IPC_MEMORY_RETRIEVE_CHANNEL,
+  IPC_MEMORY_SEARCH_CHANNEL,
+  IPC_MEMORY_SET_PINNED_CHANNEL,
+  IPC_MEMORY_UPDATE_CHANNEL,
+  memoryAddRequestSchema,
+  memoryAddResponseSchema,
+  memoryClearRequestSchema,
+  memoryClearResponseSchema,
+  memoryDeleteRequestSchema,
+  memoryDeleteResponseSchema,
+  memoryExportRequestSchema,
+  memoryExportResponseSchema,
+  memoryImportRequestSchema,
+  memoryImportResponseSchema,
+  memoryListRequestSchema,
+  memoryListResponseSchema,
+  memoryMutationResponseSchema,
+  memoryQueryResponseSchema,
+  memoryRecordResponseSchema,
+  memoryRetrieveRequestSchema,
+  memoryRetrieveResponseSchema,
+  memorySearchRequestSchema,
+  memorySearchResponseSchema,
+  memorySetPinnedRequestSchema,
+  memorySetPinnedResponseSchema,
+  memoryUpdateRequestSchema,
+  memoryUpdateResponseSchema,
+} from './ipc.schema';
+export type {
+  MemoryAddRequestInput,
+  MemoryDeleteRequestInput,
+  MemoryMutationResponse,
+  MemoryQueryResponse,
+  MemoryRecordResponse,
+  MemoryRetrieveRequestInput,
+  MemoryRetrieveResponse,
+  MemoryScopeRequestInput,
+  MemorySearchRequestInput,
+  MemorySetPinnedRequestInput,
+  MemoryUpdateRequestInput,
+} from './ipc.schema';
