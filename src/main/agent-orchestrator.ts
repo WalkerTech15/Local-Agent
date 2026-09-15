@@ -64,6 +64,20 @@ export interface AgentStepRequest {
   readonly requiresConfirmation: boolean;
   /** The run's objective, for the one tool that needs it. */
   readonly objective: string;
+  /**
+   * The sentence shown when `requiresConfirmation` is set, if the caller has
+   * a more specific one than the default (Phase 2, Milestone 9).
+   *
+   * Additive and optional: omitted, the step executor shows the profile-gated
+   * wording it always showed, so agent runs are unchanged. A workflow
+   * checkpoint supplies its own sentence, naming the workflow and the step
+   * number, because "the active agent profile requires confirmation" would be
+   * the wrong explanation for a prompt the *workflow* asked for.
+   *
+   * It is built in the main process from stored state, exactly as the default
+   * is. Nothing from a request reaches it.
+   */
+  readonly confirmationMessage?: string;
 }
 
 /** What the executor reports back. Never a message, never a path. */

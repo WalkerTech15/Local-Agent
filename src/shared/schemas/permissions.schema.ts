@@ -338,6 +338,29 @@ export function createDefaultPermissionPolicy(): PermissionPolicy {
         reason:
           'An import brings content from outside this application into a memory store, so the file is chosen and the scope stated before anything is read.',
       },
+      {
+        id: 'workflow.read',
+        actionType: 'workflow.read',
+        decision: 'allow',
+        priority: 100,
+        reason: 'Listing workflow definitions is read-only and reveals no credential.',
+      },
+      {
+        id: 'workflow.write',
+        actionType: 'workflow.write',
+        decision: 'confirm',
+        priority: 100,
+        reason:
+          'A workflow names which of an agent’s tools a later run reaches for, so its steps and limits are stated in a native dialog before it is saved.',
+      },
+      {
+        id: 'workflow.run',
+        actionType: 'workflow.run',
+        decision: 'confirm',
+        priority: 100,
+        reason:
+          'A run takes several steps the user is not approving individually, so the agent, the ordered steps, the scope and the limits are shown before the first one.',
+      },
     ],
   };
 }

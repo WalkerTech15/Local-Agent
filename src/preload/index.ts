@@ -93,6 +93,29 @@ import {
   type MemoryRecordResponse,
   type MemoryRetrieveResponse,
   type MemoryScopeValue,
+  IPC_WORKFLOW_CANCEL_CHANNEL,
+  IPC_WORKFLOW_CREATE_CHANNEL,
+  IPC_WORKFLOW_DELETE_CHANNEL,
+  IPC_WORKFLOW_DUPLICATE_CHANNEL,
+  IPC_WORKFLOW_LIST_CHANNEL,
+  IPC_WORKFLOW_PAUSE_CHANNEL,
+  IPC_WORKFLOW_PROGRESS_CHANNEL,
+  IPC_WORKFLOW_RUN_CHANNEL,
+  IPC_WORKFLOW_SET_ENABLED_CHANNEL,
+  IPC_WORKFLOW_UPDATE_CHANNEL,
+  workflowControlResponseSchema,
+  workflowCreateResponseSchema,
+  workflowDeleteResponseSchema,
+  workflowDuplicateResponseSchema,
+  workflowListResponseSchema,
+  workflowProgressIpcEventSchema,
+  workflowRunResponseSchema,
+  workflowSetEnabledResponseSchema,
+  workflowUpdateResponseSchema,
+  type WorkflowInput,
+  type WorkflowListResponse,
+  type WorkflowProgressEvent,
+  type WorkflowRunResponse,
   type AgentProfileInput,
   type AgentRegistryResponse,
   type AgentRunResponse,
@@ -480,6 +503,101 @@ const bridge = {
     importScope: async (scope: MemoryScopeValue): Promise<MemoryMutationResponse> => {
       const result: unknown = await ipcRenderer.invoke(IPC_MEMORY_IMPORT_CHANNEL, { scope });
       return memoryImportResponseSchema.parse(result);
+    },
+  },
+  /**
+   * Workflows (Phase 2, Milestone 9).
+   *
+   * Nine functions, nine fixed channels, one subscription, and three
+   * properties worth checking first:
+   *
+   *  - **Nothing here can schedule anything.** A workflow's `trigger` is an
+   *    enum with one member, `manual`, so a payload cannot express a
+   *    schedule, a file watch, a Git hook or an inbox. There is no `schedule`
+   *    function and no `watch` function.
+   *  - **Nothing here can widen an agent.** A workflow selects a profile by
+   *    id and may only use tools and paths that profile already allows,
+   *    checked in the main process when it is saved and again before every
+   *    step.
+   *  - **`run` takes a workflow id and an objective.** It cannot carry a step
+   *    list, a tool, a path, a command or a limit: what a run may do comes
+   *    from the stored definition the main process reads.
+   *
+   * `pause` stops a run at the next step boundary; `cancel` aborts it and
+   * kills a child process it had started. Both are fire-and-forget, exactly
+   * like `agent.cancel`.
+   */
+  workflow: {
+    list: async (): Promise<WorkflowListResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKFLOW_LIST_CHANNEL);
+      return workflowListResponseSchema.parse(result);
+    },
+    create: async (workflow: WorkflowInput): Promise<WorkflowListResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKFLOW_CREATE_CHANNEL, { workflow });
+      return workflowCreateResponseSchema.parse(result);
+    },
+    update: async (workflowId: string, workflow: WorkflowInput): Promise<WorkflowListResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKFLOW_UPDATE_CHANNEL, {
+        workflowId,
+        workflow,
+      });
+      return workflowUpdateResponseSchema.parse(result);
+    },
+    duplicate: async (workflowId: string, newId: string): Promise<WorkflowListResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKFLOW_DUPLICATE_CHANNEL, {
+        workflowId,
+        newId,
+      });
+      return workflowDuplicateResponseSchema.parse(result);
+    },
+    remove: async (workflowId: string): Promise<WorkflowListResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKFLOW_DELETE_CHANNEL, { workflowId });
+      return workflowDeleteResponseSchema.parse(result);
+    },
+    setEnabled: async (workflowId: string, enabled: boolean): Promise<WorkflowListResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKFLOW_SET_ENABLED_CHANNEL, {
+        workflowId,
+        enabled,
+      });
+      return workflowSetEnabledResponseSchema.parse(result);
+    },
+    run: async (
+      runId: string,
+      workflowId: string,
+      objective: string,
+    ): Promise<WorkflowRunResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKFLOW_RUN_CHANNEL, {
+        runId,
+        workflowId,
+        objective,
+      });
+      return workflowRunResponseSchema.parse(result);
+    },
+    pause: async (runId: string): Promise<void> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKFLOW_PAUSE_CHANNEL, { runId });
+      workflowControlResponseSchema.parse(result);
+    },
+    cancel: async (runId: string): Promise<void> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_WORKFLOW_CANCEL_CHANNEL, { runId });
+      workflowControlResponseSchema.parse(result);
+    },
+    /**
+     * Subscribes to advisory progress for a run in flight.
+     *
+     * Modelled exactly on `chat.onChunk`: the listener never receives the raw
+     * Electron event, every payload is re-validated here before it reaches
+     * the renderer, and an invalid one is dropped rather than forwarded.
+     */
+    onProgress: (listener: (event: WorkflowProgressEvent) => void): (() => void) => {
+      const subscription = (_event: unknown, payload: unknown): void => {
+        const parsed = workflowProgressIpcEventSchema.safeParse(payload);
+        if (!parsed.success) return;
+        listener(parsed.data);
+      };
+      ipcRenderer.on(IPC_WORKFLOW_PROGRESS_CHANNEL, subscription);
+      return () => {
+        ipcRenderer.removeListener(IPC_WORKFLOW_PROGRESS_CHANNEL, subscription);
+      };
     },
   },
   git: {

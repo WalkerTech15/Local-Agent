@@ -96,6 +96,15 @@ export const USER_DATA_PATHS = {
    * capable of carrying one.
    */
   agentProfilesFile: 'agents/profiles.json',
+  /**
+   * Workflow definitions (Phase 2, Milestone 9).
+   *
+   * Its own file, beside the agent profiles, for the same reason those have
+   * one: a workflow names which of an agent's tools a later run will reach
+   * for, so it is configuration that shapes authority. It holds no credential
+   * — see `workflowSchema`, which declares no field capable of carrying one.
+   */
+  workflowsFile: 'workflows/workflows.json',
 } as const;
 
 /** Audit log file name pattern, one file per UTC day. */
@@ -287,6 +296,28 @@ export const BIDI_CONTROL_PATTERN = /[\u202A-\u202E\u2066-\u2069]/;
  * There is no `memory.capture`, no `memory.infer` and no `memory.learn`: no
  * action type here has the shape to record something automatically from a
  * conversation, a file or a model reply.
+ *
+ * Phase 2, Milestone 9 adds three actions for workflows, and — for the third
+ * milestone running — not one of them is a new capability. A workflow is a
+ * saved recipe for running an agent profile that already exists, and every
+ * step it may name is an agent tool that already existed:
+ *
+ *  - `workflow.read` lists and reads workflow definitions. Read-only.
+ *  - `workflow.write` creates, edits, duplicates, deletes, enables or
+ *    disables a workflow. A workflow names which of an agent's tools a later
+ *    run reaches for, so changing one shapes future authority — it is on the
+ *    confirmation floor for that reason, exactly as `agent.write` is.
+ *  - `workflow.run` starts one bounded manual run. Also on the confirmation
+ *    floor: the user is shown the workflow, its agent, its steps, its scope
+ *    and its limits before anything executes, and every individual step
+ *    inside the run is then decided by the permission engine on its own
+ *    action type anyway.
+ *
+ * There is still no `fs.read`, no `fs.write`, no `shell.execute` and no
+ * generic "run this string" action. In particular there is no
+ * `workflow.schedule`, no `workflow.watch` and no `workflow.trigger` — a
+ * workflow cannot be started by anything but a person, because no action type
+ * here has the shape to start one any other way.
  */
 export const ACTION_TYPES = [
   'settings.read',
@@ -316,6 +347,9 @@ export const ACTION_TYPES = [
   'memory.clear',
   'memory.export',
   'memory.import',
+  'workflow.read',
+  'workflow.write',
+  'workflow.run',
 ] as const;
 export type ActionType = (typeof ACTION_TYPES)[number];
 
@@ -367,6 +401,16 @@ export const DEFAULT_PERMISSION_DECISION: PermissionDecision = 'deny';
  * native dialog for every note saved or unpinned would train people to click
  * through dialogs, which is its own security problem, and a single record is
  * reversible by the same operation that created it.
+ *
+ * Phase 2, Milestone 9 adds `workflow.write` and `workflow.run`, for exactly
+ * the reasons `agent.write` and `agent.run` are here: editing a workflow
+ * changes which tools a future run will reach for, and starting a run begins
+ * a sequence the user is not individually approving step by step. Both are
+ * stated plainly in a native dialog first — the agent, the ordered steps,
+ * the workspace scope and the limits for `workflow.run`, and the resulting
+ * step list for `workflow.write` — and no policy edit can turn either into an
+ * `allow`. `workflow.read` is deliberately absent: listing definitions
+ * changes nothing.
  */
 export const CONFIRMATION_REQUIRED_ACTION_TYPES: readonly ActionType[] = [
   'secrets.write',
@@ -382,6 +426,8 @@ export const CONFIRMATION_REQUIRED_ACTION_TYPES: readonly ActionType[] = [
   'memory.clear',
   'memory.export',
   'memory.import',
+  'workflow.write',
+  'workflow.run',
 ] as const;
 
 /**
@@ -1142,3 +1188,151 @@ export const MEMORY_MAX_IMPORT_RECORDS = MEMORY_MAX_RECORDS_PER_SCOPE;
  * a collision between the handful of projects one person opens would need.
  */
 export const MEMORY_PROJECT_KEY_LENGTH = 32;
+
+// ---------------------------------------------------------------------------
+// Workflows (Phase 2, Milestone 9)
+//
+// A workflow is a saved, named, repeatable recipe for running an agent
+// profile that already exists. It is configuration, not code and not
+// authority, and it sits at the narrow end of a chain:
+//
+//     workflow  ⊆  agent profile  ⊆  permission policy
+//
+// Every step a workflow may name is an {@link AGENT_TOOL_IDS} member — the
+// fixed Milestone 7 registry — and must *also* be allowed by the agent
+// profile the workflow selects. So a workflow can only ever narrow what was
+// already permitted; there is no field through which it could widen
+// anything, and no new tool, action type or capability is introduced here.
+//
+// Every bound below exists because the thing it bounds is unbounded in
+// principle: a step list can be long, a retry can repeat forever, a run can
+// print without stopping.
+// ---------------------------------------------------------------------------
+
+export const WORKFLOW_SCHEMA_VERSION = 1;
+
+/**
+ * How a workflow can be started.
+ *
+ * **One member, and that is the point.** A scheduled trigger, a file-change
+ * trigger, a Git trigger and an email trigger are not "disabled" anywhere —
+ * they are not expressible, because this enum has no value for them and
+ * `workflowTriggerSchema` accepts nothing else. Background autonomy in this
+ * milestone is prevented by the type rather than by a check someone could
+ * forget, and adding one later is a deliberate, reviewable edit here.
+ */
+export const WORKFLOW_TRIGGERS = ['manual'] as const;
+export type WorkflowTrigger = (typeof WORKFLOW_TRIGGERS)[number];
+
+/**
+ * When a step runs, given how the previous one ended.
+ *
+ * A closed, three-value vocabulary rather than an expression language. A
+ * workflow definition is untrusted input — it is a user-editable file — and
+ * an expression evaluator reading one would be a way to spend unbounded CPU
+ * in the process that owns every privileged operation in this application.
+ * These three cover "always", "only if the last thing worked" and "only if it
+ * did not", which is the whole of what a sequence of checks needs.
+ */
+export const WORKFLOW_STEP_CONDITIONS = [
+  'always',
+  'if-previous-succeeded',
+  'if-previous-failed',
+] as const;
+export type WorkflowStepCondition = (typeof WORKFLOW_STEP_CONDITIONS)[number];
+
+/**
+ * What happens after a step **fails**.
+ *
+ * Note the narrowness: this applies only to a step that ran and reported a
+ * failure — a lint script exiting non-zero, say, which is often exactly what
+ * the workflow was written to find out. It does **not** apply to a step that
+ * was denied by the permission engine, declined by the user, or blocked by
+ * the emergency stop. Those always stop the run, whatever this says, because
+ * continuing past a refusal would be the run arguing with an answer it had
+ * already received.
+ */
+export const WORKFLOW_FAILURE_BEHAVIORS = ['stop', 'continue'] as const;
+export type WorkflowFailureBehavior = (typeof WORKFLOW_FAILURE_BEHAVIORS)[number];
+
+/**
+ * What a workflow asks for when a run ends badly.
+ *
+ * `restore-run-changes` restores change sets **this run applied**, and
+ * nothing else — never a change the user made by hand, and never one from an
+ * earlier run. In this milestone that set is always empty, because no agent
+ * tool can write a file: see `docs/phase-2-workflows.md`. The mode exists,
+ * is validated and is decided by a tested function; what it decides today is
+ * always "there is nothing to roll back".
+ */
+export const WORKFLOW_ROLLBACK_MODES = ['none', 'restore-run-changes'] as const;
+export type WorkflowRollbackMode = (typeof WORKFLOW_ROLLBACK_MODES)[number];
+
+/**
+ * A workflow identifier: lowercase, stable, and usable as a file-safe key.
+ *
+ * The same shape as an agent profile id and a permission rule id, and for the
+ * same reason — it is recorded in the audit trail, so it must never be able
+ * to carry a control character, a path separator or a bidirectional override.
+ */
+export const WORKFLOW_ID_MIN_LENGTH = 3;
+export const WORKFLOW_ID_MAX_LENGTH = 64;
+export const WORKFLOW_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
+
+export const WORKFLOW_NAME_MIN_LENGTH = 1;
+export const WORKFLOW_NAME_MAX_LENGTH = 64;
+export const WORKFLOW_DESCRIPTION_MAX_LENGTH = 280;
+
+/** How many workflows the store will hold. */
+export const WORKFLOW_MAX_WORKFLOWS = 32;
+
+/** How many ordered steps one definition may declare. */
+export const WORKFLOW_MAX_DEFINITION_STEPS = 12;
+
+/**
+ * How many times one step may be retried after it fails.
+ *
+ * Bounded twice over, deliberately. This caps one step, and — because **every
+ * attempt counts as a step against `limits.maxSteps`** — the run's own step
+ * ceiling caps the total across all of them. An unbounded retry loop is
+ * therefore not representable: there is no combination of values here that
+ * produces one.
+ */
+export const WORKFLOW_MAX_STEP_RETRIES = 3;
+
+/**
+ * Step, duration and output ceilings for one run.
+ *
+ * Ranges rather than free integers, exactly as an agent profile's are: a
+ * workflow chooses a value *inside* these bounds, so "a run is bounded" is a
+ * property of the schema rather than a check the runner has to remember. The
+ * runner enforces the chosen value as well — two layers, because the
+ * workflow file is user-editable.
+ */
+export const WORKFLOW_MIN_STEPS = 1;
+export const WORKFLOW_MAX_STEPS = 32;
+export const WORKFLOW_MIN_DURATION_MS = 5_000;
+export const WORKFLOW_MAX_DURATION_MS = 900_000;
+export const WORKFLOW_MIN_OUTPUT_BYTES = 1_000;
+export const WORKFLOW_MAX_OUTPUT_BYTES = 400_000;
+
+/** Defaults used by a newly created workflow. */
+export const WORKFLOW_DEFAULT_MAX_STEPS = 12;
+export const WORKFLOW_DEFAULT_MAX_DURATION_MS = 300_000;
+export const WORKFLOW_DEFAULT_MAX_OUTPUT_BYTES = 100_000;
+
+/** One step's human-readable summary, kept short because it is displayed and stored. */
+export const WORKFLOW_STEP_SUMMARY_MAX_LENGTH = 200;
+
+/** How many steps one run record may carry back to the renderer. */
+export const WORKFLOW_RUN_MAX_RECORDED_STEPS = WORKFLOW_MAX_STEPS;
+
+/**
+ * The largest workflow store this application will read.
+ *
+ * `workflows/workflows.json` is loaded on every workflow operation, so a file
+ * that grew without bound — by hand, or by a bug — would become a startup
+ * cost and a memory cost. Past this size the store is treated as unreadable
+ * and an empty one is used instead, exactly as a corrupt file is.
+ */
+export const WORKFLOW_STORE_MAX_BYTES = 256_000;

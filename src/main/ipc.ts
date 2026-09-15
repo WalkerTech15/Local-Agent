@@ -37,6 +37,17 @@ import {
   updateAgentProfile,
 } from './agent-profiles';
 import { describeAgentRun, runAgentOrchestration } from './agent-orchestrator';
+import {
+  createWorkflow,
+  deleteWorkflow,
+  duplicateWorkflow,
+  findWorkflow,
+  readWorkflows,
+  requireWorkflow,
+  setWorkflowEnabled,
+  updateWorkflow,
+} from './workflow-store';
+import { describeWorkflowCheckpoint, describeWorkflowRun, runWorkflow } from './workflow-runner';
 import type { AgentStepOutcome, AgentStepRequest } from './agent-orchestrator';
 import {
   addMemory,
@@ -86,9 +97,17 @@ import { loadSettings } from './settings';
 import { AgentError, isAgentErrorCode } from '../shared/agent/errors';
 import type { AgentErrorCode } from '../shared/agent/errors';
 import { buildAgentPlan } from '../shared/agent/orchestration';
-import { resolveActiveProfile, resolveAgentProvider } from '../shared/agent/registry';
+import {
+  findAgentProfile,
+  resolveActiveProfile,
+  resolveAgentProvider,
+} from '../shared/agent/registry';
 import type { AgentRegistry } from '../shared/agent/registry';
 import { findAgentTool } from '../shared/agent/tools';
+import type { AgentToolDefinition } from '../shared/agent/tools';
+import { isWorkflowErrorCode, WorkflowError } from '../shared/workflow/errors';
+import type { WorkflowErrorCode } from '../shared/workflow/errors';
+import { describeWorkflowTools, workflowStepsWithinProfile } from '../shared/workflow/execution';
 import { CHAT_PROVIDER_ERROR_CODES, ChatProviderError } from '../shared/chat/provider';
 import type { ChatProviderResult } from '../shared/chat/provider';
 import { isMemoryErrorCode, MemoryError } from '../shared/memory/errors';
@@ -233,6 +252,35 @@ import {
   memorySetPinnedResponseSchema,
   memoryUpdateRequestSchema,
   memoryUpdateResponseSchema,
+  IPC_WORKFLOW_CANCEL_CHANNEL,
+  IPC_WORKFLOW_CREATE_CHANNEL,
+  IPC_WORKFLOW_DELETE_CHANNEL,
+  IPC_WORKFLOW_DUPLICATE_CHANNEL,
+  IPC_WORKFLOW_LIST_CHANNEL,
+  IPC_WORKFLOW_PAUSE_CHANNEL,
+  IPC_WORKFLOW_PROGRESS_CHANNEL,
+  IPC_WORKFLOW_RUN_CHANNEL,
+  IPC_WORKFLOW_SET_ENABLED_CHANNEL,
+  IPC_WORKFLOW_UPDATE_CHANNEL,
+  workflowCancelRequestSchema,
+  workflowControlResponseSchema,
+  workflowCreateRequestSchema,
+  workflowCreateResponseSchema,
+  workflowDeleteRequestSchema,
+  workflowDeleteResponseSchema,
+  workflowDuplicateRequestSchema,
+  workflowDuplicateResponseSchema,
+  workflowListRequestSchema,
+  workflowListResponseSchema,
+  workflowPauseRequestSchema,
+  workflowProgressIpcEventSchema,
+  workflowRunRequestSchema,
+  workflowRunResponseSchema,
+  workflowSchema,
+  workflowSetEnabledRequestSchema,
+  workflowSetEnabledResponseSchema,
+  workflowUpdateRequestSchema,
+  workflowUpdateResponseSchema,
 } from '../shared/schemas';
 import type {
   AgentProfile,
@@ -278,6 +326,12 @@ import type {
   WorkspaceSearchResult,
   WorkspaceTree,
   WorkspaceTreeResponse,
+  Workflow,
+  WorkflowInput,
+  WorkflowListResponse,
+  WorkflowProgressEvent,
+  WorkflowRun,
+  WorkflowRunResponse,
 } from '../shared/schemas';
 import { isWorkspaceErrorCode, WorkspaceError } from '../shared/workspace/errors';
 import type { WorkspaceErrorCode } from '../shared/workspace/errors';
@@ -663,6 +717,43 @@ function toMemoryRecordResponse(result: ActionResult<MemoryRecord>): MemoryRecor
   return {
     outcome: result.outcome,
     ...(result.value === undefined ? {} : { record: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+/**
+ * The same defence in depth the workspace, agent and memory vocabularies get,
+ * for the workflow vocabulary (Phase 2, Milestone 9).
+ *
+ * A workflow `perform` throws a `WorkflowError`, an `AgentError` or a
+ * `WorkspaceError`, each translated to an `ActionExecutionError` carrying its
+ * own code — and `execute` has its own generic `EXECUTION_FAILED` besides.
+ * Only the workflow vocabulary is valid in a workflow response, so anything
+ * else degrades to the fallback rather than failing validation on the way
+ * out or letting an unreviewed code reach the renderer.
+ */
+function toWorkflowErrorCode(
+  result: ActionResult,
+  fallback: WorkflowErrorCode,
+): WorkflowErrorCode | undefined {
+  if (result.errorCode === undefined) return undefined;
+  return isWorkflowErrorCode(result.errorCode) ? result.errorCode : fallback;
+}
+
+function toWorkflowListResponse(result: ActionResult<readonly Workflow[]>): WorkflowListResponse {
+  const errorCode = toWorkflowErrorCode(result, 'WORKFLOW_STORE_FAILED');
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { workflows: [...result.value] }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function toWorkflowRunResponse(result: ActionResult<WorkflowRun>): WorkflowRunResponse {
+  const errorCode = toWorkflowErrorCode(result, 'WORKFLOW_RUN_FAILED');
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { run: result.value }),
     ...(errorCode === undefined ? {} : { errorCode }),
   };
 }
@@ -1617,7 +1708,9 @@ export function registerIpcHandlers(ipcMain: IpcMain, runtime: IpcHandlerRuntime
       // decision vocabulary has no `allow`, so nothing here can remove a
       // confirmation the floor requires or turn a denial into a permission.
       if (request.requiresConfirmation) {
-        const answer = await runtime.requestConfirmation(describeProfileGatedStep(request));
+        const answer = await runtime.requestConfirmation(
+          request.confirmationMessage ?? describeProfileGatedStep(request),
+        );
         if (answer !== 'approved') {
           return {
             outcome: 'aborted',
@@ -2140,5 +2233,422 @@ export function registerIpcHandlers(ipcMain: IpcMain, runtime: IpcHandlerRuntime
     );
 
     return memoryImportResponseSchema.parse(toMemoryMutationResponse(result));
+  });
+
+  // -------------------------------------------------------------------------
+  // Workflows (Phase 2, Milestone 9)
+  // -------------------------------------------------------------------------
+
+  /** One in-flight workflow run, and the two ways to stop it. */
+  interface InFlightWorkflowRun {
+    readonly workflowId: string;
+    readonly controller: AbortController;
+    /** Set by `workflow:pause`: stop cleanly at the next step boundary. */
+    paused: boolean;
+  }
+
+  /**
+   * The workflow runs in flight, keyed by run id.
+   *
+   * Created per `registerIpcHandlers` call, exactly like
+   * {@link inFlightAgentRuns}, so one test's run never survives into another
+   * and one application run's cancellation handle never survives into the
+   * next. This map is also the *only* thing that knows what is actually
+   * executing, which is why the store's "do not edit or delete a running
+   * workflow" rule is answered from here rather than from a flag on disk.
+   */
+  const inFlightWorkflowRuns = new Map<string, InFlightWorkflowRun>();
+
+  function isWorkflowRunning(workflowId: string): boolean {
+    for (const run of inFlightWorkflowRuns.values()) {
+      if (run.workflowId === workflowId) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Runs one workflow operation as a permission-gated, audited action.
+   *
+   * The same shape as {@link runAgentAction}, differing only in which
+   * normalized error vocabulary it translates. An `AgentError` and a
+   * `WorkspaceError` are translated too, because a workflow run reaches agent
+   * and workspace code and a failure there must not escape as a raw error.
+   */
+  async function runWorkflowAction<TValue>(
+    actionType: ActionType,
+    parameters: Record<string, unknown>,
+    perform: (now: string) => TValue | Promise<TValue>,
+    buildConfirmation?: (now: string) => string | Promise<string>,
+  ): Promise<ActionResult<TValue>> {
+    const now = runtime.nowFn();
+    const actionRuntime = buildActionRuntime(runtime, now);
+    const confirmationMessage =
+      buildConfirmation === undefined ? null : await buildConfirmation(now);
+
+    return runAction(
+      actionRuntime,
+      newProposal(actionType, parameters),
+      confirmationMessage,
+      async () => {
+        try {
+          return await perform(now);
+        } catch (error) {
+          if (error instanceof WorkflowError) {
+            throw new ActionExecutionError(error.code, error.message);
+          }
+          if (error instanceof AgentError) {
+            throw new ActionExecutionError(error.code, error.message);
+          }
+          if (error instanceof WorkspaceError) {
+            throw new ActionExecutionError(error.code, error.message);
+          }
+          throw error;
+        }
+      },
+    );
+  }
+
+  /**
+   * Forwards one bounded progress event to the renderer that started the run.
+   *
+   * The second main → renderer push channel in this codebase, and it carries
+   * the same four properties {@link emitChatChunks} does:
+   *
+   *  - **Only the requesting window is told.** The event goes to
+   *    `event.sender` — the `WebContents` that invoked this `workflow:run` —
+   *    not broadcast, and never to a destroyed one.
+   *  - **Only bounded events are sent.** The payload is counts, an index and
+   *    two enums; there is no field for a summary, a path or any output.
+   *  - **Only valid events are sent.** One that fails
+   *    {@link workflowProgressIpcEventSchema} is skipped silently.
+   *  - **A failure here never fails the run.** Progress is advisory; the
+   *    authoritative record is the one `workflow:run` resolves with, never the
+   *    sum of these events.
+   */
+  function emitWorkflowProgress(event: IpcMainInvokeEvent, progress: WorkflowProgressEvent): void {
+    const sender = event.sender;
+    if (sender.isDestroyed()) return;
+
+    const payload = workflowProgressIpcEventSchema.safeParse(progress);
+    if (!payload.success) return;
+    sender.send(IPC_WORKFLOW_PROGRESS_CHANNEL, payload.data);
+  }
+
+  /**
+   * The sentence shown before a workflow is created, changed or removed.
+   *
+   * States what the workflow would be allowed to reach for, in the same terms
+   * the run dialog uses, because "what does this workflow permit" is the only
+   * question that matters when approving an edit. The name is sanitized
+   * before it is interpolated: it is user-typed text about to be shown inside
+   * a security prompt, which is the worst place for something that can move
+   * the cursor or reorder itself.
+   */
+  function describeWorkflowWrite(
+    verb: string,
+    workflowId: string,
+    input: WorkflowInput | null,
+  ): string {
+    const lines = [`${verb} the workflow "${workflowId}"?`];
+
+    if (input !== null) {
+      lines.push(
+        '',
+        `Agent:  ${input.agentProfileId}`,
+        `Steps:  ${String(input.steps.length)} (ceiling ${String(input.limits.maxSteps)} including retries)`,
+        `Limits: ${String(Math.round(input.limits.maxDurationMs / 1000))}s, ${String(input.limits.maxOutputBytes)} bytes`,
+        '',
+        'Ordered steps:',
+        ...input.steps.map((step, index) => {
+          const scope = step.target === '' ? 'the whole approved project' : step.target;
+          const checkpoint = step.checkpoint ? ' [asks first]' : '';
+          return `  ${String(index + 1)}. ${step.tool} on ${scope}${checkpoint}`;
+        }),
+      );
+    }
+
+    lines.push(
+      '',
+      'A workflow cannot grant a permission. Every step is still decided by the permission policy on its own action type, and it can only use tools the selected agent already allows.',
+    );
+
+    return lines.join('\n');
+  }
+
+  /** Reads the selected agent profile, or throws the normalized refusal. */
+  async function requireWorkflowAgent(workflow: Workflow): Promise<AgentProfile> {
+    const registry = await readAgentRegistry(runtime.userDataPaths.agentProfilesFile);
+    const profile = findAgentProfile(registry.profiles, workflow.agentProfileId);
+    if (profile === null) throw new WorkflowError('WORKFLOW_AGENT_NOT_FOUND');
+    if (!profile.enabled) throw new WorkflowError('WORKFLOW_AGENT_DISABLED');
+    return profile;
+  }
+
+  /**
+   * Refuses a definition whose steps fall outside the selected agent.
+   *
+   * The first link of the authority chain, checked at save time so that a
+   * workflow which could never run is refused while someone can still fix it.
+   * It is not the control — `decideNextWorkflowStep` checks the same two
+   * things again before every step — but a definition that fails here would
+   * fail there too, and failing early is kinder.
+   */
+  async function requireWorkflowWithinAgent(input: WorkflowInput, now: string): Promise<void> {
+    const candidate = workflowSchema.safeParse({ ...input, createdAt: now, updatedAt: now });
+    if (!candidate.success) throw new WorkflowError('WORKFLOW_INVALID');
+
+    const profile = await requireWorkflowAgent(candidate.data);
+    const violation = workflowStepsWithinProfile(candidate.data, profile);
+    if (violation !== null) throw new WorkflowError(violation);
+  }
+
+  ipcMain.handle(IPC_WORKFLOW_LIST_CHANNEL, async (_event, ...args: unknown[]) => {
+    workflowListRequestSchema.parse(args);
+
+    const result = await runWorkflowAction<readonly Workflow[]>(
+      'workflow.read',
+      { operation: 'list' },
+      () => readWorkflows(runtime.userDataPaths.workflowsFile),
+    );
+
+    return workflowListResponseSchema.parse(toWorkflowListResponse(result));
+  });
+
+  ipcMain.handle(IPC_WORKFLOW_CREATE_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ workflow }] = workflowCreateRequestSchema.parse(args);
+
+    const result = await runWorkflowAction<readonly Workflow[]>(
+      'workflow.write',
+      {
+        operation: 'create',
+        workflowId: workflow.id,
+        agentProfileId: workflow.agentProfileId,
+        stepCount: workflow.steps.length,
+      },
+      async (now) => {
+        await requireWorkflowWithinAgent(workflow, now);
+        return createWorkflow(runtime.userDataPaths.workflowsFile, workflow, now);
+      },
+      () => describeWorkflowWrite('Create', workflow.id, workflow),
+    );
+
+    return workflowCreateResponseSchema.parse(toWorkflowListResponse(result));
+  });
+
+  ipcMain.handle(IPC_WORKFLOW_UPDATE_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ workflowId, workflow }] = workflowUpdateRequestSchema.parse(args);
+
+    const result = await runWorkflowAction<readonly Workflow[]>(
+      'workflow.write',
+      {
+        operation: 'update',
+        workflowId,
+        agentProfileId: workflow.agentProfileId,
+        stepCount: workflow.steps.length,
+      },
+      async (now) => {
+        await requireWorkflowWithinAgent(workflow, now);
+        return updateWorkflow(
+          runtime.userDataPaths.workflowsFile,
+          workflowId,
+          workflow,
+          now,
+          isWorkflowRunning,
+        );
+      },
+      () => describeWorkflowWrite('Replace', workflowId, workflow),
+    );
+
+    return workflowUpdateResponseSchema.parse(toWorkflowListResponse(result));
+  });
+
+  ipcMain.handle(IPC_WORKFLOW_DUPLICATE_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ workflowId, newId }] = workflowDuplicateRequestSchema.parse(args);
+
+    const result = await runWorkflowAction<readonly Workflow[]>(
+      'workflow.write',
+      { operation: 'duplicate', workflowId, newId },
+      (now) => duplicateWorkflow(runtime.userDataPaths.workflowsFile, workflowId, newId, now),
+      // The copy is created disabled, which the dialog says plainly so that
+      // approving a duplicate is never mistaken for approving a second
+      // runnable workflow.
+      () =>
+        `${describeWorkflowWrite('Duplicate', workflowId, null)}\n\nThe copy is created disabled.`,
+    );
+
+    return workflowDuplicateResponseSchema.parse(toWorkflowListResponse(result));
+  });
+
+  ipcMain.handle(IPC_WORKFLOW_DELETE_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ workflowId }] = workflowDeleteRequestSchema.parse(args);
+
+    const result = await runWorkflowAction<readonly Workflow[]>(
+      'workflow.write',
+      { operation: 'delete', workflowId },
+      () => deleteWorkflow(runtime.userDataPaths.workflowsFile, workflowId, isWorkflowRunning),
+      () => describeWorkflowWrite('Delete', workflowId, null),
+    );
+
+    return workflowDeleteResponseSchema.parse(toWorkflowListResponse(result));
+  });
+
+  ipcMain.handle(IPC_WORKFLOW_SET_ENABLED_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ workflowId, enabled }] = workflowSetEnabledRequestSchema.parse(args);
+
+    const result = await runWorkflowAction<readonly Workflow[]>(
+      'workflow.write',
+      { operation: 'set-enabled', workflowId, enabled },
+      (now) => setWorkflowEnabled(runtime.userDataPaths.workflowsFile, workflowId, enabled, now),
+      () => describeWorkflowWrite(enabled ? 'Enable' : 'Disable', workflowId, null),
+    );
+
+    return workflowSetEnabledResponseSchema.parse(toWorkflowListResponse(result));
+  });
+
+  ipcMain.handle(
+    IPC_WORKFLOW_RUN_CHANNEL,
+    async (event: IpcMainInvokeEvent, ...args: unknown[]) => {
+      const [{ runId, workflowId, objective }] = workflowRunRequestSchema.parse(args);
+
+      // Read once, up front, so the dialog the user reads and the run that
+      // follows describe the same workflow — and read from the *store*, never
+      // from the request, so a compromised renderer cannot widen a run by
+      // describing it differently.
+      //
+      // These reads happen *before* the pipeline because the confirmation
+      // dialog is built from what they return, so a failure here is a request
+      // that never became a proposal: nothing was decided and nothing was
+      // executed. It is answered with the normalized code rather than thrown,
+      // so the renderer sees an ordinary failure response — the same shape
+      // every other refusal takes — instead of a rejected invoke.
+      let prepared: {
+        workflow: Workflow;
+        profile: AgentProfile;
+        provider: ModelProvider;
+        tools: readonly AgentToolDefinition[];
+      };
+      try {
+        const workflow = await requireWorkflow(runtime.userDataPaths.workflowsFile, workflowId);
+        const profile = await requireWorkflowAgent(workflow);
+        prepared = {
+          workflow,
+          profile,
+          provider: await resolveRunProvider(profile, runtime.nowFn()),
+          tools: describeWorkflowTools(workflow),
+        };
+      } catch (error) {
+        if (error instanceof WorkflowError) {
+          return workflowRunResponseSchema.parse({
+            outcome: 'failure',
+            errorCode: error.code,
+          } satisfies WorkflowRunResponse);
+        }
+        throw error;
+      }
+
+      const { workflow, profile, provider, tools } = prepared;
+
+      const result = await runWorkflowAction<WorkflowRun>(
+        'workflow.run',
+        {
+          operation: 'run',
+          // Ids and counts, never the objective. An id is a bounded, lowercase
+          // slug the schema constrains to `[a-z0-9._-]`, and recording it is
+          // what lets the audit trail answer "which workflow authorized this".
+          // The objective is user content, so only its length is recorded.
+          workflowId: workflow.id,
+          agentProfileId: profile.id,
+          stepCount: workflow.steps.length,
+          objectiveLength: objective.length,
+        },
+        async (now) => {
+          if (inFlightWorkflowRuns.size > 0) {
+            throw new WorkflowError('WORKFLOW_RUN_ALREADY_RUNNING');
+          }
+          if (!workflow.enabled) throw new WorkflowError('WORKFLOW_DISABLED');
+
+          const controller = new AbortController();
+          const inFlight: InFlightWorkflowRun = {
+            workflowId: workflow.id,
+            controller,
+            paused: false,
+          };
+          inFlightWorkflowRuns.set(runId, inFlight);
+
+          // The workflow's steps are executed by the *agent* step runner —
+          // the same closure, the same `runWorkspaceAction`, the same
+          // permission decision and the same audit record an agent run gets.
+          // There is no execution path here that Milestone 7 did not already
+          // have.
+          const runAgentStep = createAgentStepRunner(controller.signal);
+
+          try {
+            return await runWorkflow({
+              runId,
+              workflow,
+              profile,
+              provider,
+              objective,
+              startedAt: now,
+              nowFn: runtime.nowFn,
+              monotonicMs: () => Date.now(),
+              signal: controller.signal,
+              isPaused: () => inFlight.paused,
+              isEmergencyEngaged,
+              hasProject: () => workspaceSession.get() !== null,
+              refreshWorkflow: async () =>
+                findWorkflow(await readWorkflows(runtime.userDataPaths.workflowsFile), workflow.id),
+              refreshProfile: async () => {
+                const registry = await readAgentRegistry(runtime.userDataPaths.agentProfilesFile);
+                return findAgentProfile(registry.profiles, workflow.agentProfileId);
+              },
+              runStep: (request) =>
+                runAgentStep({
+                  // A `WorkflowStep` carries every field an `AgentPlanStep` has,
+                  // so the request handed to the shared executor is built from
+                  // the stored definition and nothing else.
+                  step: {
+                    tool: request.step.tool,
+                    target: request.step.target,
+                    query: request.step.query,
+                  },
+                  tool: request.tool,
+                  requiresConfirmation: request.requiresConfirmation,
+                  objective,
+                  confirmationMessage: describeWorkflowCheckpoint(workflow, request),
+                }),
+              onProgress: (progress) => {
+                emitWorkflowProgress(event, progress);
+              },
+            });
+          } finally {
+            inFlightWorkflowRuns.delete(runId);
+          }
+        },
+        () => describeWorkflowRun(workflow, profile, tools),
+      );
+
+      return workflowRunResponseSchema.parse(toWorkflowRunResponse(result));
+    },
+  );
+
+  ipcMain.handle(IPC_WORKFLOW_PAUSE_CHANNEL, (_event, ...args: unknown[]) => {
+    const [{ runId }] = workflowPauseRequestSchema.parse(args);
+    // Cooperative and idempotent: the run stops at the **next step
+    // boundary**, keeping every step it already completed, and reports
+    // `paused`. Ungated for the reason every other stop channel is: it cannot
+    // start an action, read anything or reach anything.
+    const run = inFlightWorkflowRuns.get(runId);
+    if (run !== undefined) run.paused = true;
+    return workflowControlResponseSchema.parse({ acknowledged: true });
+  });
+
+  ipcMain.handle(IPC_WORKFLOW_CANCEL_CHANNEL, (_event, ...args: unknown[]) => {
+    const [{ runId }] = workflowCancelRequestSchema.parse(args);
+    // Best-effort and idempotent, exactly like `agent:cancel`. Aborting the
+    // run's signal also kills a child process the run had started, which is
+    // the difference between this and a pause.
+    inFlightWorkflowRuns.get(runId)?.controller.abort();
+    return workflowControlResponseSchema.parse({ acknowledged: true });
   });
 }

@@ -44,8 +44,17 @@ import {
   AUDIT_OUTCOMES,
   CHAT_CONVERSATION_MAX_MESSAGES,
   CONTROL_CHARACTER_PATTERN,
+  WORKFLOW_MAX_WORKFLOWS,
   WORKSPACE_MAX_CHANGE_FILES,
 } from '../constants';
+import { WORKFLOW_ERROR_CODES } from '../workflow/errors';
+import {
+  workflowIdSchema,
+  workflowInputSchema,
+  workflowProgressEventSchema,
+  workflowRunSchema,
+  workflowSchema,
+} from './workflow.schema';
 import { AGENT_ERROR_CODES } from '../agent/errors';
 import {
   agentProfileIdSchema,
@@ -923,3 +932,167 @@ export const memoryExportResponseSchema = memoryMutationResponseSchema;
 export const memoryImportResponseSchema = memoryMutationResponseSchema;
 
 export type MemoryMutationResponse = z.infer<typeof memoryMutationResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Workflows (Phase 2, Milestone 9)
+//
+// Nine invoke channels and one advisory event. None of them introduces a
+// capability: a workflow is a saved recipe for running an agent profile that
+// already exists, and every step it may name is a Milestone 7 agent tool that
+// already existed.
+//
+// Five properties hold across all of them, and each is a shape rather than a
+// check:
+//
+//  - **A request cannot name a capability.** `workflowStepSchema.tool` is an
+//    enum of the seven agent tool ids, each bound in reviewed source to an
+//    action type that already existed. There is no field for an action type,
+//    a command string, an argument, a shell, an absolute path or a URL.
+//  - **A request cannot widen an agent.** A workflow selects a profile by id
+//    and may only use tools and paths that profile already allows — checked
+//    when it is saved and again before every step.
+//  - **A request cannot schedule anything.** `trigger` is an enum with one
+//    member, `manual`, so a payload cannot express a schedule, a file watch,
+//    a Git hook or an inbox.
+//  - **A run is named, never described.** `workflow:run` carries a run id, a
+//    workflow id and an objective. It cannot carry a step list, a tool, a
+//    path, a command or a limit — those come from the *stored* definition,
+//    read in the main process, so a compromised renderer cannot substitute a
+//    plan.
+//  - **A request cannot carry a credential.** Every object is a
+//    `strictObject` with no field capable of holding one.
+//
+// `workflow:pause` and `workflow:cancel` are the two channels with no
+// permission gate, for exactly the reason `chat:cancel`, `command:cancel` and
+// `agent:cancel` have none: neither can start anything, read anything or
+// reach anything — each can only ask an already-authorized run to stop.
+// ---------------------------------------------------------------------------
+
+export const IPC_WORKFLOW_LIST_CHANNEL = 'workflow:list';
+export const IPC_WORKFLOW_CREATE_CHANNEL = 'workflow:create';
+export const IPC_WORKFLOW_UPDATE_CHANNEL = 'workflow:update';
+export const IPC_WORKFLOW_DUPLICATE_CHANNEL = 'workflow:duplicate';
+export const IPC_WORKFLOW_DELETE_CHANNEL = 'workflow:delete';
+export const IPC_WORKFLOW_SET_ENABLED_CHANNEL = 'workflow:setEnabled';
+export const IPC_WORKFLOW_RUN_CHANNEL = 'workflow:run';
+export const IPC_WORKFLOW_PAUSE_CHANNEL = 'workflow:pause';
+export const IPC_WORKFLOW_CANCEL_CHANNEL = 'workflow:cancel';
+/** The second main to renderer push channel in this codebase. Advisory only. */
+export const IPC_WORKFLOW_PROGRESS_CHANNEL = 'workflow:progress';
+
+/**
+ * `errorCode` is always one of {@link WORKFLOW_ERROR_CODES} — the same
+ * normalized vocabulary the workflow layer throws, reused rather than
+ * restated. Never a raw error, a workflow's own text, or a filesystem path.
+ */
+const workflowErrorCodeSchema = z.enum(WORKFLOW_ERROR_CODES);
+
+export const workflowListRequestSchema = z.tuple([]);
+
+/** Deleting and enabling both address a workflow by id and nothing else. */
+const workflowReferenceRequestSchema = z.tuple([z.strictObject({ workflowId: workflowIdSchema })]);
+
+export const workflowDeleteRequestSchema = workflowReferenceRequestSchema;
+
+export const workflowSetEnabledRequestSchema = z.tuple([
+  z.strictObject({ workflowId: workflowIdSchema, enabled: z.boolean() }),
+]);
+
+export const workflowCreateRequestSchema = z.tuple([
+  z.strictObject({ workflow: workflowInputSchema }),
+]);
+
+/**
+ * Updating carries the target id *and* the submitted definition.
+ *
+ * The two must agree — the main process refuses a mismatch rather than
+ * picking one — so a payload cannot rename a workflow by addressing one id
+ * and submitting another, which would otherwise be a way to overwrite a
+ * workflow the caller did not name.
+ */
+export const workflowUpdateRequestSchema = z.tuple([
+  z.strictObject({ workflowId: workflowIdSchema, workflow: workflowInputSchema }),
+]);
+
+export const workflowDuplicateRequestSchema = z.tuple([
+  z.strictObject({ workflowId: workflowIdSchema, newId: workflowIdSchema }),
+]);
+
+export type WorkflowReferenceInput = z.infer<typeof workflowDeleteRequestSchema>[0];
+export type WorkflowSetEnabledInput = z.infer<typeof workflowSetEnabledRequestSchema>[0];
+export type WorkflowCreateInput = z.infer<typeof workflowCreateRequestSchema>[0];
+export type WorkflowUpdateInput = z.infer<typeof workflowUpdateRequestSchema>[0];
+export type WorkflowDuplicateInput = z.infer<typeof workflowDuplicateRequestSchema>[0];
+
+/**
+ * Every stored workflow, as the renderer sees it.
+ *
+ * Safe to send in full — a definition carries no credential, by construction.
+ * The interface needs the whole document to show a workflow's steps, its
+ * agent, its limits and where it will stop to ask, which is the milestone's
+ * own requirement that limits and permissions be clearly visible.
+ */
+export const workflowListResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  workflows: z.array(workflowSchema).max(WORKFLOW_MAX_WORKFLOWS).optional(),
+  errorCode: workflowErrorCodeSchema.optional(),
+});
+
+export const workflowCreateResponseSchema = workflowListResponseSchema;
+export const workflowUpdateResponseSchema = workflowListResponseSchema;
+export const workflowDuplicateResponseSchema = workflowListResponseSchema;
+export const workflowDeleteResponseSchema = workflowListResponseSchema;
+export const workflowSetEnabledResponseSchema = workflowListResponseSchema;
+
+export type WorkflowListResponse = z.infer<typeof workflowListResponseSchema>;
+
+/**
+ * Starting one manual run.
+ *
+ * `runId` correlates a later `workflow:pause` or `workflow:cancel` to this
+ * run, exactly as `chat:send`'s `requestId` and `agent:run`'s `runId` do.
+ * `objective` is the request in the user's own words, bounded by the same
+ * schema `workspace:plan` already uses. There is deliberately no `steps`, no
+ * `tools`, no `agent` and no `limits` field: everything a run is permitted to
+ * do comes from the *stored* definition and the *stored* profile.
+ */
+export const workflowRunRequestSchema = z.tuple([
+  z.strictObject({
+    runId: z.uuid(),
+    workflowId: workflowIdSchema,
+    objective: workspaceObjectiveSchema,
+  }),
+]);
+
+export type WorkflowRunRequestInput = z.infer<typeof workflowRunRequestSchema>[0];
+
+export const workflowRunResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  run: workflowRunSchema.optional(),
+  errorCode: workflowErrorCodeSchema.optional(),
+});
+
+export type WorkflowRunResponse = z.infer<typeof workflowRunResponseSchema>;
+
+export const workflowPauseRequestSchema = z.tuple([z.strictObject({ runId: z.uuid() })]);
+export const workflowCancelRequestSchema = workflowPauseRequestSchema;
+
+/** Best-effort and idempotent, exactly like {@link agentCancelResponseSchema}. */
+export const workflowControlResponseSchema = z.strictObject({
+  acknowledged: z.literal(true),
+});
+
+export type WorkflowControlResponse = z.infer<typeof workflowControlResponseSchema>;
+
+/**
+ * One advisory progress event, main to renderer.
+ *
+ * The second push channel in this codebase, and it carries the same four
+ * properties `chat:chunk` does: sent only to the `WebContents` that started
+ * the run, never broadcast; bounded and validated before it is sent; dropped
+ * silently if it fails validation; and **advisory**, because the
+ * authoritative record is the one `workflow:run` resolves with, never the sum
+ * of these events. It carries counts, an index and an enum — no summary, no
+ * path, no output.
+ */
+export const workflowProgressIpcEventSchema = workflowProgressEventSchema;

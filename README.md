@@ -90,6 +90,25 @@ assistant is named **JARVIS** by default; the product is **Local Agent**.
 > credential screen and its stated limits, and what is deliberately absent
 > (vector RAG, embeddings, cloud sync, telemetry, transcript storage and
 > automatic inference).
+>
+> **Phase 2, Milestone 9 adds the workflow engine.** A saved, named, repeatable
+> recipe for running an agent you already have: ordered steps, conditions,
+> bounded retries, confirmation checkpoints, success criteria and limits. It
+> sits at the narrow end of `workflow ⊆ agent profile ⊆ permission policy` —
+> every step names a tool from the fixed Milestone 7 registry, must also be
+> allowed by the agent profile the workflow selects, and is re-checked against
+> that profile before it runs — so a workflow introduces **no new capability
+> and cannot widen anything**. It **cannot start itself**: its trigger is an
+> enum with one member, `manual`, so a schedule, a file watch, a Git hook and
+> an inbox are not disabled anywhere, they are not representable. Retries are
+> capped per step and every attempt counts against the run's step ceiling, so
+> an unbounded loop is not expressible either. A run can be paused at the next
+> step boundary or cancelled outright, and its steps are executed by the _same_
+> step runner an agent run uses — so every one of them reaches the unchanged
+> permission engine and audit log. See
+> [docs/phase-2-workflows.md](docs/phase-2-workflows.md) for the design, the
+> check order, and why a configured rollback honestly reports "nothing to roll
+> back" in this milestone.
 
 All rights reserved. No licence has been granted for this project.
 
@@ -217,13 +236,16 @@ the workspace design is in
 [docs/phase-2-coding-workspace.md](docs/phase-2-coding-workspace.md); the
 agent profile and orchestration design is in
 [docs/phase-2-agent-profiles.md](docs/phase-2-agent-profiles.md); and the
-memory design is in [docs/phase-2-memory.md](docs/phase-2-memory.md).
+memory design is in [docs/phase-2-memory.md](docs/phase-2-memory.md); and the
+workflow design is in [docs/phase-2-workflows.md](docs/phase-2-workflows.md).
 
 ## Where your data lives
 
 Application code lives in this repository. Everything else — settings,
 secrets, permission policy, audit logs, emergency-stop state and memory —
 lives outside it, under `%APPDATA%\Local-Agent\`, each in its own location.
+Since Milestone 9, `workflows\workflows.json` holds workflow definitions —
+never a credential, and never a trigger that could start one by itself.
 `settings.json` and the encrypted `secrets\secrets.enc` are now reachable
 from the running application through real, permission-gated IPC channels;
 permission policy and emergency-stop state are still loaded read-only at
@@ -329,8 +351,13 @@ src/main/       Privileged Electron main process. Owns the BrowserWindow,
                 memory-service.ts — the scoped operations, which never learn
                 a path; memory-transfer.ts and memory-picker.ts — files
                 outside the application, at a path only a native dialog can
-                choose), and the registered IPC channels (ipc.ts), of which
-                chat:chunk is the only main-to-renderer event.
+                choose), the workflow engine (workflow-store.ts — fail-safe,
+                atomic storage that refuses to edit or delete a running
+                workflow; workflow-runner.ts — the manual run loop, which
+                decides nothing about permissions and executes no step
+                itself), and the registered IPC channels (ipc.ts), of which
+                chat:chunk and workflow:progress are the only
+                main-to-renderer events.
 src/preload/    The single contextBridge. Exposes a narrow, explicitly
                 enumerated, typed API — never ipcRenderer, never a generic
                 invoke-any-channel function. Bundled into one file: a
@@ -353,7 +380,11 @@ src/renderer/   React interface: App.tsx gates on onboardingCompleted,
                 the third file permitted to call window.localAgent), and
                 memory/ is the Milestone 8 Memory Centre (Memory.tsx, the
                 framework-independent memory-controller.ts, useMemory.ts, and
-                ipc-memory-client.ts — the fourth and last file permitted to
+                ipc-memory-client.ts — the fourth file permitted to call
+                window.localAgent), and workflow/ is the Milestone 9 Workflow
+                Dashboard (Workflows.tsx, the framework-independent
+                workflow-controller.ts, useWorkflow.ts, and
+                ipc-workflow-client.ts — the fifth and last file permitted to
                 call window.localAgent).
                 No Node, no Electron, no direct filesystem or network access
                 anywhere else in this directory — only the bridge at

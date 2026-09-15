@@ -199,6 +199,7 @@ beforeEach(async () => {
     agentProfilesFile: join(dir, 'agents', 'profiles.json'),
     memoryPersonalFile: join(dir, 'memory', 'personal.json'),
     memoryProjectsDir: join(dir, 'memory', 'projects'),
+    workflowsFile: join(dir, 'workflows', 'workflows.json'),
   };
 
   projectRoot = await realpath(await mkdtemp(join(tmpdir(), 'local-agent-project6-')));

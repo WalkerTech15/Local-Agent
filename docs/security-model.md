@@ -99,6 +99,7 @@ cannot declare anything else. An action with no matching rule is denied.
 Milestone 6 — `workspace.write`, `workspace.rollback`, `command.run` and
 `git.checkpoint`, plus — since Milestone 7 — `agent.write` and `agent.run`,
 and — since Milestone 8 — `memory.clear`, `memory.export` and `memory.import`,
+plus — since Milestone 9 — `workflow.write` and `workflow.run`,
 cannot be downgraded to `allow` by editing the policy file. The schema rejects
 such a file.
 
@@ -111,6 +112,33 @@ writes the user's notes to a file outside the application where its
 protections no longer apply, and importing brings content from outside into a
 store. Prompting for every note saved would train people to click through
 dialogs, which is its own security problem.
+
+**[enforced by type]** A **workflow can never start itself.** A workflow's
+`trigger` is an enum with exactly one member, `manual`. A scheduled run, a
+file-change trigger, a Git trigger and an email trigger are not disabled
+anywhere in the codebase — they are not representable, because the enum has no
+value for them and `workflowTriggerSchema` accepts nothing else. There is no
+`workflow.schedule`, `workflow.watch` or `workflow.trigger` action type
+either, and a hand-edited `workflows.json` claiming a non-manual trigger fails
+validation and is discarded in full. Background autonomy is therefore
+prevented by the type rather than by a check someone could forget.
+
+**[enforced by type]** A **workflow can never widen its agent.** Every step
+names a tool from the fixed Milestone 7 registry, and each of those maps to an
+action type Milestones 5 and 6 already defined — so a workflow introduces no
+capability. It must also stay inside the allowlists of the agent profile it
+selects, checked when the workflow is saved and again before every single
+step, because a profile can be narrowed afterwards. The chain is
+`workflow ⊆ agent profile ⊆ permission policy`, and a workflow sits at the
+narrow end of it. Its steps are executed by the _same_ step runner an agent
+run uses, so every one of them reaches the permission engine and the audit log
+by the path Milestone 7 already established.
+
+**[enforced by type]** A **workflow can never loop without bound.** Retries are
+capped per step, and every attempt counts as a step against the run's own step
+ceiling, so the retry budget cannot outlive the run budget. Conditions are a
+closed three-value enum rather than an expression language: a user-editable
+definition cannot ask the privileged process to evaluate arbitrary logic.
 
 **[enforced by type]** A **memory can never be written by a model.** A memory
 record's `source` is an enum of exactly two members, `user` and `import`, and

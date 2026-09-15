@@ -15,6 +15,10 @@ import {
   MEMORY_SCOPES,
   MEMORY_SOURCES,
   MODEL_PROVIDERS,
+  WORKFLOW_TRIGGERS,
+  WORKFLOW_STEP_CONDITIONS,
+  WORKFLOW_FAILURE_BEHAVIORS,
+  WORKFLOW_ROLLBACK_MODES,
   USER_DATA_PATHS,
   UI_LANGUAGES,
 } from '../../../src/shared/constants';
@@ -181,6 +185,8 @@ describe('permission model', () => {
         'memory.clear',
         'memory.export',
         'memory.import',
+        'workflow.run',
+        'workflow.write',
         'secrets.clear',
         'secrets.write',
         'workspace.rollback',
@@ -346,6 +352,70 @@ describe('memory model (Phase 2, Milestone 8)', () => {
       'memory.export',
       'memory.import',
     ]) {
+      expect(exempt, action).not.toContain(action);
+    }
+  });
+});
+
+describe('workflow model (Phase 2, Milestone 9)', () => {
+  it('declares exactly one trigger, so background autonomy is not expressible', () => {
+    // The milestone's "no scheduled workflows, no file-change triggers, no
+    // Git triggers, no email triggers" rule, expressed as the absence of an
+    // enum member rather than as a check.
+    expect(WORKFLOW_TRIGGERS).toEqual(['manual']);
+    const triggers: readonly string[] = WORKFLOW_TRIGGERS;
+    for (const forbidden of [
+      'schedule',
+      'cron',
+      'interval',
+      'file-change',
+      'git',
+      'email',
+      'startup',
+    ]) {
+      expect(triggers, forbidden).not.toContain(forbidden);
+    }
+  });
+
+  it('declares no action type that could start a workflow by itself', () => {
+    const actions: readonly string[] = ACTION_TYPES;
+    for (const forbidden of ['workflow.schedule', 'workflow.watch', 'workflow.trigger']) {
+      expect(actions, forbidden).not.toContain(forbidden);
+    }
+  });
+
+  it('keeps conditions to a closed vocabulary rather than an expression language', () => {
+    expect(WORKFLOW_STEP_CONDITIONS).toEqual([
+      'always',
+      'if-previous-succeeded',
+      'if-previous-failed',
+    ]);
+  });
+
+  it('offers only stop or continue after a failed step', () => {
+    expect(WORKFLOW_FAILURE_BEHAVIORS).toEqual(['stop', 'continue']);
+  });
+
+  it('offers only the rollback the project can actually perform', () => {
+    expect(WORKFLOW_ROLLBACK_MODES).toEqual(['none', 'restore-run-changes']);
+  });
+
+  it('puts editing a workflow and starting a run on the confirmation floor', () => {
+    const floor: readonly string[] = CONFIRMATION_REQUIRED_ACTION_TYPES;
+    expect(floor).toContain('workflow.write');
+    expect(floor).toContain('workflow.run');
+    expect(floor).not.toContain('workflow.read');
+  });
+
+  it('keeps workflows in their own location, apart from settings and secrets', () => {
+    expect(USER_DATA_PATHS.workflowsFile).toBe('workflows/workflows.json');
+    expect(USER_DATA_PATHS.workflowsFile).not.toBe(USER_DATA_PATHS.settingsFile);
+    expect(USER_DATA_PATHS.workflowsFile).not.toBe(USER_DATA_PATHS.agentProfilesFile);
+  });
+
+  it('leaves every workflow action blocked by an engaged emergency stop', () => {
+    const exempt: readonly string[] = EMERGENCY_STOP_EXEMPT_ACTION_TYPES;
+    for (const action of ['workflow.read', 'workflow.write', 'workflow.run']) {
       expect(exempt, action).not.toContain(action);
     }
   });

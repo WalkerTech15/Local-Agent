@@ -38,6 +38,8 @@ export interface UserDataPaths {
   readonly gitHooksDir: string;
   /** Agent profiles (Phase 2, Milestone 7). Holds no credential. */
   readonly agentProfilesFile: string;
+  /** Workflow definitions (Phase 2, Milestone 9). Holds no credential. */
+  readonly workflowsFile: string;
 }
 
 /**
@@ -62,5 +64,6 @@ export function resolveUserDataPaths(appDataDir: string): UserDataPaths {
     backupsDir: join(userDataDir, USER_DATA_PATHS.backupsDir),
     gitHooksDir: join(userDataDir, USER_DATA_PATHS.gitHooksDir),
     agentProfilesFile: join(userDataDir, USER_DATA_PATHS.agentProfilesFile),
+    workflowsFile: join(userDataDir, USER_DATA_PATHS.workflowsFile),
   };
 }

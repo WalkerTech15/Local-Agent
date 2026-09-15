@@ -37,6 +37,10 @@ import type {
   WorkspaceFileResponse,
   WorkspacePlanResponse,
   WorkspaceProjectResponse,
+  WorkflowInput,
+  WorkflowListResponse,
+  WorkflowProgressEvent,
+  WorkflowRunResponse,
   WorkspaceSearchResponse,
   WorkspaceTreeResponse,
 } from '../shared/schemas';
@@ -140,6 +144,40 @@ declare global {
         readonly clear: (scope: MemoryScopeValue) => Promise<MemoryMutationResponse>;
         readonly exportScope: (scope: MemoryScopeValue) => Promise<MemoryMutationResponse>;
         readonly importScope: (scope: MemoryScopeValue) => Promise<MemoryMutationResponse>;
+      };
+      /**
+       * Workflows (Phase 2, Milestone 9). Note that there is no `schedule`
+       * and no `watch`: a workflow's trigger is an enum with one member,
+       * `manual`, so nothing here can arrange for one to start by itself.
+       * Note also that `run` takes a workflow id and an objective — there is
+       * no parameter for a step, a tool, a path, a command or a limit,
+       * because what a run may do comes from the stored definition the main
+       * process reads.
+       */
+      readonly workflow: {
+        readonly list: () => Promise<WorkflowListResponse>;
+        readonly create: (workflow: WorkflowInput) => Promise<WorkflowListResponse>;
+        readonly update: (
+          workflowId: string,
+          workflow: WorkflowInput,
+        ) => Promise<WorkflowListResponse>;
+        readonly duplicate: (workflowId: string, newId: string) => Promise<WorkflowListResponse>;
+        readonly remove: (workflowId: string) => Promise<WorkflowListResponse>;
+        readonly setEnabled: (
+          workflowId: string,
+          enabled: boolean,
+        ) => Promise<WorkflowListResponse>;
+        readonly run: (
+          runId: string,
+          workflowId: string,
+          objective: string,
+        ) => Promise<WorkflowRunResponse>;
+        /** Stops the run at the next step boundary, keeping what it has done. */
+        readonly pause: (runId: string) => Promise<void>;
+        /** Aborts the run now, killing a child process it had started. */
+        readonly cancel: (runId: string) => Promise<void>;
+        /** Subscribe to advisory progress; returns an unsubscribe function. */
+        readonly onProgress: (listener: (event: WorkflowProgressEvent) => void) => () => void;
       };
       /**
        * Git (Phase 2, Milestone 6). `checkpoint` takes no argument: nothing
