@@ -119,6 +119,10 @@ function buildRuntime(overrides: Partial<IpcHandlerRuntime> = {}): IpcHandlerRun
     selectProjectDirectory: () => Promise.resolve(null),
     selectMemoryExportFile: () => Promise.resolve(null),
     selectMemoryImportFile: () => Promise.resolve(null),
+    automationOpenPath: () => Promise.resolve(''),
+    automationOpenExternal: () => Promise.resolve(),
+    automationSpecialFolder: () => 'C:\\fake\\folder',
+    focusMainWindow: () => true,
     nowFn: () => NOW,
     ...overrides,
   };

@@ -35,6 +35,8 @@ const SHARED_MEMORY_DIR = join(REPO_ROOT, 'src', 'shared', 'memory');
 const RENDERER_MEMORY_DIR = join(REPO_ROOT, 'src', 'renderer', 'memory');
 const SHARED_WORKFLOW_DIR = join(REPO_ROOT, 'src', 'shared', 'workflow');
 const RENDERER_WORKFLOW_DIR = join(REPO_ROOT, 'src', 'renderer', 'workflow');
+const SHARED_AUTOMATION_DIR = join(REPO_ROOT, 'src', 'shared', 'automation');
+const RENDERER_AUTOMATION_DIR = join(REPO_ROOT, 'src', 'renderer', 'automation');
 const SCAN_DIRECTORIES = [
   SHARED_CHAT_DIR,
   RENDERER_CHAT_DIR,
@@ -46,6 +48,8 @@ const SCAN_DIRECTORIES = [
   RENDERER_MEMORY_DIR,
   SHARED_WORKFLOW_DIR,
   RENDERER_WORKFLOW_DIR,
+  SHARED_AUTOMATION_DIR,
+  RENDERER_AUTOMATION_DIR,
 ];
 
 /** The directories whose files may never reference `window.localAgent` at all. */
@@ -55,10 +59,11 @@ const SHARED_SCAN_DIRECTORIES = [
   SHARED_AGENT_DIR,
   SHARED_MEMORY_DIR,
   SHARED_WORKFLOW_DIR,
+  SHARED_AUTOMATION_DIR,
 ];
 
 /**
- * The only five files in the renderer permitted to reference
+ * The only six files in the renderer permitted to reference
  * `window.localAgent` — one per feature, each the single seam through which
  * its privileged main-process counterpart is reached.
  */
@@ -67,12 +72,14 @@ const IPC_WORKSPACE_CLIENT_FILE = join(RENDERER_WORKSPACE_DIR, 'ipc-workspace-cl
 const IPC_AGENT_CLIENT_FILE = join(RENDERER_AGENT_DIR, 'ipc-agent-client.ts');
 const IPC_MEMORY_CLIENT_FILE = join(RENDERER_MEMORY_DIR, 'ipc-memory-client.ts');
 const IPC_WORKFLOW_CLIENT_FILE = join(RENDERER_WORKFLOW_DIR, 'ipc-workflow-client.ts');
+const IPC_AUTOMATION_CLIENT_FILE = join(RENDERER_AUTOMATION_DIR, 'ipc-automation-client.ts');
 const BRIDGE_CALLER_FILES = [
   IPC_CHAT_PROVIDER_FILE,
   IPC_WORKSPACE_CLIENT_FILE,
   IPC_AGENT_CLIENT_FILE,
   IPC_MEMORY_CLIENT_FILE,
   IPC_WORKFLOW_CLIENT_FILE,
+  IPC_AUTOMATION_CLIENT_FILE,
 ].sort();
 
 const WINDOW_LOCAL_AGENT_SUBSTRING = 'window.localAgent';

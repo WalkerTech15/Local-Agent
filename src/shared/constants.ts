@@ -318,6 +318,25 @@ export const BIDI_CONTROL_PATTERN = /[\u202A-\u202E\u2066-\u2069]/;
  * `workflow.schedule`, no `workflow.watch` and no `workflow.trigger` — a
  * workflow cannot be started by anything but a person, because no action type
  * here has the shape to start one any other way.
+ *
+ * Phase 2, Milestone 10 adds two actions for Windows desktop automation:
+ *
+ *  - `automation.read` lists the fixed tool registry and whether an action is
+ *    running. Read-only.
+ *  - `automation.run` performs exactly one registered tool: launching an
+ *    approved application, opening an approved folder, opening an approved
+ *    website, focusing this application's own window, or running a
+ *    registered script. Every entry it can name comes from
+ *    `shared/automation/registry.ts`, a fixed list in reviewed source, so a
+ *    caller sends an id from a closed enum — never a path, a URL, a command
+ *    line or an argument. On the confirmation floor, for the same reason
+ *    `command.run` is: it starts a real process or opens a real destination,
+ *    so the exact tool is shown before it runs.
+ *
+ * There is still no `shell.execute` and no generic "run this program" action:
+ * every program `automation.run` can start is one of a fixed handful of
+ * literal Windows utilities, resolved against `%SystemRoot%\System32` and
+ * never against a renderer-, project- or model-supplied path.
  */
 export const ACTION_TYPES = [
   'settings.read',
@@ -350,6 +369,8 @@ export const ACTION_TYPES = [
   'workflow.read',
   'workflow.write',
   'workflow.run',
+  'automation.read',
+  'automation.run',
 ] as const;
 export type ActionType = (typeof ACTION_TYPES)[number];
 
@@ -411,6 +432,12 @@ export const DEFAULT_PERMISSION_DECISION: PermissionDecision = 'deny';
  * step list for `workflow.write` — and no policy edit can turn either into an
  * `allow`. `workflow.read` is deliberately absent: listing definitions
  * changes nothing.
+ *
+ * Phase 2, Milestone 10 adds `automation.run`, for the same reason
+ * `command.run` is here: it starts a real process or opens a real
+ * destination outside the application's own data, so the exact tool is
+ * stated in a native dialog before it happens. `automation.read` is
+ * deliberately absent: listing the fixed registry changes nothing.
  */
 export const CONFIRMATION_REQUIRED_ACTION_TYPES: readonly ActionType[] = [
   'secrets.write',
@@ -428,6 +455,7 @@ export const CONFIRMATION_REQUIRED_ACTION_TYPES: readonly ActionType[] = [
   'memory.import',
   'workflow.write',
   'workflow.run',
+  'automation.run',
 ] as const;
 
 /**
@@ -1336,3 +1364,63 @@ export const WORKFLOW_RUN_MAX_RECORDED_STEPS = WORKFLOW_MAX_STEPS;
  * and an empty one is used instead, exactly as a corrupt file is.
  */
 export const WORKFLOW_STORE_MAX_BYTES = 256_000;
+
+// ---------------------------------------------------------------------------
+// Windows automation (Phase 2, Milestone 10)
+//
+// A bounded, permission-controlled layer over a fixed handful of reversible
+// desktop actions: launching an approved application, opening an approved
+// folder, opening an approved website, focusing this application's own
+// window, and running a registered script. Every one of those is a literal
+// entry in `shared/automation/registry.ts` — reviewed source, not
+// configuration — so there is nothing here to persist and nothing a user, a
+// project or a model can add to the list at runtime.
+//
+// Every bound below exists because the thing it bounds is unbounded in
+// principle: an action could hang waiting on the OS, a launch could be
+// retried forever, and more than one action running at once would make
+// cancellation ambiguous about what it cancels.
+// ---------------------------------------------------------------------------
+
+/**
+ * How many times a launch is attempted before it is reported as failed.
+ *
+ * One initial attempt plus up to this many retries, exactly as
+ * `WORKFLOW_MAX_STEP_RETRIES` bounds a workflow step. Each attempt is itself
+ * bounded by {@link AUTOMATION_LAUNCH_TIMEOUT_MS}, so the total time one
+ * automation run can spend is always finite.
+ */
+export const AUTOMATION_MAX_ATTEMPTS = 3;
+
+/**
+ * How long one launch attempt is given to prove it did not fail immediately.
+ *
+ * An application this action starts is meant to keep running — Notepad
+ * staying open is success, not a hang — so this is a short grace window to
+ * catch an immediate crash or a "file not found", never a budget for how long
+ * the launched program may run.
+ */
+export const AUTOMATION_LAUNCH_TIMEOUT_MS = 5_000;
+
+/**
+ * How long opening a folder or a website is given before it is treated as
+ * failed.
+ *
+ * Generous for what is normally an instant handoff to the OS shell, so a
+ * slow-to-respond shell handler does not fail a request that would have
+ * succeeded a second later.
+ */
+export const AUTOMATION_SHELL_TIMEOUT_MS = 10_000;
+
+/**
+ * How many automation actions may be in flight at once.
+ *
+ * One: a second request while one is already running is refused rather than
+ * queued, exactly as {@link COMMAND_MAX_CONCURRENT_RUNS} bounds a registry
+ * command, so "cancel" is never ambiguous about what it cancels.
+ */
+export const AUTOMATION_MAX_CONCURRENT_RUNS = 1;
+
+/** Bounds on a registry entry's own display text. Fixed strings from reviewed source. */
+export const AUTOMATION_LABEL_MAX_LENGTH = 64;
+export const AUTOMATION_DESCRIPTION_MAX_LENGTH = 200;

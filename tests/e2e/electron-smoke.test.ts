@@ -43,6 +43,7 @@ interface ExposedLocalAgentBridge {
  */
 const EXPECTED_BRIDGE_KEYS = [
   'agent',
+  'automation',
   'chat',
   'command',
   'git',
@@ -147,6 +148,14 @@ const EXPECTED_WORKFLOW_KEYS = [
   'setEnabled',
   'update',
 ] as const;
+/**
+ * Windows automation (Phase 2, Milestone 10). One read, one run, one cancel.
+ * `run` takes a run id and a tool id from the fixed registry — there is no
+ * function here through which a path, a URL, an argument, a window handle or
+ * a command could be supplied, because what a tool actually does comes from
+ * reviewed source the main process reads.
+ */
+const EXPECTED_AUTOMATION_KEYS = ['cancel', 'list', 'run'] as const;
 
 function launchEnv(): Record<string, string> {
   const env: Record<string, string> = {};
@@ -221,7 +230,7 @@ describe('Electron desktop shell — security and health-check smoke test', () =
     expect(hasIpcRenderer).toBe(false);
   });
 
-  it('exposes exactly one bridge object with exactly the narrow, named functions of Phase 2 Milestone 9', async () => {
+  it('exposes exactly one bridge object with exactly the narrow, named functions of Phase 2 Milestone 10', async () => {
     const bridgeShape = await page.evaluate(() => {
       const w = window as unknown as {
         localAgent?: {
@@ -234,6 +243,7 @@ describe('Electron desktop shell — security and health-check smoke test', () =
           agent?: object;
           memory?: object;
           workflow?: object;
+          automation?: object;
         } & Record<string, unknown>;
       };
       const localAgent = w.localAgent;
@@ -249,6 +259,7 @@ describe('Electron desktop shell — security and health-check smoke test', () =
         agentKeys: localAgent?.agent ? Object.keys(localAgent.agent).sort() : [],
         memoryKeys: localAgent?.memory ? Object.keys(localAgent.memory).sort() : [],
         workflowKeys: localAgent?.workflow ? Object.keys(localAgent.workflow).sort() : [],
+        automationKeys: localAgent?.automation ? Object.keys(localAgent.automation).sort() : [],
       };
     });
     expect(bridgeShape).toEqual({
@@ -263,7 +274,40 @@ describe('Electron desktop shell — security and health-check smoke test', () =
       agentKeys: [...EXPECTED_AGENT_KEYS],
       memoryKeys: [...EXPECTED_MEMORY_KEYS],
       workflowKeys: [...EXPECTED_WORKFLOW_KEYS],
+      automationKeys: [...EXPECTED_AUTOMATION_KEYS],
     });
+  });
+
+  it('exposes no automation function that could name a path, a URL, a command or grant a permission', async () => {
+    // The fixed tool registry is the control: `run` takes only a tool id, so
+    // there is no function anywhere on this object through which a caller
+    // could supply its own target or command, and none through which it
+    // could widen what any tool is allowed to do.
+    const present = await page.evaluate(() => {
+      const w = window as unknown as { localAgent?: { automation?: Record<string, unknown> } };
+      const automation = w.localAgent?.automation;
+      if (automation === undefined) return ['(no automation object at all)'];
+      const forbidden = [
+        'execute',
+        'runPath',
+        'runUrl',
+        'runCommand',
+        'shell',
+        'spawn',
+        'open',
+        'openPath',
+        'openUrl',
+        'grant',
+        'allow',
+        'setPermission',
+        'addTool',
+        'registerTool',
+        'schedule',
+        'watch',
+      ];
+      return forbidden.filter((key) => key in automation);
+    });
+    expect(present).toEqual([]);
   });
 
   it('exposes no workflow function that could schedule a run or grant a permission', async () => {

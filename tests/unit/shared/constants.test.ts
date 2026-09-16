@@ -179,6 +179,7 @@ describe('permission model', () => {
         'agent.run',
         'agent.write',
         'app.exit',
+        'automation.run',
         'command.run',
         'emergency.reset',
         'git.checkpoint',

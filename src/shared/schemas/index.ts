@@ -525,3 +525,31 @@ export type {
   WorkflowSetEnabledInput,
   WorkflowUpdateInput,
 } from './ipc.schema';
+
+export {
+  AUTOMATION_RUN_OUTCOMES,
+  automationCatalogSchema,
+  automationErrorCodeSchema,
+  automationRunResultSchema,
+  automationToolIdSchema,
+  automationToolKindSchema,
+  automationToolSchema,
+} from './automation.schema';
+export type { AutomationCatalog, AutomationRunResult, AutomationTool } from './automation.schema';
+
+export {
+  IPC_AUTOMATION_CANCEL_CHANNEL,
+  IPC_AUTOMATION_LIST_CHANNEL,
+  IPC_AUTOMATION_RUN_CHANNEL,
+  automationCancelRequestSchema,
+  automationCancelResponseSchema,
+  automationListRequestSchema,
+  automationListResponseSchema,
+  automationRunRequestSchema,
+  automationRunResponseSchema,
+} from './ipc.schema';
+export type {
+  AutomationListResponse,
+  AutomationRunRequestInput,
+  AutomationRunResponse,
+} from './ipc.schema';

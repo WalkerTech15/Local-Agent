@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, safeStorage, session } from 'electron';
+import { app, BrowserWindow, ipcMain, safeStorage, session, shell } from 'electron';
 import { join } from 'node:path';
 
 import { showNativeConfirmation } from './confirm';
@@ -137,6 +137,20 @@ app
       selectMemoryExportFile: (scope) =>
         showMemoryExportPicker(window.isDestroyed() ? null : window, scope),
       selectMemoryImportFile: () => showMemoryImportPicker(window.isDestroyed() ? null : window),
+      // The Electron-backed halves of the automation executor (Phase 2,
+      // Milestone 10). Built here for the same reason the callbacks above
+      // are: this is the one file holding the live `electron` module and the
+      // real window. `main/windows-automation.ts` never imports `electron`.
+      automationOpenPath: (path) => shell.openPath(path),
+      automationOpenExternal: (url) => shell.openExternal(url),
+      automationSpecialFolder: (name) => app.getPath(name),
+      focusMainWindow: () => {
+        if (window.isDestroyed()) return false;
+        if (window.isMinimized()) window.restore();
+        window.show();
+        window.focus();
+        return true;
+      },
       nowFn: () => new Date().toISOString(),
     });
   })

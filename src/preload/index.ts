@@ -116,6 +116,14 @@ import {
   type WorkflowListResponse,
   type WorkflowProgressEvent,
   type WorkflowRunResponse,
+  IPC_AUTOMATION_CANCEL_CHANNEL,
+  IPC_AUTOMATION_LIST_CHANNEL,
+  IPC_AUTOMATION_RUN_CHANNEL,
+  automationCancelResponseSchema,
+  automationListResponseSchema,
+  automationRunResponseSchema,
+  type AutomationListResponse,
+  type AutomationRunResponse,
   type AgentProfileInput,
   type AgentRegistryResponse,
   type AgentRunResponse,
@@ -598,6 +606,32 @@ const bridge = {
       return () => {
         ipcRenderer.removeListener(IPC_WORKFLOW_PROGRESS_CHANNEL, subscription);
       };
+    },
+  },
+  /**
+   * Windows automation (Phase 2, Milestone 10).
+   *
+   * Three functions, three fixed channels. `run` takes a tool id from the
+   * fixed registry and nothing else — no path, no URL, no argument, no
+   * command — so a compromised renderer can only ask for one of a closed set
+   * of registered actions, never name a target of its own. `cancel` is
+   * fire-and-forget, exactly like `workflow.cancel`.
+   */
+  automation: {
+    list: async (): Promise<AutomationListResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_AUTOMATION_LIST_CHANNEL);
+      return automationListResponseSchema.parse(result);
+    },
+    run: async (runId: string, toolId: string): Promise<AutomationRunResponse> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_AUTOMATION_RUN_CHANNEL, {
+        runId,
+        toolId,
+      });
+      return automationRunResponseSchema.parse(result);
+    },
+    cancel: async (runId: string): Promise<void> => {
+      const result: unknown = await ipcRenderer.invoke(IPC_AUTOMATION_CANCEL_CHANNEL, { runId });
+      automationCancelResponseSchema.parse(result);
     },
   },
   git: {

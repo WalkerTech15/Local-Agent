@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import { Agents } from './agent/Agents';
+import { Automation } from './automation/Automation';
 import { Chat } from './chat/Chat';
 import { Memory } from './memory/Memory';
 import { Onboarding } from './Onboarding';
@@ -10,8 +11,8 @@ import { createDefaultSettings } from '../shared/schemas';
 import type { Settings } from '../shared/schemas';
 
 type Phase = 'loading' | 'onboarding' | 'ready';
-/** Which surface the shell is showing (Phase 2, Milestones 5, 7, 8 and 9). */
-type View = 'chat' | 'workspace' | 'agents' | 'memory' | 'workflows';
+/** Which surface the shell is showing (Phase 2, Milestones 5, 7, 8, 9 and 10). */
+type View = 'chat' | 'workspace' | 'agents' | 'memory' | 'workflows' | 'automation';
 
 /**
  * Used only when `settings.get` itself did not succeed (denied, or the
@@ -135,6 +136,15 @@ export function App() {
           >
             Workflows
           </button>
+          <button
+            type="button"
+            aria-pressed={view === 'automation'}
+            onClick={() => {
+              setView('automation');
+            }}
+          >
+            Automation
+          </button>
         </nav>
       </header>
       {view === 'chat' && <Chat assistantName={assistantName} modelProvider={modelProvider} />}
@@ -144,6 +154,7 @@ export function App() {
       {view === 'agents' && <Agents />}
       {view === 'memory' && <Memory />}
       {view === 'workflows' && <Workflows />}
+      {view === 'automation' && <Automation />}
     </main>
   );
 }

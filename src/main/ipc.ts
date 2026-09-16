@@ -48,6 +48,8 @@ import {
   updateWorkflow,
 } from './workflow-store';
 import { describeWorkflowCheckpoint, describeWorkflowRun, runWorkflow } from './workflow-runner';
+import { launchDetached, runAutomationTool } from './windows-automation';
+import type { AutomationRunDependencies } from './windows-automation';
 import type { AgentStepOutcome, AgentStepRequest } from './agent-orchestrator';
 import {
   addMemory,
@@ -108,6 +110,10 @@ import type { AgentToolDefinition } from '../shared/agent/tools';
 import { isWorkflowErrorCode, WorkflowError } from '../shared/workflow/errors';
 import type { WorkflowErrorCode } from '../shared/workflow/errors';
 import { describeWorkflowTools, workflowStepsWithinProfile } from '../shared/workflow/execution';
+import { AutomationError, isAutomationErrorCode } from '../shared/automation/errors';
+import type { AutomationErrorCode } from '../shared/automation/errors';
+import { AUTOMATION_TOOLS, findAutomationTool } from '../shared/automation/registry';
+import type { AutomationToolDefinition } from '../shared/automation/registry';
 import { CHAT_PROVIDER_ERROR_CODES, ChatProviderError } from '../shared/chat/provider';
 import type { ChatProviderResult } from '../shared/chat/provider';
 import { isMemoryErrorCode, MemoryError } from '../shared/memory/errors';
@@ -115,6 +121,7 @@ import type { MemoryErrorCode } from '../shared/memory/errors';
 import {
   AGENT_NAME_MAX_LENGTH,
   AGENT_STEP_SUMMARY_MAX_LENGTH,
+  AUTOMATION_MAX_CONCURRENT_RUNS,
   CHAT_STREAM_MAX_DELTA_LENGTH,
   COMMAND_MAX_CONCURRENT_RUNS,
   MEMORY_RETRIEVAL_SCOPES,
@@ -252,6 +259,15 @@ import {
   memorySetPinnedResponseSchema,
   memoryUpdateRequestSchema,
   memoryUpdateResponseSchema,
+  IPC_AUTOMATION_CANCEL_CHANNEL,
+  IPC_AUTOMATION_LIST_CHANNEL,
+  IPC_AUTOMATION_RUN_CHANNEL,
+  automationCancelRequestSchema,
+  automationCancelResponseSchema,
+  automationListRequestSchema,
+  automationListResponseSchema,
+  automationRunRequestSchema,
+  automationRunResponseSchema,
   IPC_WORKFLOW_CANCEL_CHANNEL,
   IPC_WORKFLOW_CREATE_CHANNEL,
   IPC_WORKFLOW_DELETE_CHANNEL,
@@ -288,6 +304,10 @@ import type {
   AgentRegistryResponse,
   AgentRun,
   AgentRunResponse,
+  AutomationCatalog,
+  AutomationListResponse,
+  AutomationRunResponse,
+  AutomationRunResult,
   ChatSendResponse,
   CodingPlan,
   CommandIdValue,
@@ -403,6 +423,24 @@ export interface IpcHandlerRuntime {
    * as untrusted content by everything downstream.
    */
   readonly selectMemoryImportFile: () => Promise<string | null>;
+  /**
+   * The Electron-backed halves of the automation executor (Phase 2, Milestone
+   * 10). Injected for the same reason `selectProjectDirectory` is: the real
+   * implementations call `electron`'s `shell` and `app`, and hold the real
+   * `BrowserWindow`, all of which exist only inside a running application.
+   * `main/windows-automation.ts` never imports `electron` itself.
+   */
+  readonly automationOpenPath: (path: string) => Promise<string>;
+  readonly automationOpenExternal: (url: string) => Promise<void>;
+  readonly automationSpecialFolder: (name: 'desktop' | 'documents' | 'downloads') => string;
+  readonly focusMainWindow: () => boolean;
+  /**
+   * Starts a detached process for `automation:run`. Defaults to the real
+   * {@link launchDetached} in `main/index.ts`; overridable so a test never
+   * has to actually spawn Notepad, Calculator or a System32 utility to
+   * exercise the handler.
+   */
+  readonly automationLaunchProcess?: AutomationRunDependencies['launchProcess'];
 }
 
 /**
@@ -751,6 +789,53 @@ function toWorkflowListResponse(result: ActionResult<readonly Workflow[]>): Work
 
 function toWorkflowRunResponse(result: ActionResult<WorkflowRun>): WorkflowRunResponse {
   const errorCode = toWorkflowErrorCode(result, 'WORKFLOW_RUN_FAILED');
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { run: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+/**
+ * The same defence in depth the other vocabularies get, for the automation
+ * vocabulary (Phase 2, Milestone 10).
+ */
+function toAutomationErrorCode(
+  result: ActionResult,
+  fallback: AutomationErrorCode,
+): AutomationErrorCode | undefined {
+  if (result.errorCode === undefined) return undefined;
+  return isAutomationErrorCode(result.errorCode) ? result.errorCode : fallback;
+}
+
+/** The safe, display-only projection of one registry entry. Never the executable, args or URL. */
+function toAutomationToolSummary(tool: AutomationToolDefinition): {
+  id: AutomationToolDefinition['id'];
+  kind: AutomationToolDefinition['kind'];
+  label: string;
+  description: string;
+  requiresProject: boolean;
+} {
+  return {
+    id: tool.id,
+    kind: tool.kind,
+    label: tool.label,
+    description: tool.description,
+    requiresProject: tool.requiresProject,
+  };
+}
+
+function toAutomationListResponse(result: ActionResult<AutomationCatalog>): AutomationListResponse {
+  const errorCode = toAutomationErrorCode(result, 'AUTOMATION_RUN_FAILED');
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { catalog: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function toAutomationRunResponse(result: ActionResult<AutomationRunResult>): AutomationRunResponse {
+  const errorCode = toAutomationErrorCode(result, 'AUTOMATION_RUN_FAILED');
   return {
     outcome: result.outcome,
     ...(result.value === undefined ? {} : { run: result.value }),
@@ -2650,5 +2735,150 @@ export function registerIpcHandlers(ipcMain: IpcMain, runtime: IpcHandlerRuntime
     // the difference between this and a pause.
     inFlightWorkflowRuns.get(runId)?.controller.abort();
     return workflowControlResponseSchema.parse({ acknowledged: true });
+  });
+
+  // -------------------------------------------------------------------------
+  // Windows automation (Phase 2, Milestone 10)
+  // -------------------------------------------------------------------------
+
+  /**
+   * The one automation action allowed to be running, and how to stop it.
+   *
+   * Pending confirmations are cancellable too: reserve the request id before
+   * entering `runAction`, then let the signal prevent execution if the user
+   * cancels before approving. Active execution is tracked separately so two
+   * confirmations may be pending without racing the one-action limit.
+   */
+  const inFlightAutomationRuns = new Map<string, AbortController>();
+  const activeAutomationRuns = new Map<string, AbortController>();
+
+  /**
+   * The sentence shown before an automation tool runs.
+   *
+   * States what the tool actually is — never a raw path, URL or argument,
+   * because none of those exist on a registry entry — so the user is
+   * approving the same thing the interface displayed.
+   */
+  function describeAutomationRun(toolId: string): string {
+    const tool = findAutomationTool(toolId);
+    if (tool === null) return `Run the automation action "${toolId}"?`;
+
+    const lines = [`${tool.label}?`, '', tool.description];
+    if (tool.requiresProject) {
+      lines.push('', 'This opens the root of the approved project.');
+    }
+    lines.push(
+      '',
+      'This is a registered Local Agent action. It cannot run an arbitrary command, open an arbitrary path or reach an arbitrary website.',
+    );
+    return lines.join('\n');
+  }
+
+  ipcMain.handle(IPC_AUTOMATION_LIST_CHANNEL, async (_event, ...args: unknown[]) => {
+    automationListRequestSchema.parse(args);
+    const now = runtime.nowFn();
+    const actionRuntime = buildActionRuntime(runtime, now);
+
+    const result = await runAction(
+      actionRuntime,
+      newProposal('automation.read', {}),
+      null,
+      (): AutomationCatalog => ({
+        tools: AUTOMATION_TOOLS.map(toAutomationToolSummary),
+        busy: inFlightAutomationRuns.size > 0,
+      }),
+    );
+
+    return automationListResponseSchema.parse(toAutomationListResponse(result));
+  });
+
+  ipcMain.handle(IPC_AUTOMATION_RUN_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ runId, toolId }] = automationRunRequestSchema.parse(args);
+    const now = runtime.nowFn();
+    const actionRuntime = buildActionRuntime(runtime, now);
+    const tool = findAutomationTool(toolId);
+    const controller = new AbortController();
+    const duplicateRunId = inFlightAutomationRuns.has(runId);
+    if (!duplicateRunId) inFlightAutomationRuns.set(runId, controller);
+
+    try {
+      const result = await runAction(
+        actionRuntime,
+        // The id and its kind, never any resolved path or URL — both are
+        // literals in reviewed source, so recording them costs nothing and
+        // lets the audit trail answer "which tool ran".
+        newProposal('automation.run', { toolId, kind: tool?.kind ?? 'unknown' }),
+        describeAutomationRun(toolId),
+        async (): Promise<AutomationRunResult> => {
+          const startedAt = now;
+
+          try {
+            if (tool === null) throw new AutomationError('AUTOMATION_TOOL_NOT_FOUND');
+            if (duplicateRunId || activeAutomationRuns.size >= AUTOMATION_MAX_CONCURRENT_RUNS) {
+              throw new AutomationError('AUTOMATION_ALREADY_RUNNING');
+            }
+            activeAutomationRuns.set(runId, controller);
+            if (controller.signal.aborted) throw new AutomationError('AUTOMATION_CANCELLED');
+
+            const outcome = await runAutomationTool({
+              tool,
+              projectRoot: workspaceSession.get()?.rootPath ?? null,
+              systemRoot: process.env.SystemRoot ?? 'C:\\Windows',
+              signal: controller.signal,
+              isEmergencyEngaged,
+              dependencies: {
+                launchProcess: runtime.automationLaunchProcess ?? launchDetached,
+                openPath: runtime.automationOpenPath,
+                openExternal: runtime.automationOpenExternal,
+                getSpecialFolder: runtime.automationSpecialFolder,
+                focusMainWindow: runtime.focusMainWindow,
+              },
+            });
+
+            return {
+              runId,
+              toolId: tool.id,
+              kind: tool.kind,
+              outcome: 'succeeded',
+              startedAt,
+              finishedAt: runtime.nowFn(),
+              durationMs: Math.max(0, Date.now() - Date.parse(startedAt)),
+              attempts: outcome.attempts,
+              timedOut: false,
+              cancelled: false,
+              stoppedByEmergency: false,
+              verified: true,
+            };
+          } catch (error) {
+            // A failed `perform` never reaches the renderer as `result.value`
+            // — only the normalized `errorCode` does, exactly as a failed
+            // workflow or agent step reports. `AUTOMATION_TIMEOUT`,
+            // `AUTOMATION_CANCELLED` and `AUTOMATION_EMERGENCY_STOPPED` are
+            // stops Local Agent itself performed; every other code is a real
+            // failure. `toAutomationRunResponse` carries the distinction
+            // through the code alone.
+            if (error instanceof AutomationError) {
+              throw new ActionExecutionError(error.code, error.message);
+            }
+            throw error;
+          }
+        },
+      );
+
+      return automationRunResponseSchema.parse(toAutomationRunResponse(result));
+    } finally {
+      if (activeAutomationRuns.get(runId) === controller) activeAutomationRuns.delete(runId);
+      if (inFlightAutomationRuns.get(runId) === controller) inFlightAutomationRuns.delete(runId);
+    }
+  });
+
+  ipcMain.handle(IPC_AUTOMATION_CANCEL_CHANNEL, (_event, ...args: unknown[]) => {
+    const [{ runId }] = automationCancelRequestSchema.parse(args);
+    // Best-effort and idempotent, exactly like `command:cancel`. Aborting
+    // only ever abandons a launch attempt in progress — see
+    // `main/windows-automation.ts` for why an already-started application is
+    // deliberately left running.
+    inFlightAutomationRuns.get(runId)?.abort();
+    return automationCancelResponseSchema.parse({ acknowledged: true });
   });
 }

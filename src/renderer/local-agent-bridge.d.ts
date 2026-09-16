@@ -12,6 +12,8 @@ import type {
   AgentProfileInput,
   AgentRegistryResponse,
   AgentRunResponse,
+  AutomationListResponse,
+  AutomationRunResponse,
   ChatChunkEvent,
   ChatMessage,
   ChatSendResponse,
@@ -178,6 +180,17 @@ declare global {
         readonly cancel: (runId: string) => Promise<void>;
         /** Subscribe to advisory progress; returns an unsubscribe function. */
         readonly onProgress: (listener: (event: WorkflowProgressEvent) => void) => () => void;
+      };
+      /**
+       * Windows automation (Phase 2, Milestone 10). `run` takes a tool id
+       * from the fixed registry and nothing else — no path, no URL, no
+       * argument, no window handle, no command.
+       */
+      readonly automation: {
+        readonly list: () => Promise<AutomationListResponse>;
+        readonly run: (runId: string, toolId: string) => Promise<AutomationRunResponse>;
+        /** Best-effort: abandons a launch attempt in progress. */
+        readonly cancel: (runId: string) => Promise<void>;
       };
       /**
        * Git (Phase 2, Milestone 6). `checkpoint` takes no argument: nothing

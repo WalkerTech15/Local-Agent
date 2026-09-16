@@ -55,6 +55,12 @@ import {
   workflowRunSchema,
   workflowSchema,
 } from './workflow.schema';
+import {
+  automationCatalogSchema,
+  automationErrorCodeSchema,
+  automationRunResultSchema,
+  automationToolIdSchema,
+} from './automation.schema';
 import { AGENT_ERROR_CODES } from '../agent/errors';
 import {
   agentProfileIdSchema,
@@ -1096,3 +1102,68 @@ export type WorkflowControlResponse = z.infer<typeof workflowControlResponseSche
  * path, no output.
  */
 export const workflowProgressIpcEventSchema = workflowProgressEventSchema;
+
+// ---------------------------------------------------------------------------
+// Windows automation (Phase 2, Milestone 10)
+//
+// Three channels, one action type behind all of them:
+//
+//  - **A tool is named, never spelled.** `automationRunRequestSchema` carries
+//    an identifier from a fifteen-value enum, the fixed registry in
+//    `shared/automation/registry.ts`. There is no field here for a program
+//    path, a folder path, a URL, a window handle or an argument, so "no
+//    arbitrary desktop action" is a property of the type rather than a filter
+//    applied to one — the same shape `commandRunRequestSchema` already uses
+//    for a project's own scripts.
+//  - **Every response carries `outcome`.** Denied, blocked by the emergency
+//    stop, aborted by a rejected confirmation, or failed — the same four
+//    outcomes every other privileged channel reports.
+//
+// `automation:cancel` is the one channel with no permission gate, for exactly
+// the reason `command:cancel` and `workflow:cancel` have none: it cannot
+// start anything, read anything or reach anything — it can only ask an
+// already-authorized action to stop early.
+// ---------------------------------------------------------------------------
+
+export const IPC_AUTOMATION_LIST_CHANNEL = 'automation:list';
+export const IPC_AUTOMATION_RUN_CHANNEL = 'automation:run';
+export const IPC_AUTOMATION_CANCEL_CHANNEL = 'automation:cancel';
+
+export const automationListRequestSchema = z.tuple([]);
+
+/**
+ * `runId` correlates a later `automation:cancel` to this specific action,
+ * exactly as `command:run`'s `runId` does. `toolId` is an enum member; there
+ * is no other field.
+ */
+export const automationRunRequestSchema = z.tuple([
+  z.strictObject({
+    runId: z.uuid(),
+    toolId: automationToolIdSchema,
+  }),
+]);
+
+export type AutomationRunRequestInput = z.infer<typeof automationRunRequestSchema>[0];
+
+export const automationCancelRequestSchema = z.tuple([z.strictObject({ runId: z.uuid() })]);
+
+export const automationListResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  catalog: automationCatalogSchema.optional(),
+  errorCode: automationErrorCodeSchema.optional(),
+});
+
+export type AutomationListResponse = z.infer<typeof automationListResponseSchema>;
+
+export const automationRunResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  run: automationRunResultSchema.optional(),
+  errorCode: automationErrorCodeSchema.optional(),
+});
+
+export type AutomationRunResponse = z.infer<typeof automationRunResponseSchema>;
+
+/** Best-effort and idempotent, exactly like {@link commandCancelResponseSchema}. */
+export const automationCancelResponseSchema = z.strictObject({
+  acknowledged: z.literal(true),
+});

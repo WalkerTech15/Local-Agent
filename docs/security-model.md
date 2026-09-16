@@ -99,7 +99,8 @@ cannot declare anything else. An action with no matching rule is denied.
 Milestone 6 — `workspace.write`, `workspace.rollback`, `command.run` and
 `git.checkpoint`, plus — since Milestone 7 — `agent.write` and `agent.run`,
 and — since Milestone 8 — `memory.clear`, `memory.export` and `memory.import`,
-plus — since Milestone 9 — `workflow.write` and `workflow.run`,
+plus — since Milestone 9 — `workflow.write` and `workflow.run`, plus — since
+Milestone 10 — `automation.run`,
 cannot be downgraded to `allow` by editing the policy file. The schema rejects
 such a file.
 
@@ -139,6 +140,17 @@ capped per step, and every attempt counts as a step against the run's own step
 ceiling, so the retry budget cannot outlive the run budget. Conditions are a
 closed three-value enum rather than an expression language: a user-editable
 definition cannot ask the privileged process to evaluate arbitrary logic.
+
+**[enforced by type]** An **automation action can never name its own target.**
+A request carries a `toolId` from a fifteen-value enum, the fixed registry in
+`shared/automation/registry.ts` — never a path, a URL, an argument or a
+command line, because no field of the request or of a registry entry has that
+shape. `launch-app` and `run-script` resolve only to a literal executable
+under `%SystemRoot%\System32`, started with `shell: false`; `open-folder`
+resolves only to one of four fixed special folders or the already-approved
+project root; `open-website` resolves only to one of four fixed `https://`
+hosts, checked again immediately before it is opened; `focus-window` reaches
+only this application's own window. See `docs/phase-2-automation.md`.
 
 **[enforced by type]** A **memory can never be written by a model.** A memory
 record's `source` is an enum of exactly two members, `user` and `import`, and
@@ -1191,6 +1203,18 @@ to be gone from the drive.
     themselves do persist under `%APPDATA%\Local-Agent\backups`, and nothing
     deletes them — recovering from an older one is a manual operation the user
     performs with their own tools.
+
+31. **`focus-window` reaches only this application's own window, and
+    `automation:cancel` cannot kill an already-launched application.**
+    Focusing a window belonging to another process would need either an
+    unapproved native dependency or unrestricted shell access, both of which
+    this milestone's own security requirements forbid, so the tool is scoped
+    to what this application can already do through Electron's own API rather
+    than half-implemented. Cancelling a launch in progress abandons the
+    attempt; a process that already started is left running deliberately,
+    because a user who asked to open an application did not ask for the power
+    to close it again. Both are stated plainly in `docs/phase-2-automation.md`
+    rather than presented as complete.
 
 ---
 

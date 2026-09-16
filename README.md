@@ -109,6 +109,23 @@ assistant is named **JARVIS** by default; the product is **Local Agent**.
 > [docs/phase-2-workflows.md](docs/phase-2-workflows.md) for the design, the
 > check order, and why a configured rollback honestly reports "nothing to roll
 > back" in this milestone.
+>
+> **Phase 2, Milestone 10 adds Windows automation.** A bounded layer over
+> fifteen registered desktop actions — launching an approved application,
+> opening an approved folder or website, focusing this application's own
+> window, and running a registered script — every one fixed in reviewed
+> source (`shared/automation/registry.ts`), never configuration. A request
+> names an id from that closed enum and **nothing else**: no path, no URL, no
+> argument, no command line. Every tool routes through the same action type,
+> `automation.run`, on the confirmation floor, through the unmodified
+> `handleActionProposal` pipeline. A run is reported successful only once
+> Local Agent has observed a concrete verification signal — the process did
+> not fail immediately, the OS shell reported no error, or the window was
+> actually focused — never on the strength of having started. See
+> [docs/phase-2-automation.md](docs/phase-2-automation.md) for the design and
+> the two limitations stated plainly there: `focus-window` reaches only this
+> application's own window, and cancelling a launch cannot kill a process that
+> already started.
 
 All rights reserved. No licence has been granted for this project.
 
@@ -237,7 +254,9 @@ the workspace design is in
 agent profile and orchestration design is in
 [docs/phase-2-agent-profiles.md](docs/phase-2-agent-profiles.md); and the
 memory design is in [docs/phase-2-memory.md](docs/phase-2-memory.md); and the
-workflow design is in [docs/phase-2-workflows.md](docs/phase-2-workflows.md).
+workflow design is in [docs/phase-2-workflows.md](docs/phase-2-workflows.md);
+and the Windows automation design is in
+[docs/phase-2-automation.md](docs/phase-2-automation.md).
 
 ## Where your data lives
 
@@ -251,8 +270,10 @@ from the running application through real, permission-gated IPC channels;
 permission policy and emergency-stop state are still loaded read-only at
 startup, with no channel of their own yet. Since Milestone 8, `memory\` holds
 one file per persisted scope — never a credential, and never a session note,
-which is held in memory and written nowhere. See
-[docs/data-locations.md](docs/data-locations.md).
+which is held in memory and written nowhere. Windows automation, added in
+Milestone 10, adds no file at all: its tool registry is fixed in reviewed
+source, not user-editable configuration, so there is nothing for it to
+persist. See [docs/data-locations.md](docs/data-locations.md).
 
 ## Requirements
 
@@ -355,9 +376,11 @@ src/main/       Privileged Electron main process. Owns the BrowserWindow,
                 atomic storage that refuses to edit or delete a running
                 workflow; workflow-runner.ts — the manual run loop, which
                 decides nothing about permissions and executes no step
-                itself), and the registered IPC channels (ipc.ts), of which
-                chat:chunk and workflow:progress are the only
-                main-to-renderer events.
+                itself), Windows automation (windows-automation.ts —
+                performs exactly one registered tool from a fixed registry,
+                never a renderer-supplied path, URL or command), and the
+                registered IPC channels (ipc.ts), of which chat:chunk and
+                workflow:progress are the only main-to-renderer events.
 src/preload/    The single contextBridge. Exposes a narrow, explicitly
                 enumerated, typed API — never ipcRenderer, never a generic
                 invoke-any-channel function. Bundled into one file: a
@@ -384,8 +407,12 @@ src/renderer/   React interface: App.tsx gates on onboardingCompleted,
                 window.localAgent), and workflow/ is the Milestone 9 Workflow
                 Dashboard (Workflows.tsx, the framework-independent
                 workflow-controller.ts, useWorkflow.ts, and
-                ipc-workflow-client.ts — the fifth and last file permitted to
-                call window.localAgent).
+                ipc-workflow-client.ts — the fifth file permitted to call
+                window.localAgent), and automation/ is the Milestone 10
+                Automation panel (Automation.tsx, the framework-independent
+                automation-controller.ts, useAutomation.ts, and
+                ipc-automation-client.ts — the sixth and last file permitted
+                to call window.localAgent).
                 No Node, no Electron, no direct filesystem or network access
                 anywhere else in this directory — only the bridge at
                 window.localAgent.

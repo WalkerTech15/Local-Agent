@@ -182,6 +182,10 @@ function buildRuntime(overrides: Partial<IpcHandlerRuntime> = {}): IpcHandlerRun
     // imports by forgetting to configure one.
     selectMemoryExportFile: () => Promise.resolve(null),
     selectMemoryImportFile: () => Promise.resolve(null),
+    automationOpenPath: () => Promise.resolve(''),
+    automationOpenExternal: () => Promise.resolve(),
+    automationSpecialFolder: () => 'C:\\fake\\folder',
+    focusMainWindow: () => true,
     nowFn: () => NOW,
     ...overrides,
   };

@@ -361,6 +361,22 @@ export function createDefaultPermissionPolicy(): PermissionPolicy {
         reason:
           'A run takes several steps the user is not approving individually, so the agent, the ordered steps, the scope and the limits are shown before the first one.',
       },
+      {
+        id: 'automation.read',
+        actionType: 'automation.read',
+        decision: 'allow',
+        priority: 100,
+        reason:
+          'Listing the fixed automation tool registry is read-only and reveals no credential.',
+      },
+      {
+        id: 'automation.run',
+        actionType: 'automation.run',
+        decision: 'confirm',
+        priority: 100,
+        reason:
+          'Launching an application, opening a folder or a website, focusing a window or running a script is a real, visible desktop action, so the exact tool is stated before it runs.',
+      },
     ],
   };
 }
