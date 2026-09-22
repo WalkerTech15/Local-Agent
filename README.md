@@ -324,6 +324,40 @@ runner that launches the real Electron application for the end-to-end suite
 without extra scaffolding a Linux runner would need to work around a
 platform this project does not ship on.
 
+## Packaging a Windows installer
+
+```bash
+npm run package:win   # builds the app, then produces a Windows NSIS installer
+```
+
+This runs `npm run build` and then `electron-builder --win nsis`, configured
+in [electron-builder.json](electron-builder.json). The installer is written
+to `release/Local Agent Setup <version>.exe` (an unpacked, runnable copy also
+lands in `release/win-unpacked/`); both are git-ignored, never committed.
+
+`files` in that config keeps the package to exactly what the running app
+needs: the compiled `out/` (main process, preload) and built `dist/renderer/`
+output, plus `package.json`, are included; `react`, `react-dom` and their
+transitive `scheduler` dependency are excluded, since Vite already inlines
+them into the renderer bundle and the main process never requires them at
+runtime — the only `node_modules` package left in the packaged app is `zod`,
+which the main process's schema validation genuinely needs unbundled. No
+source file, test, secret, `.env`, or development-only file is included;
+electron-builder excludes `devDependencies` automatically, and nothing under
+`src/`, `tests/` or `docs/` is ever selected.
+
+The first NSIS build downloads NSIS's own build tooling (from
+electron-builder's maintained, checksum-verified binaries release, cached
+under `%LOCALAPPDATA%\electron-builder\Cache` afterward) — this is
+electron-builder's standard, expected mechanism for producing a Windows
+installer and happens once per machine.
+
+**Out of scope, deliberately:** code signing (the installer and its
+executables are unsigned — `Get-AuthenticodeSignature` reports `NotSigned`),
+auto-updates, and any publish/release step (`--publish never` is passed
+explicitly, and nothing in this repository's configuration references an
+update feed or a publish target).
+
 ## Repository layout
 
 ```

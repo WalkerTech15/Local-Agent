@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "appId": "com.localagent.desktop",
+  "productName": "Local Agent",
+  "copyright": "Local Agent",
+  "asar": true,
+  "directories": {
+    "output": "release"
+  },
+  "files": [
+    "out/**/*",
+    "dist/renderer/**/*",
+    "package.json",
+    "!node_modules/react/**",
+    "!node_modules/react-dom/**",
+    "!node_modules/scheduler/**"
+  ],
+  "win": {
+    "target": ["nsis"]
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true
+  }
+}
