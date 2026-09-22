@@ -358,3 +358,198 @@ export type {
   AgentSetEnabledInput,
   AgentUpdateInput,
 } from './ipc.schema';
+
+// ---------------------------------------------------------------------------
+// Local memory (Phase 2, Milestone 8)
+// ---------------------------------------------------------------------------
+
+export {
+  MEMORY_EXPORT_KIND,
+  createEmptyMemoryStore,
+  memoryCategorySchema,
+  memoryContentSchema,
+  memoryExportSchema,
+  memoryMutationSummarySchema,
+  memoryQueryResultSchema,
+  memoryRecordInputSchema,
+  memoryRecordSchema,
+  memoryRetrievalResultSchema,
+  memoryScopeSchema,
+  memorySearchQuerySchema,
+  memorySourceSchema,
+  memoryStoreSchema,
+} from './memory.schema';
+export type {
+  MemoryExport,
+  MemoryMutationSummary,
+  MemoryScopeValue,
+  MemoryQueryResult,
+  MemoryRecord,
+  MemoryRecordInput,
+  MemoryRetrievalResult,
+  MemoryStore,
+} from './memory.schema';
+
+export {
+  IPC_MEMORY_ADD_CHANNEL,
+  IPC_MEMORY_CLEAR_CHANNEL,
+  IPC_MEMORY_DELETE_CHANNEL,
+  IPC_MEMORY_EXPORT_CHANNEL,
+  IPC_MEMORY_IMPORT_CHANNEL,
+  IPC_MEMORY_LIST_CHANNEL,
+  IPC_MEMORY_RETRIEVE_CHANNEL,
+  IPC_MEMORY_SEARCH_CHANNEL,
+  IPC_MEMORY_SET_PINNED_CHANNEL,
+  IPC_MEMORY_UPDATE_CHANNEL,
+  memoryAddRequestSchema,
+  memoryAddResponseSchema,
+  memoryClearRequestSchema,
+  memoryClearResponseSchema,
+  memoryDeleteRequestSchema,
+  memoryDeleteResponseSchema,
+  memoryExportRequestSchema,
+  memoryExportResponseSchema,
+  memoryImportRequestSchema,
+  memoryImportResponseSchema,
+  memoryListRequestSchema,
+  memoryListResponseSchema,
+  memoryMutationResponseSchema,
+  memoryQueryResponseSchema,
+  memoryRecordResponseSchema,
+  memoryRetrieveRequestSchema,
+  memoryRetrieveResponseSchema,
+  memorySearchRequestSchema,
+  memorySearchResponseSchema,
+  memorySetPinnedRequestSchema,
+  memorySetPinnedResponseSchema,
+  memoryUpdateRequestSchema,
+  memoryUpdateResponseSchema,
+} from './ipc.schema';
+export type {
+  MemoryAddRequestInput,
+  MemoryDeleteRequestInput,
+  MemoryMutationResponse,
+  MemoryQueryResponse,
+  MemoryRecordResponse,
+  MemoryRetrieveRequestInput,
+  MemoryRetrieveResponse,
+  MemoryScopeRequestInput,
+  MemorySearchRequestInput,
+  MemorySetPinnedRequestInput,
+  MemoryUpdateRequestInput,
+} from './ipc.schema';
+
+// ---------------------------------------------------------------------------
+// Workflows (Phase 2, Milestone 9)
+// ---------------------------------------------------------------------------
+
+export {
+  WORKFLOW_PROGRESS_PHASES,
+  WORKFLOW_ROLLBACK_RESULTS,
+  WORKFLOW_RUN_STATUSES,
+  WORKFLOW_STOP_REASONS,
+  createEmptyWorkflowStore,
+  workflowFailureBehaviorSchema,
+  workflowIdSchema,
+  workflowInputSchema,
+  workflowLimitsSchema,
+  workflowProgressEventSchema,
+  workflowRollbackModeSchema,
+  workflowRollbackOutcomeSchema,
+  workflowRunSchema,
+  workflowRunStepSchema,
+  workflowSchema,
+  workflowStepConditionSchema,
+  workflowStepSchema,
+  workflowStoreSchema,
+  workflowSuccessCriteriaSchema,
+  workflowTriggerSchema,
+  workflowVerificationResultSchema,
+} from './workflow.schema';
+export type {
+  Workflow,
+  WorkflowInput,
+  WorkflowLimits,
+  WorkflowProgressEvent,
+  WorkflowProgressPhase,
+  WorkflowRollbackOutcome,
+  WorkflowRollbackResult,
+  WorkflowRun,
+  WorkflowRunStatus,
+  WorkflowRunStep,
+  WorkflowStep,
+  WorkflowStopReason,
+  WorkflowStore,
+  WorkflowSuccessCriteria,
+  WorkflowVerificationResult,
+} from './workflow.schema';
+
+export {
+  IPC_WORKFLOW_CANCEL_CHANNEL,
+  IPC_WORKFLOW_CREATE_CHANNEL,
+  IPC_WORKFLOW_DELETE_CHANNEL,
+  IPC_WORKFLOW_DUPLICATE_CHANNEL,
+  IPC_WORKFLOW_LIST_CHANNEL,
+  IPC_WORKFLOW_PAUSE_CHANNEL,
+  IPC_WORKFLOW_PROGRESS_CHANNEL,
+  IPC_WORKFLOW_RUN_CHANNEL,
+  IPC_WORKFLOW_SET_ENABLED_CHANNEL,
+  IPC_WORKFLOW_UPDATE_CHANNEL,
+  workflowCancelRequestSchema,
+  workflowControlResponseSchema,
+  workflowCreateRequestSchema,
+  workflowCreateResponseSchema,
+  workflowDeleteRequestSchema,
+  workflowDeleteResponseSchema,
+  workflowDuplicateRequestSchema,
+  workflowDuplicateResponseSchema,
+  workflowListRequestSchema,
+  workflowListResponseSchema,
+  workflowPauseRequestSchema,
+  workflowProgressIpcEventSchema,
+  workflowRunRequestSchema,
+  workflowRunResponseSchema,
+  workflowSetEnabledRequestSchema,
+  workflowSetEnabledResponseSchema,
+  workflowUpdateRequestSchema,
+  workflowUpdateResponseSchema,
+} from './ipc.schema';
+export type {
+  WorkflowControlResponse,
+  WorkflowCreateInput,
+  WorkflowDuplicateInput,
+  WorkflowListResponse,
+  WorkflowReferenceInput,
+  WorkflowRunRequestInput,
+  WorkflowRunResponse,
+  WorkflowSetEnabledInput,
+  WorkflowUpdateInput,
+} from './ipc.schema';
+
+export {
+  AUTOMATION_RUN_OUTCOMES,
+  automationCatalogSchema,
+  automationErrorCodeSchema,
+  automationRunResultSchema,
+  automationToolIdSchema,
+  automationToolKindSchema,
+  automationToolSchema,
+} from './automation.schema';
+export type { AutomationCatalog, AutomationRunResult, AutomationTool } from './automation.schema';
+
+export {
+  IPC_AUTOMATION_CANCEL_CHANNEL,
+  IPC_AUTOMATION_LIST_CHANNEL,
+  IPC_AUTOMATION_RUN_CHANNEL,
+  automationCancelRequestSchema,
+  automationCancelResponseSchema,
+  automationListRequestSchema,
+  automationListResponseSchema,
+  automationRunRequestSchema,
+  automationRunResponseSchema,
+} from './ipc.schema';
+export type {
+  AutomationListResponse,
+  AutomationRunRequestInput,
+  AutomationRunResponse,
+} from './ipc.schema';

@@ -37,7 +37,40 @@ import {
   updateAgentProfile,
 } from './agent-profiles';
 import { describeAgentRun, runAgentOrchestration } from './agent-orchestrator';
+import {
+  createWorkflow,
+  deleteWorkflow,
+  duplicateWorkflow,
+  findWorkflow,
+  readWorkflows,
+  requireWorkflow,
+  setWorkflowEnabled,
+  updateWorkflow,
+} from './workflow-store';
+import { describeWorkflowCheckpoint, describeWorkflowRun, runWorkflow } from './workflow-runner';
+import { launchDetached, runAutomationTool } from './windows-automation';
+import type { AutomationRunDependencies } from './windows-automation';
 import type { AgentStepOutcome, AgentStepRequest } from './agent-orchestrator';
+import {
+  addMemory,
+  buildMemoryExport,
+  clearMemoryScope,
+  deleteMemory,
+  importMemoryRecords,
+  listMemories,
+  retrieveRelevantMemories,
+  searchMemoryScope,
+  setMemoryPinned,
+  updateMemory,
+} from './memory-service';
+import type { MemoryStoreAccess } from './memory-service';
+import {
+  createSessionMemoryStore,
+  loadMemoryStore,
+  resolveProjectMemoryFile,
+  writeMemoryStore,
+} from './memory-store';
+import { readMemoryImportFile, writeMemoryExportFile } from './memory-transfer';
 import { runAction } from './action-runtime';
 import type { ActionRuntime } from './action-runtime';
 import { resolveMainChatProvider } from './chat-provider-registry';
@@ -66,19 +99,35 @@ import { loadSettings } from './settings';
 import { AgentError, isAgentErrorCode } from '../shared/agent/errors';
 import type { AgentErrorCode } from '../shared/agent/errors';
 import { buildAgentPlan } from '../shared/agent/orchestration';
-import { resolveActiveProfile, resolveAgentProvider } from '../shared/agent/registry';
+import {
+  findAgentProfile,
+  resolveActiveProfile,
+  resolveAgentProvider,
+} from '../shared/agent/registry';
 import type { AgentRegistry } from '../shared/agent/registry';
 import { findAgentTool } from '../shared/agent/tools';
+import type { AgentToolDefinition } from '../shared/agent/tools';
+import { isWorkflowErrorCode, WorkflowError } from '../shared/workflow/errors';
+import type { WorkflowErrorCode } from '../shared/workflow/errors';
+import { describeWorkflowTools, workflowStepsWithinProfile } from '../shared/workflow/execution';
+import { AutomationError, isAutomationErrorCode } from '../shared/automation/errors';
+import type { AutomationErrorCode } from '../shared/automation/errors';
+import { AUTOMATION_TOOLS, findAutomationTool } from '../shared/automation/registry';
+import type { AutomationToolDefinition } from '../shared/automation/registry';
 import { CHAT_PROVIDER_ERROR_CODES, ChatProviderError } from '../shared/chat/provider';
 import type { ChatProviderResult } from '../shared/chat/provider';
+import { isMemoryErrorCode, MemoryError } from '../shared/memory/errors';
+import type { MemoryErrorCode } from '../shared/memory/errors';
 import {
   AGENT_NAME_MAX_LENGTH,
   AGENT_STEP_SUMMARY_MAX_LENGTH,
+  AUTOMATION_MAX_CONCURRENT_RUNS,
   CHAT_STREAM_MAX_DELTA_LENGTH,
   COMMAND_MAX_CONCURRENT_RUNS,
+  MEMORY_RETRIEVAL_SCOPES,
   PROVIDERS_REQUIRING_API_KEY,
 } from '../shared/constants';
-import type { ModelProvider } from '../shared/constants';
+import type { MemoryScope, ModelProvider } from '../shared/constants';
 import { describeCommandLine, findCodingCommand } from '../shared/workspace/command-registry';
 import { collapseToSingleLine } from '../shared/workspace/text-safety';
 import {
@@ -180,6 +229,74 @@ import {
   IPC_AGENT_SELECT_CHANNEL,
   IPC_AGENT_SET_ENABLED_CHANNEL,
   IPC_AGENT_UPDATE_CHANNEL,
+  IPC_MEMORY_ADD_CHANNEL,
+  IPC_MEMORY_CLEAR_CHANNEL,
+  IPC_MEMORY_DELETE_CHANNEL,
+  IPC_MEMORY_EXPORT_CHANNEL,
+  IPC_MEMORY_IMPORT_CHANNEL,
+  IPC_MEMORY_LIST_CHANNEL,
+  IPC_MEMORY_RETRIEVE_CHANNEL,
+  IPC_MEMORY_SEARCH_CHANNEL,
+  IPC_MEMORY_SET_PINNED_CHANNEL,
+  IPC_MEMORY_UPDATE_CHANNEL,
+  memoryAddRequestSchema,
+  memoryAddResponseSchema,
+  memoryClearRequestSchema,
+  memoryClearResponseSchema,
+  memoryDeleteRequestSchema,
+  memoryDeleteResponseSchema,
+  memoryExportRequestSchema,
+  memoryExportResponseSchema,
+  memoryImportRequestSchema,
+  memoryImportResponseSchema,
+  memoryListRequestSchema,
+  memoryListResponseSchema,
+  memoryRetrieveRequestSchema,
+  memoryRetrieveResponseSchema,
+  memorySearchRequestSchema,
+  memorySearchResponseSchema,
+  memorySetPinnedRequestSchema,
+  memorySetPinnedResponseSchema,
+  memoryUpdateRequestSchema,
+  memoryUpdateResponseSchema,
+  IPC_AUTOMATION_CANCEL_CHANNEL,
+  IPC_AUTOMATION_LIST_CHANNEL,
+  IPC_AUTOMATION_RUN_CHANNEL,
+  automationCancelRequestSchema,
+  automationCancelResponseSchema,
+  automationListRequestSchema,
+  automationListResponseSchema,
+  automationRunRequestSchema,
+  automationRunResponseSchema,
+  IPC_WORKFLOW_CANCEL_CHANNEL,
+  IPC_WORKFLOW_CREATE_CHANNEL,
+  IPC_WORKFLOW_DELETE_CHANNEL,
+  IPC_WORKFLOW_DUPLICATE_CHANNEL,
+  IPC_WORKFLOW_LIST_CHANNEL,
+  IPC_WORKFLOW_PAUSE_CHANNEL,
+  IPC_WORKFLOW_PROGRESS_CHANNEL,
+  IPC_WORKFLOW_RUN_CHANNEL,
+  IPC_WORKFLOW_SET_ENABLED_CHANNEL,
+  IPC_WORKFLOW_UPDATE_CHANNEL,
+  workflowCancelRequestSchema,
+  workflowControlResponseSchema,
+  workflowCreateRequestSchema,
+  workflowCreateResponseSchema,
+  workflowDeleteRequestSchema,
+  workflowDeleteResponseSchema,
+  workflowDuplicateRequestSchema,
+  workflowDuplicateResponseSchema,
+  workflowListRequestSchema,
+  workflowListResponseSchema,
+  workflowPauseRequestSchema,
+  workflowProgressIpcEventSchema,
+  workflowRunRequestSchema,
+  workflowRunResponseSchema,
+  workflowSchema,
+  workflowSetEnabledRequestSchema,
+  workflowSetEnabledResponseSchema,
+  workflowUpdateRequestSchema,
+  workflowUpdateResponseSchema,
 } from '../shared/schemas';
 import type {
   AgentProfile,
@@ -187,6 +304,10 @@ import type {
   AgentRegistryResponse,
   AgentRun,
   AgentRunResponse,
+  AutomationCatalog,
+  AutomationListResponse,
+  AutomationRunResponse,
+  AutomationRunResult,
   ChatSendResponse,
   CodingPlan,
   CommandIdValue,
@@ -200,6 +321,14 @@ import type {
   GitDiffValue,
   GitStatusResponse,
   GitStatusValue,
+  MemoryMutationResponse,
+  MemoryMutationSummary,
+  MemoryQueryResponse,
+  MemoryQueryResult,
+  MemoryRecord,
+  MemoryRecordResponse,
+  MemoryRetrievalResult,
+  MemoryRetrieveResponse,
   SecretsActionResponse,
   SecretStatusResult,
   SettingsActionResponse,
@@ -217,6 +346,12 @@ import type {
   WorkspaceSearchResult,
   WorkspaceTree,
   WorkspaceTreeResponse,
+  Workflow,
+  WorkflowInput,
+  WorkflowListResponse,
+  WorkflowProgressEvent,
+  WorkflowRun,
+  WorkflowRunResponse,
 } from '../shared/schemas';
 import { isWorkspaceErrorCode, WorkspaceError } from '../shared/workspace/errors';
 import type { WorkspaceErrorCode } from '../shared/workspace/errors';
@@ -270,6 +405,42 @@ export interface IpcHandlerRuntime {
    * renderer sends can influence which directory is offered or chosen.
    */
   readonly selectProjectDirectory: () => Promise<string | null>;
+  /**
+   * Shows the native save dialog for a memory export and resolves to what the
+   * user chose, or `null` if they dismissed it (Phase 2, Milestone 8).
+   *
+   * Injected for the same reason `selectProjectDirectory` is, and narrow for
+   * the same reason: the only thing the caller may influence is the scope
+   * name in the suggested file name, which comes from an enum. The renderer
+   * cannot name a file to overwrite.
+   */
+  readonly selectMemoryExportFile: (scope: MemoryScope) => Promise<string | null>;
+  /**
+   * Shows the native open dialog for a memory import (Phase 2, Milestone 8).
+   *
+   * Takes no parameter at all: nothing the renderer sends can influence which
+   * file is offered or chosen, and the file that comes back is still treated
+   * as untrusted content by everything downstream.
+   */
+  readonly selectMemoryImportFile: () => Promise<string | null>;
+  /**
+   * The Electron-backed halves of the automation executor (Phase 2, Milestone
+   * 10). Injected for the same reason `selectProjectDirectory` is: the real
+   * implementations call `electron`'s `shell` and `app`, and hold the real
+   * `BrowserWindow`, all of which exist only inside a running application.
+   * `main/windows-automation.ts` never imports `electron` itself.
+   */
+  readonly automationOpenPath: (path: string) => Promise<string>;
+  readonly automationOpenExternal: (url: string) => Promise<void>;
+  readonly automationSpecialFolder: (name: 'desktop' | 'documents' | 'downloads') => string;
+  readonly focusMainWindow: () => boolean;
+  /**
+   * Starts a detached process for `automation:run`. Defaults to the real
+   * {@link launchDetached} in `main/index.ts`; overridable so a test never
+   * has to actually spawn Notepad, Calculator or a System32 utility to
+   * exercise the handler.
+   */
+  readonly automationLaunchProcess?: AutomationRunDependencies['launchProcess'];
 }
 
 /**
@@ -536,6 +707,149 @@ function toAgentRunResponse(result: ActionResult<AgentRun>): AgentRunResponse {
   return {
     outcome: result.outcome,
     ...(result.value === undefined ? {} : { run: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+/**
+ * The same defence in depth the workspace and agent vocabularies get, for the
+ * memory vocabulary (Phase 2, Milestone 8).
+ *
+ * A memory `perform` only ever throws a `MemoryError` translated to an
+ * `ActionExecutionError` carrying the same code, but `execute` has its own
+ * generic `EXECUTION_FAILED` for an unexpected throw, and that is not a
+ * member of this vocabulary. Degrading it keeps a response schema-valid
+ * rather than letting an internal code — whose text this milestone has not
+ * reviewed — cross into the renderer.
+ */
+function toMemoryErrorCode(
+  result: ActionResult,
+  fallback: MemoryErrorCode,
+): MemoryErrorCode | undefined {
+  if (result.errorCode === undefined) return undefined;
+  return isMemoryErrorCode(result.errorCode) ? result.errorCode : fallback;
+}
+
+function toMemoryQueryResponse(result: ActionResult<MemoryQueryResult>): MemoryQueryResponse {
+  const errorCode = toMemoryErrorCode(result, 'MEMORY_READ_FAILED');
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { result: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function toMemoryRetrieveResponse(
+  result: ActionResult<MemoryRetrievalResult>,
+): MemoryRetrieveResponse {
+  const errorCode = toMemoryErrorCode(result, 'MEMORY_READ_FAILED');
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { result: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function toMemoryRecordResponse(result: ActionResult<MemoryRecord>): MemoryRecordResponse {
+  const errorCode = toMemoryErrorCode(result, 'MEMORY_STORE_FAILED');
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { record: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+/**
+ * The same defence in depth the workspace, agent and memory vocabularies get,
+ * for the workflow vocabulary (Phase 2, Milestone 9).
+ *
+ * A workflow `perform` throws a `WorkflowError`, an `AgentError` or a
+ * `WorkspaceError`, each translated to an `ActionExecutionError` carrying its
+ * own code — and `execute` has its own generic `EXECUTION_FAILED` besides.
+ * Only the workflow vocabulary is valid in a workflow response, so anything
+ * else degrades to the fallback rather than failing validation on the way
+ * out or letting an unreviewed code reach the renderer.
+ */
+function toWorkflowErrorCode(
+  result: ActionResult,
+  fallback: WorkflowErrorCode,
+): WorkflowErrorCode | undefined {
+  if (result.errorCode === undefined) return undefined;
+  return isWorkflowErrorCode(result.errorCode) ? result.errorCode : fallback;
+}
+
+function toWorkflowListResponse(result: ActionResult<readonly Workflow[]>): WorkflowListResponse {
+  const errorCode = toWorkflowErrorCode(result, 'WORKFLOW_STORE_FAILED');
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { workflows: [...result.value] }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function toWorkflowRunResponse(result: ActionResult<WorkflowRun>): WorkflowRunResponse {
+  const errorCode = toWorkflowErrorCode(result, 'WORKFLOW_RUN_FAILED');
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { run: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+/**
+ * The same defence in depth the other vocabularies get, for the automation
+ * vocabulary (Phase 2, Milestone 10).
+ */
+function toAutomationErrorCode(
+  result: ActionResult,
+  fallback: AutomationErrorCode,
+): AutomationErrorCode | undefined {
+  if (result.errorCode === undefined) return undefined;
+  return isAutomationErrorCode(result.errorCode) ? result.errorCode : fallback;
+}
+
+/** The safe, display-only projection of one registry entry. Never the executable, args or URL. */
+function toAutomationToolSummary(tool: AutomationToolDefinition): {
+  id: AutomationToolDefinition['id'];
+  kind: AutomationToolDefinition['kind'];
+  label: string;
+  description: string;
+  requiresProject: boolean;
+} {
+  return {
+    id: tool.id,
+    kind: tool.kind,
+    label: tool.label,
+    description: tool.description,
+    requiresProject: tool.requiresProject,
+  };
+}
+
+function toAutomationListResponse(result: ActionResult<AutomationCatalog>): AutomationListResponse {
+  const errorCode = toAutomationErrorCode(result, 'AUTOMATION_RUN_FAILED');
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { catalog: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function toAutomationRunResponse(result: ActionResult<AutomationRunResult>): AutomationRunResponse {
+  const errorCode = toAutomationErrorCode(result, 'AUTOMATION_RUN_FAILED');
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { run: result.value }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+  };
+}
+
+function toMemoryMutationResponse(
+  result: ActionResult<MemoryMutationSummary>,
+): MemoryMutationResponse {
+  const errorCode = toMemoryErrorCode(result, 'MEMORY_STORE_FAILED');
+  return {
+    outcome: result.outcome,
+    ...(result.value === undefined ? {} : { summary: result.value }),
     ...(errorCode === undefined ? {} : { errorCode }),
   };
 }
@@ -1479,7 +1793,9 @@ export function registerIpcHandlers(ipcMain: IpcMain, runtime: IpcHandlerRuntime
       // decision vocabulary has no `allow`, so nothing here can remove a
       // confirmation the floor requires or turn a denial into a permission.
       if (request.requiresConfirmation) {
-        const answer = await runtime.requestConfirmation(describeProfileGatedStep(request));
+        const answer = await runtime.requestConfirmation(
+          request.confirmationMessage ?? describeProfileGatedStep(request),
+        );
         if (answer !== 'approved') {
           return {
             outcome: 'aborted',
@@ -1710,5 +2026,859 @@ export function registerIpcHandlers(ipcMain: IpcMain, runtime: IpcHandlerRuntime
     // kills a child process the run had started.
     inFlightAgentRuns.get(runId)?.abort();
     return agentCancelResponseSchema.parse({ acknowledged: true });
+  });
+
+  // -------------------------------------------------------------------------
+  // Local memory (Phase 2, Milestone 8)
+  // -------------------------------------------------------------------------
+
+  /**
+   * The session scope, held for the lifetime of this handler registration.
+   *
+   * Created per `registerIpcHandlers` call, exactly like
+   * {@link inFlightChatRequests} and the approved-project session, and for the
+   * same reason: one test's session notes can never leak into another's, and
+   * one application run's notes never survive into the next. Nothing writes
+   * this to disk — there is no branch below that could.
+   */
+  const sessionMemory = createSessionMemoryStore();
+
+  /**
+   * Where one project's notes live, or a refusal.
+   *
+   * This is the whole of project isolation, and it is deliberately one
+   * function: the file name is *derived* from the canonically-resolved root
+   * of the project approved in this session, never supplied by a caller.
+   * There is no parameter anywhere in the memory channels through which a
+   * renderer could name a different project's store, because there is no
+   * parameter here at all.
+   */
+  function requireProjectMemoryFile(): string {
+    const project = workspaceSession.get();
+    if (project === null) throw new MemoryError('MEMORY_NO_PROJECT');
+    return resolveProjectMemoryFile(runtime.userDataPaths.memoryProjectsDir, project.rootPath);
+  }
+
+  /**
+   * The one place that knows which backing store a scope has.
+   *
+   * `main/memory-service.ts` is given this and never learns a path, which is
+   * what keeps "session memory is never written to disk" and "a project's
+   * notes are in that project's file" properties of one reviewed object
+   * rather than habits every operation has to keep.
+   */
+  const memoryAccess: MemoryStoreAccess = {
+    read: (scope) => {
+      if (scope === 'session') return Promise.resolve(sessionMemory.read());
+      if (scope === 'personal') {
+        return loadMemoryStore(runtime.userDataPaths.memoryPersonalFile, 'personal');
+      }
+      return loadMemoryStore(requireProjectMemoryFile(), 'project');
+    },
+    write: (scope, store) => {
+      if (scope === 'session') {
+        sessionMemory.write(store);
+        return Promise.resolve();
+      }
+      if (scope === 'personal') {
+        return writeMemoryStore(runtime.userDataPaths.memoryPersonalFile, store);
+      }
+      return writeMemoryStore(requireProjectMemoryFile(), store);
+    },
+  };
+
+  /**
+   * Runs one memory operation as a permission-gated, audited action.
+   *
+   * The same shape as {@link runAgentAction}, differing only in which
+   * normalized error vocabulary it translates.
+   *
+   * The `parameters` every caller passes below are deliberately thin — an
+   * operation name, a scope, a bounded enum, and at most a *length*. **No
+   * record content, no search query, no objective and no file path ever
+   * enters an audit record.** The audit trail is meant to answer "what did
+   * this application do", and for memory that question is answerable without
+   * repeating the user's private notes into a second file that is
+   * append-only and therefore cannot be redacted afterwards.
+   */
+  async function runMemoryAction<TValue>(
+    actionType: ActionType,
+    parameters: Record<string, unknown>,
+    perform: (now: string) => TValue | Promise<TValue>,
+    buildConfirmation?: (now: string) => string | Promise<string>,
+  ): Promise<ActionResult<TValue>> {
+    const now = runtime.nowFn();
+    const actionRuntime = buildActionRuntime(runtime, now);
+    const confirmationMessage =
+      buildConfirmation === undefined ? null : await buildConfirmation(now);
+
+    return runAction(
+      actionRuntime,
+      newProposal(actionType, parameters),
+      confirmationMessage,
+      async () => {
+        try {
+          return await perform(now);
+        } catch (error) {
+          if (error instanceof MemoryError) {
+            throw new ActionExecutionError(error.code, error.message);
+          }
+          throw error;
+        }
+      },
+    );
+  }
+
+  /** Plain English for a scope, for the two dialogs that name one. */
+  function describeScope(scope: MemoryScope): string {
+    if (scope === 'session') return 'this session’s memory (never written to disk)';
+    if (scope === 'project') return 'this project’s memory';
+    return 'your personal memory';
+  }
+
+  /**
+   * How many records a scope currently holds, or `null` if that cannot be
+   * determined right now.
+   *
+   * The failure is swallowed deliberately: this only feeds a sentence in a
+   * confirmation dialog, and a dialog that cannot state a count should say so
+   * rather than turning a countable operation into an error before the user
+   * has even been asked. The real failure still surfaces — `perform` reads the
+   * same store and throws the normalized code.
+   */
+  async function countMemories(scope: MemoryScope): Promise<number | null> {
+    try {
+      return (await memoryAccess.read(scope)).records.length;
+    } catch {
+      return null;
+    }
+  }
+
+  ipcMain.handle(IPC_MEMORY_LIST_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ scope }] = memoryListRequestSchema.parse(args);
+
+    const result = await runMemoryAction<MemoryQueryResult>(
+      'memory.read',
+      { operation: 'list', scope },
+      (now) => listMemories(memoryAccess, scope, now),
+    );
+
+    return memoryListResponseSchema.parse(toMemoryQueryResponse(result));
+  });
+
+  ipcMain.handle(IPC_MEMORY_SEARCH_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ scope, query }] = memorySearchRequestSchema.parse(args);
+
+    const result = await runMemoryAction<MemoryQueryResult>(
+      'memory.read',
+      // The query's length, never the query. What someone searched their own
+      // notes for is exactly as private as the notes.
+      { operation: 'search', scope, queryLength: query.length },
+      (now) => searchMemoryScope(memoryAccess, scope, query, now),
+    );
+
+    return memorySearchResponseSchema.parse(toMemoryQueryResponse(result));
+  });
+
+  ipcMain.handle(IPC_MEMORY_RETRIEVE_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ objective }] = memoryRetrieveRequestSchema.parse(args);
+
+    const result = await runMemoryAction<MemoryRetrievalResult>(
+      'memory.read',
+      { operation: 'retrieve', objectiveLength: objective.length },
+      // Spans every readable scope, and is capped at `MEMORY_MAX_RETRIEVED`
+      // by the service — the response schema could not carry the whole store
+      // even if this asked for it.
+      (now) => retrieveRelevantMemories(memoryAccess, MEMORY_RETRIEVAL_SCOPES, objective, now),
+    );
+
+    return memoryRetrieveResponseSchema.parse(toMemoryRetrieveResponse(result));
+  });
+
+  ipcMain.handle(IPC_MEMORY_ADD_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ record }] = memoryAddRequestSchema.parse(args);
+
+    const result = await runMemoryAction<MemoryRecord>(
+      'memory.write',
+      {
+        operation: 'add',
+        scope: record.scope,
+        category: record.category,
+        contentLength: record.content.length,
+      },
+      // `source: 'user'` is stamped inside `addMemory`, never taken from the
+      // request — the input schema has no such field.
+      (now) => addMemory(memoryAccess, record, now, randomUUID),
+    );
+
+    return memoryAddResponseSchema.parse(toMemoryRecordResponse(result));
+  });
+
+  ipcMain.handle(IPC_MEMORY_UPDATE_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ id, record }] = memoryUpdateRequestSchema.parse(args);
+
+    const result = await runMemoryAction<MemoryRecord>(
+      'memory.write',
+      {
+        operation: 'update',
+        scope: record.scope,
+        category: record.category,
+        contentLength: record.content.length,
+      },
+      (now) => updateMemory(memoryAccess, id, record, now),
+    );
+
+    return memoryUpdateResponseSchema.parse(toMemoryRecordResponse(result));
+  });
+
+  ipcMain.handle(IPC_MEMORY_SET_PINNED_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ id, scope, pinned }] = memorySetPinnedRequestSchema.parse(args);
+
+    const result = await runMemoryAction<MemoryRecord>(
+      'memory.write',
+      { operation: 'set-pinned', scope, pinned },
+      (now) => setMemoryPinned(memoryAccess, id, scope, pinned, now),
+    );
+
+    return memorySetPinnedResponseSchema.parse(toMemoryRecordResponse(result));
+  });
+
+  ipcMain.handle(IPC_MEMORY_DELETE_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ id, scope }] = memoryDeleteRequestSchema.parse(args);
+
+    const result = await runMemoryAction<MemoryMutationSummary>(
+      'memory.write',
+      { operation: 'delete', scope },
+      (now) => deleteMemory(memoryAccess, id, scope, now),
+    );
+
+    return memoryDeleteResponseSchema.parse(toMemoryMutationResponse(result));
+  });
+
+  ipcMain.handle(IPC_MEMORY_CLEAR_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ scope }] = memoryClearRequestSchema.parse(args);
+
+    const result = await runMemoryAction<MemoryMutationSummary>(
+      'memory.clear',
+      { operation: 'clear', scope },
+      (now) => clearMemoryScope(memoryAccess, scope, now),
+      async () => {
+        const count = await countMemories(scope);
+        const subject = count === null ? 'every record' : `all ${String(count)} record(s)`;
+        return `Delete ${subject} in ${describeScope(scope)}? This cannot be undone.`;
+      },
+    );
+
+    return memoryClearResponseSchema.parse(toMemoryMutationResponse(result));
+  });
+
+  ipcMain.handle(IPC_MEMORY_EXPORT_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ scope }] = memoryExportRequestSchema.parse(args);
+
+    const result = await runMemoryAction<MemoryMutationSummary>(
+      'memory.export',
+      { operation: 'export', scope },
+      async (now) => {
+        const document = await buildMemoryExport(memoryAccess, scope, now);
+        // The file is chosen *after* the confirmation and by the user, in a
+        // native dialog this process owns. The renderer never sees a path and
+        // never supplies one.
+        const target = await runtime.selectMemoryExportFile(scope);
+        if (target === null) throw new MemoryError('MEMORY_FILE_SELECTION_CANCELLED');
+        await writeMemoryExportFile(target, document);
+        return { scope, affected: document.records.length, rejected: 0 };
+      },
+      async () => {
+        const count = await countMemories(scope);
+        const subject = count === null ? 'the records' : `${String(count)} record(s)`;
+        return `Write ${subject} from ${describeScope(scope)} to a file outside Local Agent? You will choose the file next. Once exported, this application’s protections no longer apply to them.`;
+      },
+    );
+
+    return memoryExportResponseSchema.parse(toMemoryMutationResponse(result));
+  });
+
+  ipcMain.handle(IPC_MEMORY_IMPORT_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ scope }] = memoryImportRequestSchema.parse(args);
+
+    const result = await runMemoryAction<MemoryMutationSummary>(
+      'memory.import',
+      { operation: 'import', scope },
+      async (now) => {
+        const source = await runtime.selectMemoryImportFile();
+        if (source === null) throw new MemoryError('MEMORY_FILE_SELECTION_CANCELLED');
+        // Returned as `unknown`: nothing has yet claimed this file is a
+        // memory export. `importMemoryRecords` decides that, against the
+        // schema, and re-stamps every record it accepts.
+        const document = await readMemoryImportFile(source);
+        return importMemoryRecords(memoryAccess, scope, document, now, randomUUID);
+      },
+      () =>
+        `Read memory records from a file outside Local Agent into ${describeScope(scope)}? You will choose the file next. Its contents are untrusted: every record is validated, and anything that looks like a credential is refused.`,
+    );
+
+    return memoryImportResponseSchema.parse(toMemoryMutationResponse(result));
+  });
+
+  // -------------------------------------------------------------------------
+  // Workflows (Phase 2, Milestone 9)
+  // -------------------------------------------------------------------------
+
+  /** One in-flight workflow run, and the two ways to stop it. */
+  interface InFlightWorkflowRun {
+    readonly workflowId: string;
+    readonly controller: AbortController;
+    /** Set by `workflow:pause`: stop cleanly at the next step boundary. */
+    paused: boolean;
+  }
+
+  /**
+   * The workflow runs in flight, keyed by run id.
+   *
+   * Created per `registerIpcHandlers` call, exactly like
+   * {@link inFlightAgentRuns}, so one test's run never survives into another
+   * and one application run's cancellation handle never survives into the
+   * next. This map is also the *only* thing that knows what is actually
+   * executing, which is why the store's "do not edit or delete a running
+   * workflow" rule is answered from here rather than from a flag on disk.
+   */
+  const inFlightWorkflowRuns = new Map<string, InFlightWorkflowRun>();
+
+  function isWorkflowRunning(workflowId: string): boolean {
+    for (const run of inFlightWorkflowRuns.values()) {
+      if (run.workflowId === workflowId) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Runs one workflow operation as a permission-gated, audited action.
+   *
+   * The same shape as {@link runAgentAction}, differing only in which
+   * normalized error vocabulary it translates. An `AgentError` and a
+   * `WorkspaceError` are translated too, because a workflow run reaches agent
+   * and workspace code and a failure there must not escape as a raw error.
+   */
+  async function runWorkflowAction<TValue>(
+    actionType: ActionType,
+    parameters: Record<string, unknown>,
+    perform: (now: string) => TValue | Promise<TValue>,
+    buildConfirmation?: (now: string) => string | Promise<string>,
+  ): Promise<ActionResult<TValue>> {
+    const now = runtime.nowFn();
+    const actionRuntime = buildActionRuntime(runtime, now);
+    const confirmationMessage =
+      buildConfirmation === undefined ? null : await buildConfirmation(now);
+
+    return runAction(
+      actionRuntime,
+      newProposal(actionType, parameters),
+      confirmationMessage,
+      async () => {
+        try {
+          return await perform(now);
+        } catch (error) {
+          if (error instanceof WorkflowError) {
+            throw new ActionExecutionError(error.code, error.message);
+          }
+          if (error instanceof AgentError) {
+            throw new ActionExecutionError(error.code, error.message);
+          }
+          if (error instanceof WorkspaceError) {
+            throw new ActionExecutionError(error.code, error.message);
+          }
+          throw error;
+        }
+      },
+    );
+  }
+
+  /**
+   * Forwards one bounded progress event to the renderer that started the run.
+   *
+   * The second main → renderer push channel in this codebase, and it carries
+   * the same four properties {@link emitChatChunks} does:
+   *
+   *  - **Only the requesting window is told.** The event goes to
+   *    `event.sender` — the `WebContents` that invoked this `workflow:run` —
+   *    not broadcast, and never to a destroyed one.
+   *  - **Only bounded events are sent.** The payload is counts, an index and
+   *    two enums; there is no field for a summary, a path or any output.
+   *  - **Only valid events are sent.** One that fails
+   *    {@link workflowProgressIpcEventSchema} is skipped silently.
+   *  - **A failure here never fails the run.** Progress is advisory; the
+   *    authoritative record is the one `workflow:run` resolves with, never the
+   *    sum of these events.
+   */
+  function emitWorkflowProgress(event: IpcMainInvokeEvent, progress: WorkflowProgressEvent): void {
+    const sender = event.sender;
+    if (sender.isDestroyed()) return;
+
+    const payload = workflowProgressIpcEventSchema.safeParse(progress);
+    if (!payload.success) return;
+    sender.send(IPC_WORKFLOW_PROGRESS_CHANNEL, payload.data);
+  }
+
+  /**
+   * The sentence shown before a workflow is created, changed or removed.
+   *
+   * States what the workflow would be allowed to reach for, in the same terms
+   * the run dialog uses, because "what does this workflow permit" is the only
+   * question that matters when approving an edit. The name is sanitized
+   * before it is interpolated: it is user-typed text about to be shown inside
+   * a security prompt, which is the worst place for something that can move
+   * the cursor or reorder itself.
+   */
+  function describeWorkflowWrite(
+    verb: string,
+    workflowId: string,
+    input: WorkflowInput | null,
+  ): string {
+    const lines = [`${verb} the workflow "${workflowId}"?`];
+
+    if (input !== null) {
+      lines.push(
+        '',
+        `Agent:  ${input.agentProfileId}`,
+        `Steps:  ${String(input.steps.length)} (ceiling ${String(input.limits.maxSteps)} including retries)`,
+        `Limits: ${String(Math.round(input.limits.maxDurationMs / 1000))}s, ${String(input.limits.maxOutputBytes)} bytes`,
+        '',
+        'Ordered steps:',
+        ...input.steps.map((step, index) => {
+          const scope = step.target === '' ? 'the whole approved project' : step.target;
+          const checkpoint = step.checkpoint ? ' [asks first]' : '';
+          return `  ${String(index + 1)}. ${step.tool} on ${scope}${checkpoint}`;
+        }),
+      );
+    }
+
+    lines.push(
+      '',
+      'A workflow cannot grant a permission. Every step is still decided by the permission policy on its own action type, and it can only use tools the selected agent already allows.',
+    );
+
+    return lines.join('\n');
+  }
+
+  /** Reads the selected agent profile, or throws the normalized refusal. */
+  async function requireWorkflowAgent(workflow: Workflow): Promise<AgentProfile> {
+    const registry = await readAgentRegistry(runtime.userDataPaths.agentProfilesFile);
+    const profile = findAgentProfile(registry.profiles, workflow.agentProfileId);
+    if (profile === null) throw new WorkflowError('WORKFLOW_AGENT_NOT_FOUND');
+    if (!profile.enabled) throw new WorkflowError('WORKFLOW_AGENT_DISABLED');
+    return profile;
+  }
+
+  /**
+   * Refuses a definition whose steps fall outside the selected agent.
+   *
+   * The first link of the authority chain, checked at save time so that a
+   * workflow which could never run is refused while someone can still fix it.
+   * It is not the control — `decideNextWorkflowStep` checks the same two
+   * things again before every step — but a definition that fails here would
+   * fail there too, and failing early is kinder.
+   */
+  async function requireWorkflowWithinAgent(input: WorkflowInput, now: string): Promise<void> {
+    const candidate = workflowSchema.safeParse({ ...input, createdAt: now, updatedAt: now });
+    if (!candidate.success) throw new WorkflowError('WORKFLOW_INVALID');
+
+    const profile = await requireWorkflowAgent(candidate.data);
+    const violation = workflowStepsWithinProfile(candidate.data, profile);
+    if (violation !== null) throw new WorkflowError(violation);
+  }
+
+  ipcMain.handle(IPC_WORKFLOW_LIST_CHANNEL, async (_event, ...args: unknown[]) => {
+    workflowListRequestSchema.parse(args);
+
+    const result = await runWorkflowAction<readonly Workflow[]>(
+      'workflow.read',
+      { operation: 'list' },
+      () => readWorkflows(runtime.userDataPaths.workflowsFile),
+    );
+
+    return workflowListResponseSchema.parse(toWorkflowListResponse(result));
+  });
+
+  ipcMain.handle(IPC_WORKFLOW_CREATE_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ workflow }] = workflowCreateRequestSchema.parse(args);
+
+    const result = await runWorkflowAction<readonly Workflow[]>(
+      'workflow.write',
+      {
+        operation: 'create',
+        workflowId: workflow.id,
+        agentProfileId: workflow.agentProfileId,
+        stepCount: workflow.steps.length,
+      },
+      async (now) => {
+        await requireWorkflowWithinAgent(workflow, now);
+        return createWorkflow(runtime.userDataPaths.workflowsFile, workflow, now);
+      },
+      () => describeWorkflowWrite('Create', workflow.id, workflow),
+    );
+
+    return workflowCreateResponseSchema.parse(toWorkflowListResponse(result));
+  });
+
+  ipcMain.handle(IPC_WORKFLOW_UPDATE_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ workflowId, workflow }] = workflowUpdateRequestSchema.parse(args);
+
+    const result = await runWorkflowAction<readonly Workflow[]>(
+      'workflow.write',
+      {
+        operation: 'update',
+        workflowId,
+        agentProfileId: workflow.agentProfileId,
+        stepCount: workflow.steps.length,
+      },
+      async (now) => {
+        await requireWorkflowWithinAgent(workflow, now);
+        return updateWorkflow(
+          runtime.userDataPaths.workflowsFile,
+          workflowId,
+          workflow,
+          now,
+          isWorkflowRunning,
+        );
+      },
+      () => describeWorkflowWrite('Replace', workflowId, workflow),
+    );
+
+    return workflowUpdateResponseSchema.parse(toWorkflowListResponse(result));
+  });
+
+  ipcMain.handle(IPC_WORKFLOW_DUPLICATE_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ workflowId, newId }] = workflowDuplicateRequestSchema.parse(args);
+
+    const result = await runWorkflowAction<readonly Workflow[]>(
+      'workflow.write',
+      { operation: 'duplicate', workflowId, newId },
+      (now) => duplicateWorkflow(runtime.userDataPaths.workflowsFile, workflowId, newId, now),
+      // The copy is created disabled, which the dialog says plainly so that
+      // approving a duplicate is never mistaken for approving a second
+      // runnable workflow.
+      () =>
+        `${describeWorkflowWrite('Duplicate', workflowId, null)}\n\nThe copy is created disabled.`,
+    );
+
+    return workflowDuplicateResponseSchema.parse(toWorkflowListResponse(result));
+  });
+
+  ipcMain.handle(IPC_WORKFLOW_DELETE_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ workflowId }] = workflowDeleteRequestSchema.parse(args);
+
+    const result = await runWorkflowAction<readonly Workflow[]>(
+      'workflow.write',
+      { operation: 'delete', workflowId },
+      () => deleteWorkflow(runtime.userDataPaths.workflowsFile, workflowId, isWorkflowRunning),
+      () => describeWorkflowWrite('Delete', workflowId, null),
+    );
+
+    return workflowDeleteResponseSchema.parse(toWorkflowListResponse(result));
+  });
+
+  ipcMain.handle(IPC_WORKFLOW_SET_ENABLED_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ workflowId, enabled }] = workflowSetEnabledRequestSchema.parse(args);
+
+    const result = await runWorkflowAction<readonly Workflow[]>(
+      'workflow.write',
+      { operation: 'set-enabled', workflowId, enabled },
+      (now) => setWorkflowEnabled(runtime.userDataPaths.workflowsFile, workflowId, enabled, now),
+      () => describeWorkflowWrite(enabled ? 'Enable' : 'Disable', workflowId, null),
+    );
+
+    return workflowSetEnabledResponseSchema.parse(toWorkflowListResponse(result));
+  });
+
+  ipcMain.handle(
+    IPC_WORKFLOW_RUN_CHANNEL,
+    async (event: IpcMainInvokeEvent, ...args: unknown[]) => {
+      const [{ runId, workflowId, objective }] = workflowRunRequestSchema.parse(args);
+
+      // Read once, up front, so the dialog the user reads and the run that
+      // follows describe the same workflow — and read from the *store*, never
+      // from the request, so a compromised renderer cannot widen a run by
+      // describing it differently.
+      //
+      // These reads happen *before* the pipeline because the confirmation
+      // dialog is built from what they return, so a failure here is a request
+      // that never became a proposal: nothing was decided and nothing was
+      // executed. It is answered with the normalized code rather than thrown,
+      // so the renderer sees an ordinary failure response — the same shape
+      // every other refusal takes — instead of a rejected invoke.
+      let prepared: {
+        workflow: Workflow;
+        profile: AgentProfile;
+        provider: ModelProvider;
+        tools: readonly AgentToolDefinition[];
+      };
+      try {
+        const workflow = await requireWorkflow(runtime.userDataPaths.workflowsFile, workflowId);
+        const profile = await requireWorkflowAgent(workflow);
+        prepared = {
+          workflow,
+          profile,
+          provider: await resolveRunProvider(profile, runtime.nowFn()),
+          tools: describeWorkflowTools(workflow),
+        };
+      } catch (error) {
+        if (error instanceof WorkflowError) {
+          return workflowRunResponseSchema.parse({
+            outcome: 'failure',
+            errorCode: error.code,
+          } satisfies WorkflowRunResponse);
+        }
+        throw error;
+      }
+
+      const { workflow, profile, provider, tools } = prepared;
+
+      const result = await runWorkflowAction<WorkflowRun>(
+        'workflow.run',
+        {
+          operation: 'run',
+          // Ids and counts, never the objective. An id is a bounded, lowercase
+          // slug the schema constrains to `[a-z0-9._-]`, and recording it is
+          // what lets the audit trail answer "which workflow authorized this".
+          // The objective is user content, so only its length is recorded.
+          workflowId: workflow.id,
+          agentProfileId: profile.id,
+          stepCount: workflow.steps.length,
+          objectiveLength: objective.length,
+        },
+        async (now) => {
+          if (inFlightWorkflowRuns.size > 0) {
+            throw new WorkflowError('WORKFLOW_RUN_ALREADY_RUNNING');
+          }
+          if (!workflow.enabled) throw new WorkflowError('WORKFLOW_DISABLED');
+
+          const controller = new AbortController();
+          const inFlight: InFlightWorkflowRun = {
+            workflowId: workflow.id,
+            controller,
+            paused: false,
+          };
+          inFlightWorkflowRuns.set(runId, inFlight);
+
+          // The workflow's steps are executed by the *agent* step runner —
+          // the same closure, the same `runWorkspaceAction`, the same
+          // permission decision and the same audit record an agent run gets.
+          // There is no execution path here that Milestone 7 did not already
+          // have.
+          const runAgentStep = createAgentStepRunner(controller.signal);
+
+          try {
+            return await runWorkflow({
+              runId,
+              workflow,
+              profile,
+              provider,
+              objective,
+              startedAt: now,
+              nowFn: runtime.nowFn,
+              monotonicMs: () => Date.now(),
+              signal: controller.signal,
+              isPaused: () => inFlight.paused,
+              isEmergencyEngaged,
+              hasProject: () => workspaceSession.get() !== null,
+              refreshWorkflow: async () =>
+                findWorkflow(await readWorkflows(runtime.userDataPaths.workflowsFile), workflow.id),
+              refreshProfile: async () => {
+                const registry = await readAgentRegistry(runtime.userDataPaths.agentProfilesFile);
+                return findAgentProfile(registry.profiles, workflow.agentProfileId);
+              },
+              runStep: (request) =>
+                runAgentStep({
+                  // A `WorkflowStep` carries every field an `AgentPlanStep` has,
+                  // so the request handed to the shared executor is built from
+                  // the stored definition and nothing else.
+                  step: {
+                    tool: request.step.tool,
+                    target: request.step.target,
+                    query: request.step.query,
+                  },
+                  tool: request.tool,
+                  requiresConfirmation: request.requiresConfirmation,
+                  objective,
+                  confirmationMessage: describeWorkflowCheckpoint(workflow, request),
+                }),
+              onProgress: (progress) => {
+                emitWorkflowProgress(event, progress);
+              },
+            });
+          } finally {
+            inFlightWorkflowRuns.delete(runId);
+          }
+        },
+        () => describeWorkflowRun(workflow, profile, tools),
+      );
+
+      return workflowRunResponseSchema.parse(toWorkflowRunResponse(result));
+    },
+  );
+
+  ipcMain.handle(IPC_WORKFLOW_PAUSE_CHANNEL, (_event, ...args: unknown[]) => {
+    const [{ runId }] = workflowPauseRequestSchema.parse(args);
+    // Cooperative and idempotent: the run stops at the **next step
+    // boundary**, keeping every step it already completed, and reports
+    // `paused`. Ungated for the reason every other stop channel is: it cannot
+    // start an action, read anything or reach anything.
+    const run = inFlightWorkflowRuns.get(runId);
+    if (run !== undefined) run.paused = true;
+    return workflowControlResponseSchema.parse({ acknowledged: true });
+  });
+
+  ipcMain.handle(IPC_WORKFLOW_CANCEL_CHANNEL, (_event, ...args: unknown[]) => {
+    const [{ runId }] = workflowCancelRequestSchema.parse(args);
+    // Best-effort and idempotent, exactly like `agent:cancel`. Aborting the
+    // run's signal also kills a child process the run had started, which is
+    // the difference between this and a pause.
+    inFlightWorkflowRuns.get(runId)?.controller.abort();
+    return workflowControlResponseSchema.parse({ acknowledged: true });
+  });
+
+  // -------------------------------------------------------------------------
+  // Windows automation (Phase 2, Milestone 10)
+  // -------------------------------------------------------------------------
+
+  /**
+   * The one automation action allowed to be running, and how to stop it.
+   *
+   * Pending confirmations are cancellable too: reserve the request id before
+   * entering `runAction`, then let the signal prevent execution if the user
+   * cancels before approving. Active execution is tracked separately so two
+   * confirmations may be pending without racing the one-action limit.
+   */
+  const inFlightAutomationRuns = new Map<string, AbortController>();
+  const activeAutomationRuns = new Map<string, AbortController>();
+
+  /**
+   * The sentence shown before an automation tool runs.
+   *
+   * States what the tool actually is — never a raw path, URL or argument,
+   * because none of those exist on a registry entry — so the user is
+   * approving the same thing the interface displayed.
+   */
+  function describeAutomationRun(toolId: string): string {
+    const tool = findAutomationTool(toolId);
+    if (tool === null) return `Run the automation action "${toolId}"?`;
+
+    const lines = [`${tool.label}?`, '', tool.description];
+    if (tool.requiresProject) {
+      lines.push('', 'This opens the root of the approved project.');
+    }
+    lines.push(
+      '',
+      'This is a registered Local Agent action. It cannot run an arbitrary command, open an arbitrary path or reach an arbitrary website.',
+    );
+    return lines.join('\n');
+  }
+
+  ipcMain.handle(IPC_AUTOMATION_LIST_CHANNEL, async (_event, ...args: unknown[]) => {
+    automationListRequestSchema.parse(args);
+    const now = runtime.nowFn();
+    const actionRuntime = buildActionRuntime(runtime, now);
+
+    const result = await runAction(
+      actionRuntime,
+      newProposal('automation.read', {}),
+      null,
+      (): AutomationCatalog => ({
+        tools: AUTOMATION_TOOLS.map(toAutomationToolSummary),
+        busy: inFlightAutomationRuns.size > 0,
+      }),
+    );
+
+    return automationListResponseSchema.parse(toAutomationListResponse(result));
+  });
+
+  ipcMain.handle(IPC_AUTOMATION_RUN_CHANNEL, async (_event, ...args: unknown[]) => {
+    const [{ runId, toolId }] = automationRunRequestSchema.parse(args);
+    const now = runtime.nowFn();
+    const actionRuntime = buildActionRuntime(runtime, now);
+    const tool = findAutomationTool(toolId);
+    const controller = new AbortController();
+    const duplicateRunId = inFlightAutomationRuns.has(runId);
+    if (!duplicateRunId) inFlightAutomationRuns.set(runId, controller);
+
+    try {
+      const result = await runAction(
+        actionRuntime,
+        // The id and its kind, never any resolved path or URL — both are
+        // literals in reviewed source, so recording them costs nothing and
+        // lets the audit trail answer "which tool ran".
+        newProposal('automation.run', { toolId, kind: tool?.kind ?? 'unknown' }),
+        describeAutomationRun(toolId),
+        async (): Promise<AutomationRunResult> => {
+          const startedAt = now;
+
+          try {
+            if (tool === null) throw new AutomationError('AUTOMATION_TOOL_NOT_FOUND');
+            if (duplicateRunId || activeAutomationRuns.size >= AUTOMATION_MAX_CONCURRENT_RUNS) {
+              throw new AutomationError('AUTOMATION_ALREADY_RUNNING');
+            }
+            activeAutomationRuns.set(runId, controller);
+            if (controller.signal.aborted) throw new AutomationError('AUTOMATION_CANCELLED');
+
+            const outcome = await runAutomationTool({
+              tool,
+              projectRoot: workspaceSession.get()?.rootPath ?? null,
+              systemRoot: process.env.SystemRoot ?? 'C:\\Windows',
+              signal: controller.signal,
+              isEmergencyEngaged,
+              dependencies: {
+                launchProcess: runtime.automationLaunchProcess ?? launchDetached,
+                openPath: runtime.automationOpenPath,
+                openExternal: runtime.automationOpenExternal,
+                getSpecialFolder: runtime.automationSpecialFolder,
+                focusMainWindow: runtime.focusMainWindow,
+              },
+            });
+
+            return {
+              runId,
+              toolId: tool.id,
+              kind: tool.kind,
+              outcome: 'succeeded',
+              startedAt,
+              finishedAt: runtime.nowFn(),
+              durationMs: Math.max(0, Date.now() - Date.parse(startedAt)),
+              attempts: outcome.attempts,
+              timedOut: false,
+              cancelled: false,
+              stoppedByEmergency: false,
+              verified: true,
+            };
+          } catch (error) {
+            // A failed `perform` never reaches the renderer as `result.value`
+            // — only the normalized `errorCode` does, exactly as a failed
+            // workflow or agent step reports. `AUTOMATION_TIMEOUT`,
+            // `AUTOMATION_CANCELLED` and `AUTOMATION_EMERGENCY_STOPPED` are
+            // stops Local Agent itself performed; every other code is a real
+            // failure. `toAutomationRunResponse` carries the distinction
+            // through the code alone.
+            if (error instanceof AutomationError) {
+              throw new ActionExecutionError(error.code, error.message);
+            }
+            throw error;
+          }
+        },
+      );
+
+      return automationRunResponseSchema.parse(toAutomationRunResponse(result));
+    } finally {
+      if (activeAutomationRuns.get(runId) === controller) activeAutomationRuns.delete(runId);
+      if (inFlightAutomationRuns.get(runId) === controller) inFlightAutomationRuns.delete(runId);
+    }
+  });
+
+  ipcMain.handle(IPC_AUTOMATION_CANCEL_CHANNEL, (_event, ...args: unknown[]) => {
+    const [{ runId }] = automationCancelRequestSchema.parse(args);
+    // Best-effort and idempotent, exactly like `command:cancel`. Aborting
+    // only ever abandons a launch attempt in progress — see
+    // `main/windows-automation.ts` for why an already-started application is
+    // deliberately left running.
+    inFlightAutomationRuns.get(runId)?.abort();
+    return automationCancelResponseSchema.parse({ acknowledged: true });
   });
 }

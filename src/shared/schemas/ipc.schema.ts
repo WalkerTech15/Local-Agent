@@ -44,8 +44,23 @@ import {
   AUDIT_OUTCOMES,
   CHAT_CONVERSATION_MAX_MESSAGES,
   CONTROL_CHARACTER_PATTERN,
+  WORKFLOW_MAX_WORKFLOWS,
   WORKSPACE_MAX_CHANGE_FILES,
 } from '../constants';
+import { WORKFLOW_ERROR_CODES } from '../workflow/errors';
+import {
+  workflowIdSchema,
+  workflowInputSchema,
+  workflowProgressEventSchema,
+  workflowRunSchema,
+  workflowSchema,
+} from './workflow.schema';
+import {
+  automationCatalogSchema,
+  automationErrorCodeSchema,
+  automationRunResultSchema,
+  automationToolIdSchema,
+} from './automation.schema';
 import { AGENT_ERROR_CODES } from '../agent/errors';
 import {
   agentProfileIdSchema,
@@ -66,6 +81,16 @@ import {
   workspaceEditSchema,
 } from './coding.schema';
 import { chatContentSchema, chatMessageSchema, chatStreamDeltaSchema } from './chat.schema';
+import { MEMORY_ERROR_CODES } from '../memory/errors';
+import {
+  memoryMutationSummarySchema,
+  memoryQueryResultSchema,
+  memoryRecordInputSchema,
+  memoryRecordSchema,
+  memoryRetrievalResultSchema,
+  memoryScopeSchema,
+  memorySearchQuerySchema,
+} from './memory.schema';
 import {
   codingPlanSchema,
   workspaceEntryPathSchema,
@@ -756,3 +781,389 @@ export const agentCancelResponseSchema = z.strictObject({
 });
 
 export type AgentCancelResponse = z.infer<typeof agentCancelResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Local memory (Phase 2, Milestone 8)
+//
+// Ten channels. None of them introduces a capability: they read and write
+// short, user-authored notes inside this application's own data directory,
+// and a note grants nothing — nothing in this codebase reads a permission, a
+// tool, a path or a provider out of one.
+//
+// Five properties hold across all of them, and each is a shape rather than a
+// check:
+//
+//  - **A request cannot label its own provenance.** `memoryRecordInputSchema`
+//    has no `source` field. `user` is stamped by the add handler and `import`
+//    by the import handler, and those are the only two writers of either
+//    value, so a renderer cannot pass off imported content as something the
+//    user typed — or the reverse.
+//  - **A request cannot name a file.** `memory:export` and `memory:import`
+//    carry a scope and nothing else; the file is chosen by the user in a
+//    native dialog the main process owns, exactly as `workspace:select`
+//    already works. There is no path parameter anywhere in this section.
+//  - **A request cannot move a record between scopes.** An update addresses a
+//    record by id *within* the scope its own submitted record names, and a
+//    stored record found in a different scope is refused rather than
+//    relocated. A project note therefore cannot become a personal one by
+//    editing it, which is what keeps project isolation from depending on the
+//    renderer behaving.
+//  - **A retrieval cannot ask for everything.** `memoryRetrievalResultSchema`
+//    is capped at `MEMORY_MAX_RETRIEVED`, so the type itself cannot express
+//    "the whole store" — the milestone's rule about what a model may be
+//    handed, made structural.
+//  - **A failure carries a code and nothing else.** Never a record, never a
+//    fragment of one, never the path of a file that could not be read.
+// ---------------------------------------------------------------------------
+
+export const IPC_MEMORY_LIST_CHANNEL = 'memory:list';
+export const IPC_MEMORY_SEARCH_CHANNEL = 'memory:search';
+export const IPC_MEMORY_RETRIEVE_CHANNEL = 'memory:retrieve';
+export const IPC_MEMORY_ADD_CHANNEL = 'memory:add';
+export const IPC_MEMORY_UPDATE_CHANNEL = 'memory:update';
+export const IPC_MEMORY_SET_PINNED_CHANNEL = 'memory:setPinned';
+export const IPC_MEMORY_DELETE_CHANNEL = 'memory:delete';
+export const IPC_MEMORY_CLEAR_CHANNEL = 'memory:clear';
+export const IPC_MEMORY_EXPORT_CHANNEL = 'memory:export';
+export const IPC_MEMORY_IMPORT_CHANNEL = 'memory:import';
+
+/**
+ * `errorCode` is always one of {@link MEMORY_ERROR_CODES} — the same
+ * normalized vocabulary the memory layer throws, reused rather than restated.
+ * Never a raw error, a record's content, or a filesystem path.
+ */
+const memoryErrorCodeSchema = z.enum(MEMORY_ERROR_CODES);
+
+/** Every scoped operation addresses exactly one scope, and says which. */
+const memoryScopeRequestSchema = z.tuple([z.strictObject({ scope: memoryScopeSchema })]);
+
+export const memoryListRequestSchema = memoryScopeRequestSchema;
+export const memoryClearRequestSchema = memoryScopeRequestSchema;
+export const memoryExportRequestSchema = memoryScopeRequestSchema;
+export const memoryImportRequestSchema = memoryScopeRequestSchema;
+
+export const memorySearchRequestSchema = z.tuple([
+  z.strictObject({ scope: memoryScopeSchema, query: memorySearchQuerySchema }),
+]);
+
+/**
+ * Retrieval takes an objective and nothing else.
+ *
+ * No scope: a retrieval spans every scope the session can currently read,
+ * which is personal and session always, and project only while one is
+ * approved. Bounded by the same objective schema `workspace:plan` already
+ * uses, so this milestone adds no new free-text surface.
+ */
+export const memoryRetrieveRequestSchema = z.tuple([
+  z.strictObject({ objective: workspaceObjectiveSchema }),
+]);
+
+export const memoryAddRequestSchema = z.tuple([
+  z.strictObject({ record: memoryRecordInputSchema }),
+]);
+
+/**
+ * Updating carries the target id *and* the submitted record.
+ *
+ * The record's own `scope` is what addresses the store, and the stored record
+ * must already live there — a mismatch is a refusal, never a move. Editing a
+ * project note into a personal one is therefore not expressible.
+ */
+export const memoryUpdateRequestSchema = z.tuple([
+  z.strictObject({ id: z.uuid(), record: memoryRecordInputSchema }),
+]);
+
+export const memorySetPinnedRequestSchema = z.tuple([
+  z.strictObject({ id: z.uuid(), scope: memoryScopeSchema, pinned: z.boolean() }),
+]);
+
+export const memoryDeleteRequestSchema = z.tuple([
+  z.strictObject({ id: z.uuid(), scope: memoryScopeSchema }),
+]);
+
+export type MemoryScopeRequestInput = z.infer<typeof memoryListRequestSchema>[0];
+export type MemorySearchRequestInput = z.infer<typeof memorySearchRequestSchema>[0];
+export type MemoryRetrieveRequestInput = z.infer<typeof memoryRetrieveRequestSchema>[0];
+export type MemoryAddRequestInput = z.infer<typeof memoryAddRequestSchema>[0];
+export type MemoryUpdateRequestInput = z.infer<typeof memoryUpdateRequestSchema>[0];
+export type MemorySetPinnedRequestInput = z.infer<typeof memorySetPinnedRequestSchema>[0];
+export type MemoryDeleteRequestInput = z.infer<typeof memoryDeleteRequestSchema>[0];
+
+export const memoryQueryResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  result: memoryQueryResultSchema.optional(),
+  errorCode: memoryErrorCodeSchema.optional(),
+});
+
+export const memoryListResponseSchema = memoryQueryResponseSchema;
+export const memorySearchResponseSchema = memoryQueryResponseSchema;
+
+export type MemoryQueryResponse = z.infer<typeof memoryQueryResponseSchema>;
+
+export const memoryRetrieveResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  result: memoryRetrievalResultSchema.optional(),
+  errorCode: memoryErrorCodeSchema.optional(),
+});
+
+export type MemoryRetrieveResponse = z.infer<typeof memoryRetrieveResponseSchema>;
+
+/** What a single-record write answers with: the record as it was stored. */
+export const memoryRecordResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  record: memoryRecordSchema.optional(),
+  errorCode: memoryErrorCodeSchema.optional(),
+});
+
+export const memoryAddResponseSchema = memoryRecordResponseSchema;
+export const memoryUpdateResponseSchema = memoryRecordResponseSchema;
+export const memorySetPinnedResponseSchema = memoryRecordResponseSchema;
+
+export type MemoryRecordResponse = z.infer<typeof memoryRecordResponseSchema>;
+
+/**
+ * What a delete, a clear, an export or an import answers with: counts, and
+ * never the records themselves. An export in particular reports how many
+ * records were written and nothing about what they said.
+ */
+export const memoryMutationResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  summary: memoryMutationSummarySchema.optional(),
+  errorCode: memoryErrorCodeSchema.optional(),
+});
+
+export const memoryDeleteResponseSchema = memoryMutationResponseSchema;
+export const memoryClearResponseSchema = memoryMutationResponseSchema;
+export const memoryExportResponseSchema = memoryMutationResponseSchema;
+export const memoryImportResponseSchema = memoryMutationResponseSchema;
+
+export type MemoryMutationResponse = z.infer<typeof memoryMutationResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Workflows (Phase 2, Milestone 9)
+//
+// Nine invoke channels and one advisory event. None of them introduces a
+// capability: a workflow is a saved recipe for running an agent profile that
+// already exists, and every step it may name is a Milestone 7 agent tool that
+// already existed.
+//
+// Five properties hold across all of them, and each is a shape rather than a
+// check:
+//
+//  - **A request cannot name a capability.** `workflowStepSchema.tool` is an
+//    enum of the seven agent tool ids, each bound in reviewed source to an
+//    action type that already existed. There is no field for an action type,
+//    a command string, an argument, a shell, an absolute path or a URL.
+//  - **A request cannot widen an agent.** A workflow selects a profile by id
+//    and may only use tools and paths that profile already allows — checked
+//    when it is saved and again before every step.
+//  - **A request cannot schedule anything.** `trigger` is an enum with one
+//    member, `manual`, so a payload cannot express a schedule, a file watch,
+//    a Git hook or an inbox.
+//  - **A run is named, never described.** `workflow:run` carries a run id, a
+//    workflow id and an objective. It cannot carry a step list, a tool, a
+//    path, a command or a limit — those come from the *stored* definition,
+//    read in the main process, so a compromised renderer cannot substitute a
+//    plan.
+//  - **A request cannot carry a credential.** Every object is a
+//    `strictObject` with no field capable of holding one.
+//
+// `workflow:pause` and `workflow:cancel` are the two channels with no
+// permission gate, for exactly the reason `chat:cancel`, `command:cancel` and
+// `agent:cancel` have none: neither can start anything, read anything or
+// reach anything — each can only ask an already-authorized run to stop.
+// ---------------------------------------------------------------------------
+
+export const IPC_WORKFLOW_LIST_CHANNEL = 'workflow:list';
+export const IPC_WORKFLOW_CREATE_CHANNEL = 'workflow:create';
+export const IPC_WORKFLOW_UPDATE_CHANNEL = 'workflow:update';
+export const IPC_WORKFLOW_DUPLICATE_CHANNEL = 'workflow:duplicate';
+export const IPC_WORKFLOW_DELETE_CHANNEL = 'workflow:delete';
+export const IPC_WORKFLOW_SET_ENABLED_CHANNEL = 'workflow:setEnabled';
+export const IPC_WORKFLOW_RUN_CHANNEL = 'workflow:run';
+export const IPC_WORKFLOW_PAUSE_CHANNEL = 'workflow:pause';
+export const IPC_WORKFLOW_CANCEL_CHANNEL = 'workflow:cancel';
+/** The second main to renderer push channel in this codebase. Advisory only. */
+export const IPC_WORKFLOW_PROGRESS_CHANNEL = 'workflow:progress';
+
+/**
+ * `errorCode` is always one of {@link WORKFLOW_ERROR_CODES} — the same
+ * normalized vocabulary the workflow layer throws, reused rather than
+ * restated. Never a raw error, a workflow's own text, or a filesystem path.
+ */
+const workflowErrorCodeSchema = z.enum(WORKFLOW_ERROR_CODES);
+
+export const workflowListRequestSchema = z.tuple([]);
+
+/** Deleting and enabling both address a workflow by id and nothing else. */
+const workflowReferenceRequestSchema = z.tuple([z.strictObject({ workflowId: workflowIdSchema })]);
+
+export const workflowDeleteRequestSchema = workflowReferenceRequestSchema;
+
+export const workflowSetEnabledRequestSchema = z.tuple([
+  z.strictObject({ workflowId: workflowIdSchema, enabled: z.boolean() }),
+]);
+
+export const workflowCreateRequestSchema = z.tuple([
+  z.strictObject({ workflow: workflowInputSchema }),
+]);
+
+/**
+ * Updating carries the target id *and* the submitted definition.
+ *
+ * The two must agree — the main process refuses a mismatch rather than
+ * picking one — so a payload cannot rename a workflow by addressing one id
+ * and submitting another, which would otherwise be a way to overwrite a
+ * workflow the caller did not name.
+ */
+export const workflowUpdateRequestSchema = z.tuple([
+  z.strictObject({ workflowId: workflowIdSchema, workflow: workflowInputSchema }),
+]);
+
+export const workflowDuplicateRequestSchema = z.tuple([
+  z.strictObject({ workflowId: workflowIdSchema, newId: workflowIdSchema }),
+]);
+
+export type WorkflowReferenceInput = z.infer<typeof workflowDeleteRequestSchema>[0];
+export type WorkflowSetEnabledInput = z.infer<typeof workflowSetEnabledRequestSchema>[0];
+export type WorkflowCreateInput = z.infer<typeof workflowCreateRequestSchema>[0];
+export type WorkflowUpdateInput = z.infer<typeof workflowUpdateRequestSchema>[0];
+export type WorkflowDuplicateInput = z.infer<typeof workflowDuplicateRequestSchema>[0];
+
+/**
+ * Every stored workflow, as the renderer sees it.
+ *
+ * Safe to send in full — a definition carries no credential, by construction.
+ * The interface needs the whole document to show a workflow's steps, its
+ * agent, its limits and where it will stop to ask, which is the milestone's
+ * own requirement that limits and permissions be clearly visible.
+ */
+export const workflowListResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  workflows: z.array(workflowSchema).max(WORKFLOW_MAX_WORKFLOWS).optional(),
+  errorCode: workflowErrorCodeSchema.optional(),
+});
+
+export const workflowCreateResponseSchema = workflowListResponseSchema;
+export const workflowUpdateResponseSchema = workflowListResponseSchema;
+export const workflowDuplicateResponseSchema = workflowListResponseSchema;
+export const workflowDeleteResponseSchema = workflowListResponseSchema;
+export const workflowSetEnabledResponseSchema = workflowListResponseSchema;
+
+export type WorkflowListResponse = z.infer<typeof workflowListResponseSchema>;
+
+/**
+ * Starting one manual run.
+ *
+ * `runId` correlates a later `workflow:pause` or `workflow:cancel` to this
+ * run, exactly as `chat:send`'s `requestId` and `agent:run`'s `runId` do.
+ * `objective` is the request in the user's own words, bounded by the same
+ * schema `workspace:plan` already uses. There is deliberately no `steps`, no
+ * `tools`, no `agent` and no `limits` field: everything a run is permitted to
+ * do comes from the *stored* definition and the *stored* profile.
+ */
+export const workflowRunRequestSchema = z.tuple([
+  z.strictObject({
+    runId: z.uuid(),
+    workflowId: workflowIdSchema,
+    objective: workspaceObjectiveSchema,
+  }),
+]);
+
+export type WorkflowRunRequestInput = z.infer<typeof workflowRunRequestSchema>[0];
+
+export const workflowRunResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  run: workflowRunSchema.optional(),
+  errorCode: workflowErrorCodeSchema.optional(),
+});
+
+export type WorkflowRunResponse = z.infer<typeof workflowRunResponseSchema>;
+
+export const workflowPauseRequestSchema = z.tuple([z.strictObject({ runId: z.uuid() })]);
+export const workflowCancelRequestSchema = workflowPauseRequestSchema;
+
+/** Best-effort and idempotent, exactly like {@link agentCancelResponseSchema}. */
+export const workflowControlResponseSchema = z.strictObject({
+  acknowledged: z.literal(true),
+});
+
+export type WorkflowControlResponse = z.infer<typeof workflowControlResponseSchema>;
+
+/**
+ * One advisory progress event, main to renderer.
+ *
+ * The second push channel in this codebase, and it carries the same four
+ * properties `chat:chunk` does: sent only to the `WebContents` that started
+ * the run, never broadcast; bounded and validated before it is sent; dropped
+ * silently if it fails validation; and **advisory**, because the
+ * authoritative record is the one `workflow:run` resolves with, never the sum
+ * of these events. It carries counts, an index and an enum — no summary, no
+ * path, no output.
+ */
+export const workflowProgressIpcEventSchema = workflowProgressEventSchema;
+
+// ---------------------------------------------------------------------------
+// Windows automation (Phase 2, Milestone 10)
+//
+// Three channels, one action type behind all of them:
+//
+//  - **A tool is named, never spelled.** `automationRunRequestSchema` carries
+//    an identifier from a fifteen-value enum, the fixed registry in
+//    `shared/automation/registry.ts`. There is no field here for a program
+//    path, a folder path, a URL, a window handle or an argument, so "no
+//    arbitrary desktop action" is a property of the type rather than a filter
+//    applied to one — the same shape `commandRunRequestSchema` already uses
+//    for a project's own scripts.
+//  - **Every response carries `outcome`.** Denied, blocked by the emergency
+//    stop, aborted by a rejected confirmation, or failed — the same four
+//    outcomes every other privileged channel reports.
+//
+// `automation:cancel` is the one channel with no permission gate, for exactly
+// the reason `command:cancel` and `workflow:cancel` have none: it cannot
+// start anything, read anything or reach anything — it can only ask an
+// already-authorized action to stop early.
+// ---------------------------------------------------------------------------
+
+export const IPC_AUTOMATION_LIST_CHANNEL = 'automation:list';
+export const IPC_AUTOMATION_RUN_CHANNEL = 'automation:run';
+export const IPC_AUTOMATION_CANCEL_CHANNEL = 'automation:cancel';
+
+export const automationListRequestSchema = z.tuple([]);
+
+/**
+ * `runId` correlates a later `automation:cancel` to this specific action,
+ * exactly as `command:run`'s `runId` does. `toolId` is an enum member; there
+ * is no other field.
+ */
+export const automationRunRequestSchema = z.tuple([
+  z.strictObject({
+    runId: z.uuid(),
+    toolId: automationToolIdSchema,
+  }),
+]);
+
+export type AutomationRunRequestInput = z.infer<typeof automationRunRequestSchema>[0];
+
+export const automationCancelRequestSchema = z.tuple([z.strictObject({ runId: z.uuid() })]);
+
+export const automationListResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  catalog: automationCatalogSchema.optional(),
+  errorCode: automationErrorCodeSchema.optional(),
+});
+
+export type AutomationListResponse = z.infer<typeof automationListResponseSchema>;
+
+export const automationRunResponseSchema = z.strictObject({
+  outcome: z.enum(AUDIT_OUTCOMES),
+  run: automationRunResultSchema.optional(),
+  errorCode: automationErrorCodeSchema.optional(),
+});
+
+export type AutomationRunResponse = z.infer<typeof automationRunResponseSchema>;
+
+/** Best-effort and idempotent, exactly like {@link commandCancelResponseSchema}. */
+export const automationCancelResponseSchema = z.strictObject({
+  acknowledged: z.literal(true),
+});

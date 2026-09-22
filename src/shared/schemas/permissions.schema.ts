@@ -298,6 +298,85 @@ export function createDefaultPermissionPolicy(): PermissionPolicy {
         reason:
           'A run takes several steps the user is not approving individually, so the profile, its tools, its scope and its limits are shown before the first one.',
       },
+      {
+        id: 'memory.read',
+        actionType: 'memory.read',
+        decision: 'allow',
+        priority: 100,
+        reason:
+          'Reading the user’s own notes back to them changes nothing and leaves the machine nowhere.',
+      },
+      {
+        id: 'memory.write',
+        actionType: 'memory.write',
+        decision: 'allow',
+        priority: 100,
+        reason:
+          'Saving a note stores text the user typed, inside the application’s own data directory, and the same operation can delete it again.',
+      },
+      {
+        id: 'memory.clear',
+        actionType: 'memory.clear',
+        decision: 'confirm',
+        priority: 100,
+        reason:
+          'Clearing a scope destroys every record in it at once and cannot be undone, so the scope and the count are stated before it happens.',
+      },
+      {
+        id: 'memory.export',
+        actionType: 'memory.export',
+        decision: 'confirm',
+        priority: 100,
+        reason:
+          'An export writes the user’s notes to a file outside this application, where its protections no longer apply.',
+      },
+      {
+        id: 'memory.import',
+        actionType: 'memory.import',
+        decision: 'confirm',
+        priority: 100,
+        reason:
+          'An import brings content from outside this application into a memory store, so the file is chosen and the scope stated before anything is read.',
+      },
+      {
+        id: 'workflow.read',
+        actionType: 'workflow.read',
+        decision: 'allow',
+        priority: 100,
+        reason: 'Listing workflow definitions is read-only and reveals no credential.',
+      },
+      {
+        id: 'workflow.write',
+        actionType: 'workflow.write',
+        decision: 'confirm',
+        priority: 100,
+        reason:
+          'A workflow names which of an agent’s tools a later run reaches for, so its steps and limits are stated in a native dialog before it is saved.',
+      },
+      {
+        id: 'workflow.run',
+        actionType: 'workflow.run',
+        decision: 'confirm',
+        priority: 100,
+        reason:
+          'A run takes several steps the user is not approving individually, so the agent, the ordered steps, the scope and the limits are shown before the first one.',
+      },
+      {
+        id: 'automation.read',
+        actionType: 'automation.read',
+        decision: 'allow',
+        priority: 100,
+        reason:
+          'Listing the fixed automation tool registry is read-only and reveals no credential.',
+      },
+      {
+        id: 'automation.run',
+        actionType: 'automation.run',
+        decision: 'confirm',
+        priority: 100,
+        reason:
+          'Launching an application, opening a folder or a website, focusing a window or running a script is a real, visible desktop action, so the exact tool is stated before it runs.',
+      },
     ],
   };
 }

@@ -43,12 +43,15 @@ interface ExposedLocalAgentBridge {
  */
 const EXPECTED_BRIDGE_KEYS = [
   'agent',
+  'automation',
   'chat',
   'command',
   'git',
   'health',
+  'memory',
   'secrets',
   'settings',
+  'workflow',
   'workspace',
 ] as const;
 const EXPECTED_SETTINGS_KEYS = ['get', 'update'] as const;
@@ -105,6 +108,54 @@ const EXPECTED_AGENT_KEYS = [
   'setEnabled',
   'update',
 ] as const;
+/**
+ * Local memory (Phase 2, Milestone 8). Three reads, four single-record
+ * writes, and three bulk operations. Note what cannot be supplied through any
+ * of them: a file path — `exportScope` and `importScope` take a scope, and
+ * the file is chosen by the user in a native dialog the main process owns —
+ * and a record's `source`, which the main process stamps. There is no
+ * `capture`, no `learn` and no `observe`.
+ */
+const EXPECTED_MEMORY_KEYS = [
+  'add',
+  'clear',
+  'exportScope',
+  'importScope',
+  'list',
+  'remove',
+  'retrieve',
+  'search',
+  'setPinned',
+  'update',
+] as const;
+/**
+ * Workflows (Phase 2, Milestone 9). Six configuration functions, one manual
+ * run, two ways to stop it, and one progress subscription. Note what cannot
+ * be supplied through any of them: a schedule or a watch — a workflow's
+ * trigger is an enum with one member — and a step, a tool, a path, a command
+ * or a limit at run time, because what a run may do comes from the stored
+ * definition the main process reads.
+ */
+const EXPECTED_WORKFLOW_KEYS = [
+  'cancel',
+  'create',
+  'duplicate',
+  'list',
+  'onProgress',
+  'pause',
+  'remove',
+  'run',
+  'setEnabled',
+  'update',
+] as const;
+/**
+ * Windows automation (Phase 2, Milestone 10). One read, one run, one cancel.
+ * `run` takes a run id and a tool id from the fixed registry — there is no
+ * function here through which a path, a URL, an argument, a window handle or
+ * a command could be supplied, because what a tool actually does comes from
+ * reviewed source the main process reads.
+ */
+const EXPECTED_AUTOMATION_KEYS = ['cancel', 'list', 'run'] as const;
 
 function launchEnv(): Record<string, string> {
   const env: Record<string, string> = {};
@@ -126,7 +177,9 @@ describe('Electron desktop shell — security and health-check smoke test', () =
       env: launchEnv(),
     });
     page = await app.firstWindow();
-    await page.waitForLoadState('domcontentloaded');
+    await page.waitForURL('file://**/dist/renderer/index.html', {
+      waitUntil: 'domcontentloaded',
+    });
   });
 
   afterAll(async () => {
@@ -177,7 +230,7 @@ describe('Electron desktop shell — security and health-check smoke test', () =
     expect(hasIpcRenderer).toBe(false);
   });
 
-  it('exposes exactly one bridge object with exactly the narrow, named functions of Phase 2 Milestone 7', async () => {
+  it('exposes exactly one bridge object with exactly the narrow, named functions of Phase 2 Milestone 10', async () => {
     const bridgeShape = await page.evaluate(() => {
       const w = window as unknown as {
         localAgent?: {
@@ -188,6 +241,9 @@ describe('Electron desktop shell — security and health-check smoke test', () =
           command?: object;
           git?: object;
           agent?: object;
+          memory?: object;
+          workflow?: object;
+          automation?: object;
         } & Record<string, unknown>;
       };
       const localAgent = w.localAgent;
@@ -201,6 +257,9 @@ describe('Electron desktop shell — security and health-check smoke test', () =
         commandKeys: localAgent?.command ? Object.keys(localAgent.command).sort() : [],
         gitKeys: localAgent?.git ? Object.keys(localAgent.git).sort() : [],
         agentKeys: localAgent?.agent ? Object.keys(localAgent.agent).sort() : [],
+        memoryKeys: localAgent?.memory ? Object.keys(localAgent.memory).sort() : [],
+        workflowKeys: localAgent?.workflow ? Object.keys(localAgent.workflow).sort() : [],
+        automationKeys: localAgent?.automation ? Object.keys(localAgent.automation).sort() : [],
       };
     });
     expect(bridgeShape).toEqual({
@@ -213,7 +272,103 @@ describe('Electron desktop shell — security and health-check smoke test', () =
       commandKeys: [...EXPECTED_COMMAND_KEYS],
       gitKeys: [...EXPECTED_GIT_KEYS],
       agentKeys: [...EXPECTED_AGENT_KEYS],
+      memoryKeys: [...EXPECTED_MEMORY_KEYS],
+      workflowKeys: [...EXPECTED_WORKFLOW_KEYS],
+      automationKeys: [...EXPECTED_AUTOMATION_KEYS],
     });
+  });
+
+  it('exposes no automation function that could name a path, a URL, a command or grant a permission', async () => {
+    // The fixed tool registry is the control: `run` takes only a tool id, so
+    // there is no function anywhere on this object through which a caller
+    // could supply its own target or command, and none through which it
+    // could widen what any tool is allowed to do.
+    const present = await page.evaluate(() => {
+      const w = window as unknown as { localAgent?: { automation?: Record<string, unknown> } };
+      const automation = w.localAgent?.automation;
+      if (automation === undefined) return ['(no automation object at all)'];
+      const forbidden = [
+        'execute',
+        'runPath',
+        'runUrl',
+        'runCommand',
+        'shell',
+        'spawn',
+        'open',
+        'openPath',
+        'openUrl',
+        'grant',
+        'allow',
+        'setPermission',
+        'addTool',
+        'registerTool',
+        'schedule',
+        'watch',
+      ];
+      return forbidden.filter((key) => key in automation);
+    });
+    expect(present).toEqual([]);
+  });
+
+  it('exposes no workflow function that could schedule a run or grant a permission', async () => {
+    // Two absences are the control here, so both are asserted against the
+    // real built bridge rather than only against the source. Nothing in the
+    // workflow object can arrange for a run to start by itself, and nothing
+    // can widen what a run may do.
+    const present = await page.evaluate(() => {
+      const w = window as unknown as { localAgent?: { workflow?: Record<string, unknown> } };
+      const workflow = w.localAgent?.workflow;
+      if (workflow === undefined) return ['(no workflow object at all)'];
+      const forbidden = [
+        'schedule',
+        'unschedule',
+        'watch',
+        'unwatch',
+        'trigger',
+        'onFileChange',
+        'onCommit',
+        'enableAutorun',
+        'grant',
+        'allow',
+        'setPermission',
+        'execute',
+        'runStep',
+        'runCommand',
+      ];
+      return forbidden.filter((key) => key in workflow);
+    });
+    expect(present).toEqual([]);
+  });
+
+  it('exposes no memory function that could name a file or record something automatically', async () => {
+    // Two absences are the control here, so both are asserted against the
+    // real built bridge rather than only against the source. Nothing in the
+    // memory object can name a path — the export and import dialogs are owned
+    // by the main process — and nothing can capture a memory from a
+    // conversation, a file or a model reply.
+    const present = await page.evaluate(() => {
+      const w = window as unknown as { localAgent?: { memory?: Record<string, unknown> } };
+      const memory = w.localAgent?.memory;
+      if (memory === undefined) return ['(no memory object at all)'];
+      const forbidden = [
+        'capture',
+        'learn',
+        'observe',
+        'infer',
+        'remember',
+        'readFile',
+        'writeFile',
+        'exportTo',
+        'importFrom',
+        'path',
+        'file',
+        'sync',
+        'upload',
+        'grant',
+      ];
+      return forbidden.filter((key) => key in memory);
+    });
+    expect(present).toEqual([]);
   });
 
   it('exposes no function that can create, delete or patch a file', async () => {

@@ -28,12 +28,18 @@ export interface UserDataPaths {
   readonly auditLogDir: string;
   readonly emergencyStateFile: string;
   readonly memoryDir: string;
+  /** Personal memory (Phase 2, Milestone 8). Never holds a credential. */
+  readonly memoryPersonalFile: string;
+  /** One file per approved project, named from a hash of its canonical root. */
+  readonly memoryProjectsDir: string;
   /** Pre-change backups (Phase 2, Milestone 6). Never inside a user project. */
   readonly backupsDir: string;
   /** The empty directory `git` is pointed at instead of a repository's hooks. */
   readonly gitHooksDir: string;
   /** Agent profiles (Phase 2, Milestone 7). Holds no credential. */
   readonly agentProfilesFile: string;
+  /** Workflow definitions (Phase 2, Milestone 9). Holds no credential. */
+  readonly workflowsFile: string;
 }
 
 /**
@@ -53,8 +59,11 @@ export function resolveUserDataPaths(appDataDir: string): UserDataPaths {
     auditLogDir: join(userDataDir, USER_DATA_PATHS.auditLogDir),
     emergencyStateFile: join(userDataDir, USER_DATA_PATHS.emergencyStateFile),
     memoryDir: join(userDataDir, USER_DATA_PATHS.memoryDir),
+    memoryPersonalFile: join(userDataDir, USER_DATA_PATHS.memoryPersonalFile),
+    memoryProjectsDir: join(userDataDir, USER_DATA_PATHS.memoryProjectsDir),
     backupsDir: join(userDataDir, USER_DATA_PATHS.backupsDir),
     gitHooksDir: join(userDataDir, USER_DATA_PATHS.gitHooksDir),
     agentProfilesFile: join(userDataDir, USER_DATA_PATHS.agentProfilesFile),
+    workflowsFile: join(userDataDir, USER_DATA_PATHS.workflowsFile),
   };
 }

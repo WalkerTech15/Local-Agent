@@ -35,7 +35,10 @@ user-supplied or renderer-supplied path.
 > (disengaged vs. engaged), not the same safe default — plus atomic engage
 > and reset writes. Milestone 7 implements `secrets\secrets.enc`: encrypted
 > with the **synchronous** `safeStorage` API (Windows DPAPI), never a
-> plaintext fallback. Its loader distinguishes a missing file from a corrupt
+> plaintext fallback. Phase 2 Milestone 8 implements `memory\`: one file per
+> scope, each written with the same fail-safe load and atomic write pattern,
+> plus the session scope which is never written at all. Its loader
+> distinguishes a missing file from a corrupt
 > one internally, the same way `state\emergency.json`'s does, but — unlike
 > the emergency state — both collapse to the identical safe answer for every
 > caller (no key present), since there is no "fails engaged" equivalent for a
@@ -60,6 +63,8 @@ user-supplied or renderer-supplied path.
 │   └── policy.json                  permission policy
 ├── agents/
 │   └── profiles.json                agent profiles (no credential, ever)
+├── workflows\
+│   └── workflows.json               workflow definitions (manual trigger only)
 ├── secrets\
 │   └── secrets.enc                  encrypted credentials
 ├── logs\
@@ -67,18 +72,30 @@ user-supplied or renderer-supplied path.
 │       └── audit-YYYY-MM-DD.jsonl   append-only audit trail, one file per UTC day
 ├── state\
 │   └── emergency.json               emergency-stop state
-└── memory\                          reserved, unused in Phase 1
+└── memory\
+    ├── personal.json                personal memory (never a credential)
+    └── projects\
+        └── <key>.json               one file per approved project
 ```
 
-| Path                      | Contains                                                                  | Notes                                                                                                                                                                                                                                                                                                                              |
-| ------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `settings.json`           | Assistant name, user name, language, provider selection, `hasApiKey` flag | **[implemented, M3, wired to IPC in M7]** **Never a credential.** Strict schema; unknown keys rejected; written atomically; `hasApiKey` reconciled against `secrets.enc` on every read and write.                                                                                                                                  |
-| `permissions\policy.json` | Permission rules                                                          | **[implemented, M5]** Human-readable and human-editable. Cannot widen the model beyond the code-enforced floor, even if hand-edited to try.                                                                                                                                                                                        |
-| `agents\profiles.json`    | Agent profiles                                                            | **[implemented, P2 M7]** Human-readable and human-editable. Holds user profiles only — built-ins are read from reviewed source on every load and are never written here, so a hand edit cannot redefine one. Cannot grant a permission: its decision vocabulary has no `allow`. Declares no field capable of holding a credential. |
-| `secrets\secrets.enc`     | API keys                                                                  | **[implemented, M7]** Encrypted with the synchronous `safeStorage` API (Windows DPAPI). Never leaves the main process in plaintext; presence, not content, is all any IPC channel reports.                                                                                                                                         |
-| `logs\audit\`             | One JSON object per line                                                  | **[implemented, M4]** Append-only writer, called for real since M7's IPC channels. Records denials and rejected confirmations exactly like a success.                                                                                                                                                                              |
-| `state\emergency.json`    | Emergency-stop state                                                      | **[implemented, M6]** Missing file on first launch means _disengaged_. Malformed or unreadable existing file means _engaged_. Written atomically; not called from the running app yet.                                                                                                                                             |
-| `memory\`                 | Reserved                                                                  | Nothing is written here in Phase 1.                                                                                                                                                                                                                                                                                                |
+| Path                          | Contains                                                                  | Notes                                                                                                                                                                                                                                                                                                                                     |
+| ----------------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `settings.json`               | Assistant name, user name, language, provider selection, `hasApiKey` flag | **[implemented, M3, wired to IPC in M7]** **Never a credential.** Strict schema; unknown keys rejected; written atomically; `hasApiKey` reconciled against `secrets.enc` on every read and write.                                                                                                                                         |
+| `permissions\policy.json`     | Permission rules                                                          | **[implemented, M5]** Human-readable and human-editable. Cannot widen the model beyond the code-enforced floor, even if hand-edited to try.                                                                                                                                                                                               |
+| `agents\profiles.json`        | Agent profiles                                                            | **[implemented, P2 M7]** Human-readable and human-editable. Holds user profiles only — built-ins are read from reviewed source on every load and are never written here, so a hand edit cannot redefine one. Cannot grant a permission: its decision vocabulary has no `allow`. Declares no field capable of holding a credential.        |
+| `workflows\workflows.json`    | Workflow definitions                                                      | **[implemented, P2 M9]** Human-readable and human-editable. Cannot grant a permission, cannot widen the agent profile it selects, and cannot start itself: its `trigger` enum has one member, so a hand edit claiming a schedule fails validation and the whole document is discarded. Declares no field capable of holding a credential. |
+| `secrets\secrets.enc`         | API keys                                                                  | **[implemented, M7]** Encrypted with the synchronous `safeStorage` API (Windows DPAPI). Never leaves the main process in plaintext; presence, not content, is all any IPC channel reports.                                                                                                                                                |
+| `logs\audit\`                 | One JSON object per line                                                  | **[implemented, M4]** Append-only writer, called for real since M7's IPC channels. Records denials and rejected confirmations exactly like a success.                                                                                                                                                                                     |
+| `state\emergency.json`        | Emergency-stop state                                                      | **[implemented, M6]** Missing file on first launch means _disengaged_. Malformed or unreadable existing file means _engaged_. Written atomically; not called from the running app yet.                                                                                                                                                    |
+| `memory\personal.json`        | Personal memory records                                                   | **[implemented, P2 M8]** Human-readable and human-editable. Plain JSON, deliberately — but it holds notes _about a person_, so see `docs/security-model.md` limitations 0.5 and 0.6. Declares no field capable of holding a credential, and credential-shaped _values_ are screened at the write boundary on a best-effort basis.         |
+| `memory\projects\<key>.json`  | One approved project's memory records                                     | **[implemented, P2 M8]** The file name is a truncated SHA-256 of the project's canonical root path, never the path itself: a directory listing of `%APPDATA%` should not disclose which projects someone has opened. Reading or writing one requires that project to be approved in the current session.                                  |
+| _(none — Windows automation)_ | —                                                                         | **[implemented, P2 M10]** Windows automation adds no file here. Its tool registry is fixed in reviewed source (`shared/automation/registry.ts`), not user-editable configuration, so there is nothing for it to persist. See `docs/phase-2-automation.md`.                                                                                |
+
+> **Session memory has no entry above, and that is the point.** The third
+> memory scope is held in the main process for the lifetime of one run of the
+> application and is never written anywhere. Closing Local Agent ends it;
+> there is no file to find afterwards, and no code path in
+> `src/main/memory-store.ts` that could create one.
 
 ## Why they are separate
 

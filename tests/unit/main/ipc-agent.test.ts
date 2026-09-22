@@ -110,6 +110,14 @@ function buildRuntime(overrides: Partial<IpcHandlerRuntime> = {}): IpcHandlerRun
     safeStorage: fakeSafeStorage(),
     requestConfirmation: approve,
     selectProjectDirectory: () => Promise.resolve(null),
+    // Default: both memory file dialogs are dismissed, so no test exports or
+    // imports by forgetting to configure one.
+    selectMemoryExportFile: () => Promise.resolve(null),
+    selectMemoryImportFile: () => Promise.resolve(null),
+    automationOpenPath: () => Promise.resolve(''),
+    automationOpenExternal: () => Promise.resolve(),
+    automationSpecialFolder: () => 'C:\\fake\\folder',
+    focusMainWindow: () => true,
     nowFn: () => NOW,
     ...overrides,
   };
@@ -183,6 +191,9 @@ beforeEach(async () => {
     backupsDir: join(dir, 'backups'),
     gitHooksDir: join(dir, 'state', 'git-hooks-disabled'),
     agentProfilesFile: join(dir, 'agents', 'profiles.json'),
+    memoryPersonalFile: join(dir, 'memory', 'personal.json'),
+    memoryProjectsDir: join(dir, 'memory', 'projects'),
+    workflowsFile: join(dir, 'workflows', 'workflows.json'),
   };
 
   projectRoot = await realpath(await mkdtemp(join(tmpdir(), 'local-agent-project7-')));

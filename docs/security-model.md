@@ -98,8 +98,71 @@ cannot declare anything else. An action with no matching rule is denied.
 `secrets.clear`, `emergency.reset`, `app.exit`, and — since Phase 2
 Milestone 6 — `workspace.write`, `workspace.rollback`, `command.run` and
 `git.checkpoint`, plus — since Milestone 7 — `agent.write` and `agent.run`,
+and — since Milestone 8 — `memory.clear`, `memory.export` and `memory.import`,
+plus — since Milestone 9 — `workflow.write` and `workflow.run`, plus — since
+Milestone 10 — `automation.run`,
 cannot be downgraded to `allow` by editing the policy file. The schema rejects
 such a file.
+
+`memory.read` and `memory.write` are deliberately **not** on that floor.
+Saving or unpinning one note is an ordinary edit inside the application's own
+data directory, reversible by the same operation that made it — the same
+reasoning that keeps `settings.write` off the floor. The three that are on it
+each stop being ordinary: clearing destroys a whole scope at once, exporting
+writes the user's notes to a file outside the application where its
+protections no longer apply, and importing brings content from outside into a
+store. Prompting for every note saved would train people to click through
+dialogs, which is its own security problem.
+
+**[enforced by type]** A **workflow can never start itself.** A workflow's
+`trigger` is an enum with exactly one member, `manual`. A scheduled run, a
+file-change trigger, a Git trigger and an email trigger are not disabled
+anywhere in the codebase — they are not representable, because the enum has no
+value for them and `workflowTriggerSchema` accepts nothing else. There is no
+`workflow.schedule`, `workflow.watch` or `workflow.trigger` action type
+either, and a hand-edited `workflows.json` claiming a non-manual trigger fails
+validation and is discarded in full. Background autonomy is therefore
+prevented by the type rather than by a check someone could forget.
+
+**[enforced by type]** A **workflow can never widen its agent.** Every step
+names a tool from the fixed Milestone 7 registry, and each of those maps to an
+action type Milestones 5 and 6 already defined — so a workflow introduces no
+capability. It must also stay inside the allowlists of the agent profile it
+selects, checked when the workflow is saved and again before every single
+step, because a profile can be narrowed afterwards. The chain is
+`workflow ⊆ agent profile ⊆ permission policy`, and a workflow sits at the
+narrow end of it. Its steps are executed by the _same_ step runner an agent
+run uses, so every one of them reaches the permission engine and the audit log
+by the path Milestone 7 already established.
+
+**[enforced by type]** A **workflow can never loop without bound.** Retries are
+capped per step, and every attempt counts as a step against the run's own step
+ceiling, so the retry budget cannot outlive the run budget. Conditions are a
+closed three-value enum rather than an expression language: a user-editable
+definition cannot ask the privileged process to evaluate arbitrary logic.
+
+**[enforced by type]** An **automation action can never name its own target.**
+A request carries a `toolId` from a fifteen-value enum, the fixed registry in
+`shared/automation/registry.ts` — never a path, a URL, an argument or a
+command line, because no field of the request or of a registry entry has that
+shape. `launch-app` and `run-script` resolve only to a literal executable
+under `%SystemRoot%\System32`, started with `shell: false`; `open-folder`
+resolves only to one of four fixed special folders or the already-approved
+project root; `open-website` resolves only to one of four fixed `https://`
+hosts, checked again immediately before it is opened; `focus-window` reaches
+only this application's own window. See `docs/phase-2-automation.md`.
+
+**[enforced by type]** A **memory can never be written by a model.** A memory
+record's `source` is an enum of exactly two members, `user` and `import`, and
+both are stamped in the main process by the one handler that performs each
+operation — the input schema has no `source` field at all. There is no value a
+chat reply, an agent step or an inference could be stored under, so "never
+silently save model output as memory" is a property of the type rather than a
+check somewhere that could be forgotten. In the same way, a memory record
+declares no field for a permission, a tool, an action type, a provider, a
+command or a path, and nothing in the codebase reads any of those out of its
+content: a note is stored, displayed and matched against a search query, and
+that is the entire set of things done with it.
 
 **[enforced by type]** An **agent profile can never grant a permission.** A
 profile is user-editable configuration describing which of a fixed set of
@@ -833,6 +896,33 @@ These are real and are stated plainly rather than described as solved.
    it is recorded here rather than presented as equivalent to approving each
    action.
 
+0.5. **A memory record's content is stored in plain text, and the credential
+screen is best effort.** Phase 2 Milestone 8 keeps memory in
+`memory\personal.json` and `memory\projects\<key>.json`, both plain JSON
+readable by anything running under the same Windows account. That is the
+same exposure `settings.json` and `permissions\policy.json` already have,
+and it is deliberate — these files are meant to be inspectable and
+hand-editable — but memory holds notes _about a person_, which is a
+different kind of content than a display name. Two consequences follow.
+First, the store is not encrypted: DPAPI is reserved for the secret store,
+where the whole point is that the content must never be readable. Second,
+the value-level credential screen
+(`src/shared/memory/secret-scan.ts`) catches _recognisable_ shapes — a
+provider key with a known prefix, a pasted `Authorization: Bearer` header,
+a PEM block, a `password=…` line — and cannot catch a credential that
+looks like ordinary text. Someone determined to type a short database
+password into a note will succeed. The control reduces accidents; it is not
+a guarantee, and it is described that way in the interface as well as here.
+
+0.6. **Clearing or deleting a memory does not securely erase it.** Every write
+is one atomic rename over the previous file, so the _application_ retains
+nothing and no partial document is ever left behind — but the replaced
+file's old blocks are not overwritten, and on a journalling or
+copy-on-write filesystem, or with Volume Shadow Copy enabled, earlier
+content may survive on the disk. No application can promise otherwise from
+user space. A deleted note is gone from Local Agent; it is not guaranteed
+to be gone from the drive.
+
 1. **The audit log is append-only by API, not tamper-proof.** A local user
    with the same privileges can edit the file directly with a text editor.
    Tamper-evidence (hash chaining or signing) is deferred beyond Phase 1. The
@@ -1113,6 +1203,18 @@ These are real and are stated plainly rather than described as solved.
     themselves do persist under `%APPDATA%\Local-Agent\backups`, and nothing
     deletes them — recovering from an older one is a manual operation the user
     performs with their own tools.
+
+31. **`focus-window` reaches only this application's own window, and
+    `automation:cancel` cannot kill an already-launched application.**
+    Focusing a window belonging to another process would need either an
+    unapproved native dependency or unrestricted shell access, both of which
+    this milestone's own security requirements forbid, so the tool is scoped
+    to what this application can already do through Electron's own API rather
+    than half-implemented. Cancelling a launch in progress abandons the
+    attempt; a process that already started is left running deliberately,
+    because a user who asked to open an application did not ask for the power
+    to close it again. Both are stated plainly in `docs/phase-2-automation.md`
+    rather than presented as complete.
 
 ---
 

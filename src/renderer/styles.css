@@ -979,3 +979,246 @@ main.app-ready {
   color: #e88;
   font-size: 0.8rem;
 }
+
+/* Memory Centre (Phase 2, Milestone 8). Reuses the workspace panel, badge,
+   hint, field and error classes; only the few shapes that have no existing
+   equivalent are declared here. */
+.memory__privacy {
+  margin-top: 0.4rem;
+  padding: 0.4rem 0.6rem;
+  border-left: 2px solid #73d5c8;
+  background: #0c1626;
+}
+.memory__scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.6rem 0 0.3rem;
+}
+.memory__scopes button {
+  padding: 0.3rem 0.7rem;
+  border: 1px solid #2a3750;
+  border-radius: 0.4rem;
+  background: #101d31;
+  color: #e8edf5;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.memory__scopes button[aria-pressed='true'] {
+  border-color: #73d5c8;
+  color: #73d5c8;
+}
+.memory__scopes button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.memory__search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.7rem;
+}
+.memory__search label {
+  flex-basis: 100%;
+  color: #73d5c8;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.memory__search input {
+  flex: 1 1 12rem;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid #2a3750;
+  border-radius: 0.4rem;
+  background: #0c1626;
+  color: #e8edf5;
+  font: inherit;
+  font-size: 0.85rem;
+}
+.memory__search button {
+  padding: 0.3rem 0.6rem;
+  border: 1px solid #2a3750;
+  border-radius: 0.4rem;
+  background: #101d31;
+  color: #e8edf5;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.memory__search button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.memory-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin-bottom: 0.7rem;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid #2a3750;
+  border-radius: 0.6rem;
+  background: #0c1626;
+}
+.memory-card--pinned {
+  border-color: #73d5c8;
+}
+.memory-card__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+.memory-card__content {
+  margin: 0;
+  color: #e8edf5;
+  font-size: 0.88rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.memory-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.memory-card__actions button {
+  padding: 0.3rem 0.6rem;
+  border: 1px solid #2a3750;
+  border-radius: 0.4rem;
+  background: #101d31;
+  color: #e8edf5;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.memory-card__actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.memory-editor {
+  margin-top: 0.9rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid #2a3750;
+  border-radius: 0.6rem;
+  background: #0c1626;
+}
+.memory-editor h3 {
+  margin-top: 0;
+}
+.memory-editor__row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+.memory-editor__check {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.4rem 0;
+  font-size: 0.82rem;
+}
+@media (max-width: 700px) {
+  .memory-editor__row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Workflow Dashboard (Phase 2, Milestone 9). Reuses the workspace panel,
+   badge, hint, field, error and agent card/run classes; only the few shapes
+   that have no existing equivalent are declared here. */
+.workflow-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid #2a3750;
+  border-radius: 0.6rem;
+  background: #0c1626;
+}
+.workflow-card--disabled {
+  opacity: 0.72;
+}
+.workflow-card__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.workflow-card__head h4 {
+  margin: 0;
+  font-size: 0.95rem;
+  letter-spacing: 0.04em;
+}
+.workflow-card__steps {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+.workflow-progress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0.6rem 0;
+  padding: 0.5rem 0.8rem;
+  border: 1px solid #2a3750;
+  border-radius: 0.5rem;
+  background: #0c1626;
+  font-size: 0.85rem;
+}
+.workflow-progress--waiting {
+  border-color: #73d5c8;
+}
+.workflow-progress p {
+  margin: 0;
+}
+.workflow-progress button {
+  margin-left: 0.4rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid #2a3750;
+  border-radius: 0.4rem;
+  background: #101d31;
+  color: #e8edf5;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.workflow-editor {
+  margin-top: 0.9rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid #2a3750;
+  border-radius: 0.6rem;
+  background: #0c1626;
+}
+.workflow-editor h3,
+.workflow-editor h4 {
+  margin-top: 0;
+}
+.workflow-editor__row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+.workflow-editor__step {
+  margin-bottom: 0.7rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid #2a3750;
+  border-radius: 0.5rem;
+}
+.workflow-editor__step button {
+  padding: 0.3rem 0.6rem;
+  border: 1px solid #2a3750;
+  border-radius: 0.4rem;
+  background: #101d31;
+  color: #e8edf5;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+@media (max-width: 900px) {
+  .workflow-editor__row {
+    grid-template-columns: 1fr;
+  }
+}

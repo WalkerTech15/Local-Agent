@@ -12,6 +12,8 @@ import type {
   AgentProfileInput,
   AgentRegistryResponse,
   AgentRunResponse,
+  AutomationListResponse,
+  AutomationRunResponse,
   ChatChunkEvent,
   ChatMessage,
   ChatSendResponse,
@@ -22,6 +24,12 @@ import type {
   GitDiffResponse,
   GitStatusResponse,
   HealthCheckResponse,
+  MemoryMutationResponse,
+  MemoryQueryResponse,
+  MemoryRecordInput,
+  MemoryRecordResponse,
+  MemoryRetrieveResponse,
+  MemoryScopeValue,
   SecretsActionResponse,
   SettingsActionResponse,
   SettingsUpdateInput,
@@ -31,6 +39,10 @@ import type {
   WorkspaceFileResponse,
   WorkspacePlanResponse,
   WorkspaceProjectResponse,
+  WorkflowInput,
+  WorkflowListResponse,
+  WorkflowProgressEvent,
+  WorkflowRunResponse,
   WorkspaceSearchResponse,
   WorkspaceTreeResponse,
 } from '../shared/schemas';
@@ -108,6 +120,76 @@ declare global {
           enabled: boolean,
         ) => Promise<AgentRegistryResponse>;
         readonly run: (runId: string, objective: string) => Promise<AgentRunResponse>;
+        readonly cancel: (runId: string) => Promise<void>;
+      };
+      /**
+       * Local memory (Phase 2, Milestone 8). Note that `exportScope` and
+       * `importScope` take a scope and nothing else: the file is chosen by
+       * the user in a native dialog the main process owns, so there is no
+       * path parameter here to name a file to read or to overwrite. Note also
+       * that no write carries a `source`: whether a record was typed or
+       * imported is stamped in the main process, never claimed from here.
+       */
+      readonly memory: {
+        readonly list: (scope: MemoryScopeValue) => Promise<MemoryQueryResponse>;
+        readonly search: (scope: MemoryScopeValue, query: string) => Promise<MemoryQueryResponse>;
+        /** The small relevant set — never the whole store. */
+        readonly retrieve: (objective: string) => Promise<MemoryRetrieveResponse>;
+        readonly add: (record: MemoryRecordInput) => Promise<MemoryRecordResponse>;
+        readonly update: (id: string, record: MemoryRecordInput) => Promise<MemoryRecordResponse>;
+        readonly setPinned: (
+          id: string,
+          scope: MemoryScopeValue,
+          pinned: boolean,
+        ) => Promise<MemoryRecordResponse>;
+        readonly remove: (id: string, scope: MemoryScopeValue) => Promise<MemoryMutationResponse>;
+        readonly clear: (scope: MemoryScopeValue) => Promise<MemoryMutationResponse>;
+        readonly exportScope: (scope: MemoryScopeValue) => Promise<MemoryMutationResponse>;
+        readonly importScope: (scope: MemoryScopeValue) => Promise<MemoryMutationResponse>;
+      };
+      /**
+       * Workflows (Phase 2, Milestone 9). Note that there is no `schedule`
+       * and no `watch`: a workflow's trigger is an enum with one member,
+       * `manual`, so nothing here can arrange for one to start by itself.
+       * Note also that `run` takes a workflow id and an objective — there is
+       * no parameter for a step, a tool, a path, a command or a limit,
+       * because what a run may do comes from the stored definition the main
+       * process reads.
+       */
+      readonly workflow: {
+        readonly list: () => Promise<WorkflowListResponse>;
+        readonly create: (workflow: WorkflowInput) => Promise<WorkflowListResponse>;
+        readonly update: (
+          workflowId: string,
+          workflow: WorkflowInput,
+        ) => Promise<WorkflowListResponse>;
+        readonly duplicate: (workflowId: string, newId: string) => Promise<WorkflowListResponse>;
+        readonly remove: (workflowId: string) => Promise<WorkflowListResponse>;
+        readonly setEnabled: (
+          workflowId: string,
+          enabled: boolean,
+        ) => Promise<WorkflowListResponse>;
+        readonly run: (
+          runId: string,
+          workflowId: string,
+          objective: string,
+        ) => Promise<WorkflowRunResponse>;
+        /** Stops the run at the next step boundary, keeping what it has done. */
+        readonly pause: (runId: string) => Promise<void>;
+        /** Aborts the run now, killing a child process it had started. */
+        readonly cancel: (runId: string) => Promise<void>;
+        /** Subscribe to advisory progress; returns an unsubscribe function. */
+        readonly onProgress: (listener: (event: WorkflowProgressEvent) => void) => () => void;
+      };
+      /**
+       * Windows automation (Phase 2, Milestone 10). `run` takes a tool id
+       * from the fixed registry and nothing else — no path, no URL, no
+       * argument, no window handle, no command.
+       */
+      readonly automation: {
+        readonly list: () => Promise<AutomationListResponse>;
+        readonly run: (runId: string, toolId: string) => Promise<AutomationRunResponse>;
+        /** Best-effort: abandons a launch attempt in progress. */
         readonly cancel: (runId: string) => Promise<void>;
       };
       /**

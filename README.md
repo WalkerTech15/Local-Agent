@@ -73,7 +73,59 @@ assistant is named **JARVIS** by default; the product is **Local Agent**.
 > [docs/phase-2-coding-actions.md](docs/phase-2-coding-actions.md) for the
 > design, the bounds, and what remains explicitly deferred (file creation and
 > deletion, arbitrary commands, dependency installation, browser and Windows
-> automation, memory, and everything else Phase 2 has not reached yet).
+> automation, and everything else Phase 2 has not reached yet).
+>
+> **Phase 2, Milestone 8 adds local memory.** Short notes you write about how
+> you want to be worked with, in three scopes: `session`, held in memory for
+> one run of the application and never written to disk; `project`, kept in a
+> file addressed by a hash of the approved project's own root path, so one
+> project's notes are in a file another project's session never opens; and
+> `personal`. Nothing here grants anything — a memory record declares no field
+> for a permission, a tool or a path, and nothing reads one out of its text —
+> and **nothing here can be written by a model**: a record's `source` is an
+> enum of `user` and `import`, both stamped by the main process, so there is no
+> value a chat reply or an agent step could be stored under. Retrieval is a
+> bounded keyword scan returning at most eight records, never the store. See
+> [docs/phase-2-memory.md](docs/phase-2-memory.md) for the design, the
+> credential screen and its stated limits, and what is deliberately absent
+> (vector RAG, embeddings, cloud sync, telemetry, transcript storage and
+> automatic inference).
+>
+> **Phase 2, Milestone 9 adds the workflow engine.** A saved, named, repeatable
+> recipe for running an agent you already have: ordered steps, conditions,
+> bounded retries, confirmation checkpoints, success criteria and limits. It
+> sits at the narrow end of `workflow ⊆ agent profile ⊆ permission policy` —
+> every step names a tool from the fixed Milestone 7 registry, must also be
+> allowed by the agent profile the workflow selects, and is re-checked against
+> that profile before it runs — so a workflow introduces **no new capability
+> and cannot widen anything**. It **cannot start itself**: its trigger is an
+> enum with one member, `manual`, so a schedule, a file watch, a Git hook and
+> an inbox are not disabled anywhere, they are not representable. Retries are
+> capped per step and every attempt counts against the run's step ceiling, so
+> an unbounded loop is not expressible either. A run can be paused at the next
+> step boundary or cancelled outright, and its steps are executed by the _same_
+> step runner an agent run uses — so every one of them reaches the unchanged
+> permission engine and audit log. See
+> [docs/phase-2-workflows.md](docs/phase-2-workflows.md) for the design, the
+> check order, and why a configured rollback honestly reports "nothing to roll
+> back" in this milestone.
+>
+> **Phase 2, Milestone 10 adds Windows automation.** A bounded layer over
+> fifteen registered desktop actions — launching an approved application,
+> opening an approved folder or website, focusing this application's own
+> window, and running a registered script — every one fixed in reviewed
+> source (`shared/automation/registry.ts`), never configuration. A request
+> names an id from that closed enum and **nothing else**: no path, no URL, no
+> argument, no command line. Every tool routes through the same action type,
+> `automation.run`, on the confirmation floor, through the unmodified
+> `handleActionProposal` pipeline. A run is reported successful only once
+> Local Agent has observed a concrete verification signal — the process did
+> not fail immediately, the OS shell reported no error, or the window was
+> actually focused — never on the strength of having started. See
+> [docs/phase-2-automation.md](docs/phase-2-automation.md) for the design and
+> the two limitations stated plainly there: `focus-window` reaches only this
+> application's own window, and cancelling a launch cannot kill a process that
+> already started.
 
 All rights reserved. No licence has been granted for this project.
 
@@ -198,18 +250,30 @@ in [docs/phase-2-chat-architecture.md](docs/phase-2-chat-architecture.md),
 and
 [docs/phase-2-provider-completion.md](docs/phase-2-provider-completion.md);
 the workspace design is in
-[docs/phase-2-coding-workspace.md](docs/phase-2-coding-workspace.md).
+[docs/phase-2-coding-workspace.md](docs/phase-2-coding-workspace.md); the
+agent profile and orchestration design is in
+[docs/phase-2-agent-profiles.md](docs/phase-2-agent-profiles.md); and the
+memory design is in [docs/phase-2-memory.md](docs/phase-2-memory.md); and the
+workflow design is in [docs/phase-2-workflows.md](docs/phase-2-workflows.md);
+and the Windows automation design is in
+[docs/phase-2-automation.md](docs/phase-2-automation.md).
 
 ## Where your data lives
 
 Application code lives in this repository. Everything else — settings,
 secrets, permission policy, audit logs, emergency-stop state and memory —
 lives outside it, under `%APPDATA%\Local-Agent\`, each in its own location.
+Since Milestone 9, `workflows\workflows.json` holds workflow definitions —
+never a credential, and never a trigger that could start one by itself.
 `settings.json` and the encrypted `secrets\secrets.enc` are now reachable
 from the running application through real, permission-gated IPC channels;
 permission policy and emergency-stop state are still loaded read-only at
-startup, with no channel of their own yet. See
-[docs/data-locations.md](docs/data-locations.md).
+startup, with no channel of their own yet. Since Milestone 8, `memory\` holds
+one file per persisted scope — never a credential, and never a session note,
+which is held in memory and written nowhere. Windows automation, added in
+Milestone 10, adds no file at all: its tool registry is fixed in reviewed
+source, not user-editable configuration, so there is nothing for it to
+persist. See [docs/data-locations.md](docs/data-locations.md).
 
 ## Requirements
 
@@ -260,6 +324,40 @@ runner that launches the real Electron application for the end-to-end suite
 without extra scaffolding a Linux runner would need to work around a
 platform this project does not ship on.
 
+## Packaging a Windows installer
+
+```bash
+npm run package:win   # builds the app, then produces a Windows NSIS installer
+```
+
+This runs `npm run build` and then `electron-builder --win nsis`, configured
+in [electron-builder.json](electron-builder.json). The installer is written
+to `release/Local Agent Setup <version>.exe` (an unpacked, runnable copy also
+lands in `release/win-unpacked/`); both are git-ignored, never committed.
+
+`files` in that config keeps the package to exactly what the running app
+needs: the compiled `out/` (main process, preload) and built `dist/renderer/`
+output, plus `package.json`, are included; `react`, `react-dom` and their
+transitive `scheduler` dependency are excluded, since Vite already inlines
+them into the renderer bundle and the main process never requires them at
+runtime — the only `node_modules` package left in the packaged app is `zod`,
+which the main process's schema validation genuinely needs unbundled. No
+source file, test, secret, `.env`, or development-only file is included;
+electron-builder excludes `devDependencies` automatically, and nothing under
+`src/`, `tests/` or `docs/` is ever selected.
+
+The first NSIS build downloads NSIS's own build tooling (from
+electron-builder's maintained, checksum-verified binaries release, cached
+under `%LOCALAPPDATA%\electron-builder\Cache` afterward) — this is
+electron-builder's standard, expected mechanism for producing a Windows
+installer and happens once per machine.
+
+**Out of scope, deliberately:** code signing (the installer and its
+executables are unsigned — `Get-AuthenticodeSignature` reports `NotSigned`),
+auto-updates, and any publish/release step (`--publish never` is passed
+explicitly, and nothing in this repository's configuration references an
+update feed or a publish target).
+
 ## Repository layout
 
 ```
@@ -302,9 +400,21 @@ src/main/       Privileged Electron main process. Owns the BrowserWindow,
                 file; workspace-planner.ts), agent profiles and the bounded
                 orchestrator (agent-profiles.ts — fail-safe, atomic storage
                 that never persists a built-in; agent-orchestrator.ts — the
-                run loop, which decides nothing about permissions), and the
-                registered IPC channels (ipc.ts), of which chat:chunk is the
-                only main-to-renderer event.
+                run loop, which decides nothing about permissions), local
+                memory (memory-store.ts — fail-safe, atomic storage, with the
+                session scope held in memory and never written;
+                memory-service.ts — the scoped operations, which never learn
+                a path; memory-transfer.ts and memory-picker.ts — files
+                outside the application, at a path only a native dialog can
+                choose), the workflow engine (workflow-store.ts — fail-safe,
+                atomic storage that refuses to edit or delete a running
+                workflow; workflow-runner.ts — the manual run loop, which
+                decides nothing about permissions and executes no step
+                itself), Windows automation (windows-automation.ts —
+                performs exactly one registered tool from a fixed registry,
+                never a renderer-supplied path, URL or command), and the
+                registered IPC channels (ipc.ts), of which chat:chunk and
+                workflow:progress are the only main-to-renderer events.
 src/preload/    The single contextBridge. Exposes a narrow, explicitly
                 enumerated, typed API — never ipcRenderer, never a generic
                 invoke-any-channel function. Bundled into one file: a
@@ -324,7 +434,19 @@ src/renderer/   React interface: App.tsx gates on onboardingCompleted,
                 call window.localAgent), and agent/ is the Milestone 7 profile
                 and run surface (Agents.tsx, the framework-independent
                 agent-controller.ts, useAgent.ts, and ipc-agent-client.ts —
-                the third and last file permitted to call window.localAgent).
+                the third file permitted to call window.localAgent), and
+                memory/ is the Milestone 8 Memory Centre (Memory.tsx, the
+                framework-independent memory-controller.ts, useMemory.ts, and
+                ipc-memory-client.ts — the fourth file permitted to call
+                window.localAgent), and workflow/ is the Milestone 9 Workflow
+                Dashboard (Workflows.tsx, the framework-independent
+                workflow-controller.ts, useWorkflow.ts, and
+                ipc-workflow-client.ts — the fifth file permitted to call
+                window.localAgent), and automation/ is the Milestone 10
+                Automation panel (Automation.tsx, the framework-independent
+                automation-controller.ts, useAutomation.ts, and
+                ipc-automation-client.ts — the sixth and last file permitted
+                to call window.localAgent).
                 No Node, no Electron, no direct filesystem or network access
                 anywhere else in this directory — only the bridge at
                 window.localAgent.

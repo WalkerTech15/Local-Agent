@@ -51,6 +51,26 @@ export const USER_DATA_PATHS = {
   emergencyStateFile: 'state/emergency.json',
   memoryDir: 'memory',
   /**
+   * Personal memory (Phase 2, Milestone 8).
+   *
+   * The only memory scope that outlives both the session and the approved
+   * project. Its own file rather than a section of `settings.json`, for the
+   * reason the permission policy and the agent profiles each have one: a
+   * display name and a person's standing notes about themselves are not the
+   * same kind of data, and keeping them apart means exporting or sharing one
+   * never carries the other.
+   */
+  memoryPersonalFile: 'memory/personal.json',
+  /**
+   * Per-project memory (Phase 2, Milestone 8).
+   *
+   * One file per approved project, named from a hash of that project's
+   * canonical root path — see {@link MEMORY_PROJECT_KEY_LENGTH}. Isolation
+   * between projects is therefore a property of *which file is opened*, not
+   * of a scope filter applied after loading one shared store.
+   */
+  memoryProjectsDir: 'memory/projects',
+  /**
    * Pre-change backups (Phase 2, Milestone 6).
    *
    * Deliberately here rather than inside the user's project: a backup written
@@ -76,6 +96,15 @@ export const USER_DATA_PATHS = {
    * capable of carrying one.
    */
   agentProfilesFile: 'agents/profiles.json',
+  /**
+   * Workflow definitions (Phase 2, Milestone 9).
+   *
+   * Its own file, beside the agent profiles, for the same reason those have
+   * one: a workflow names which of an agent's tools a later run will reach
+   * for, so it is configuration that shapes authority. It holds no credential
+   * — see `workflowSchema`, which declares no field capable of carrying one.
+   */
+  workflowsFile: 'workflows/workflows.json',
 } as const;
 
 /** Audit log file name pattern, one file per UTC day. */
@@ -242,6 +271,72 @@ export const BIDI_CONTROL_PATTERN = /[\u202A-\u202E\u2066-\u2069]/;
  * type here has the shape to carry one. In particular there is no
  * `agent.execute` and no `agent.grant` — an agent cannot be handed an
  * action type of its own, and cannot be given a permission.
+ *
+ * Phase 2, Milestone 8 adds five actions for local memory. None of them is a
+ * new capability either: they read and write short user-authored notes inside
+ * this application's own data directory, and a note grants nothing, because
+ * nothing reads a permission, a tool, a path or a provider out of one.
+ *
+ *  - `memory.read` lists, searches and retrieves. Read-only.
+ *  - `memory.write` adds, edits, pins or deletes one record. Not on the
+ *    confirmation floor, for the reason `settings.write` is not: it stores
+ *    text the user typed into a field, inside this application's own data
+ *    directory, and it is reversible — the same operation can delete it
+ *    again.
+ *  - `memory.clear` empties a whole scope at once. Irreversible in bulk, so
+ *    it is on the confirmation floor even though a single delete is not.
+ *  - `memory.export` writes memory content to a file **outside** this
+ *    application's data directory, chosen by the user in a native save
+ *    dialog. Content leaving the application boundary is privacy-sensitive by
+ *    definition.
+ *  - `memory.import` reads records from a file outside this application
+ *    entirely — untrusted content, revalidated field by field — and is the
+ *    only way a record this application did not create can enter a store.
+ *
+ * There is no `memory.capture`, no `memory.infer` and no `memory.learn`: no
+ * action type here has the shape to record something automatically from a
+ * conversation, a file or a model reply.
+ *
+ * Phase 2, Milestone 9 adds three actions for workflows, and — for the third
+ * milestone running — not one of them is a new capability. A workflow is a
+ * saved recipe for running an agent profile that already exists, and every
+ * step it may name is an agent tool that already existed:
+ *
+ *  - `workflow.read` lists and reads workflow definitions. Read-only.
+ *  - `workflow.write` creates, edits, duplicates, deletes, enables or
+ *    disables a workflow. A workflow names which of an agent's tools a later
+ *    run reaches for, so changing one shapes future authority — it is on the
+ *    confirmation floor for that reason, exactly as `agent.write` is.
+ *  - `workflow.run` starts one bounded manual run. Also on the confirmation
+ *    floor: the user is shown the workflow, its agent, its steps, its scope
+ *    and its limits before anything executes, and every individual step
+ *    inside the run is then decided by the permission engine on its own
+ *    action type anyway.
+ *
+ * There is still no `fs.read`, no `fs.write`, no `shell.execute` and no
+ * generic "run this string" action. In particular there is no
+ * `workflow.schedule`, no `workflow.watch` and no `workflow.trigger` — a
+ * workflow cannot be started by anything but a person, because no action type
+ * here has the shape to start one any other way.
+ *
+ * Phase 2, Milestone 10 adds two actions for Windows desktop automation:
+ *
+ *  - `automation.read` lists the fixed tool registry and whether an action is
+ *    running. Read-only.
+ *  - `automation.run` performs exactly one registered tool: launching an
+ *    approved application, opening an approved folder, opening an approved
+ *    website, focusing this application's own window, or running a
+ *    registered script. Every entry it can name comes from
+ *    `shared/automation/registry.ts`, a fixed list in reviewed source, so a
+ *    caller sends an id from a closed enum — never a path, a URL, a command
+ *    line or an argument. On the confirmation floor, for the same reason
+ *    `command.run` is: it starts a real process or opens a real destination,
+ *    so the exact tool is shown before it runs.
+ *
+ * There is still no `shell.execute` and no generic "run this program" action:
+ * every program `automation.run` can start is one of a fixed handful of
+ * literal Windows utilities, resolved against `%SystemRoot%\System32` and
+ * never against a renderer-, project- or model-supplied path.
  */
 export const ACTION_TYPES = [
   'settings.read',
@@ -266,6 +361,16 @@ export const ACTION_TYPES = [
   'agent.select',
   'agent.write',
   'agent.run',
+  'memory.read',
+  'memory.write',
+  'memory.clear',
+  'memory.export',
+  'memory.import',
+  'workflow.read',
+  'workflow.write',
+  'workflow.run',
+  'automation.read',
+  'automation.run',
 ] as const;
 export type ActionType = (typeof ACTION_TYPES)[number];
 
@@ -306,6 +411,33 @@ export const DEFAULT_PERMISSION_DECISION: PermissionDecision = 'deny';
  * `agent.read` and `agent.select` are deliberately absent. Listing profiles
  * changes nothing, and selecting one cannot widen any permission: the engine
  * still decides every action a run takes, against the same policy.
+ *
+ * Phase 2, Milestone 8 adds `memory.clear`, `memory.export` and
+ * `memory.import`, one for each of the three ways memory stops being an
+ * ordinary edit inside this application's own data directory: clearing
+ * destroys a whole scope at once and cannot be undone, exporting writes the
+ * user's notes to a file outside the application where this application's
+ * protections no longer apply, and importing brings content from outside into
+ * a store. `memory.read` and `memory.write` are deliberately absent — a
+ * native dialog for every note saved or unpinned would train people to click
+ * through dialogs, which is its own security problem, and a single record is
+ * reversible by the same operation that created it.
+ *
+ * Phase 2, Milestone 9 adds `workflow.write` and `workflow.run`, for exactly
+ * the reasons `agent.write` and `agent.run` are here: editing a workflow
+ * changes which tools a future run will reach for, and starting a run begins
+ * a sequence the user is not individually approving step by step. Both are
+ * stated plainly in a native dialog first — the agent, the ordered steps,
+ * the workspace scope and the limits for `workflow.run`, and the resulting
+ * step list for `workflow.write` — and no policy edit can turn either into an
+ * `allow`. `workflow.read` is deliberately absent: listing definitions
+ * changes nothing.
+ *
+ * Phase 2, Milestone 10 adds `automation.run`, for the same reason
+ * `command.run` is here: it starts a real process or opens a real
+ * destination outside the application's own data, so the exact tool is
+ * stated in a native dialog before it happens. `automation.read` is
+ * deliberately absent: listing the fixed registry changes nothing.
  */
 export const CONFIRMATION_REQUIRED_ACTION_TYPES: readonly ActionType[] = [
   'secrets.write',
@@ -318,6 +450,12 @@ export const CONFIRMATION_REQUIRED_ACTION_TYPES: readonly ActionType[] = [
   'git.checkpoint',
   'agent.write',
   'agent.run',
+  'memory.clear',
+  'memory.export',
+  'memory.import',
+  'workflow.write',
+  'workflow.run',
+  'automation.run',
 ] as const;
 
 /**
@@ -924,3 +1062,365 @@ export const AGENT_RUN_MAX_RECORDED_STEPS = AGENT_MAX_STEPS;
  * built-in profiles are used instead, exactly as a corrupt file is.
  */
 export const AGENT_PROFILE_STORE_MAX_BYTES = 256_000;
+
+// ---------------------------------------------------------------------------
+// Memory (Phase 2, Milestone 8)
+//
+// A memory record is a short, user-authored note the assistant may later be
+// reminded of. It is not a transcript, not a profile of anyone, and not
+// authority: nothing in this codebase reads a permission, a tool, a path or a
+// provider out of a memory, and a memory cannot be created by a model, by an
+// agent run, or by a chat reply — see MEMORY_SOURCES below, whose two members
+// are both reachable only from a deliberate user action.
+//
+// Every bound here exists because the thing it bounds is unbounded in
+// principle. Notes accumulate, a note can be pasted, an import file comes
+// from outside this application entirely, and a retrieval that returned
+// everything would be a way to hand a model the whole store.
+// ---------------------------------------------------------------------------
+
+export const MEMORY_SCHEMA_VERSION = 1;
+
+/**
+ * Where a memory lives, and therefore how long it lives and who can see it.
+ *
+ * These are not three labels on one pile. Each is a different **storage
+ * backend**, chosen so that isolation is a property of where the bytes are
+ * rather than of a filter someone has to remember to apply:
+ *
+ *  - `session` is held in memory for the lifetime of one run of the
+ *    application and is never written to disk at all. Closing Local Agent
+ *    ends it; there is no file to find afterwards.
+ *  - `project` is stored in a file addressed by the approved project's own
+ *    canonical root path, so one project's notes are in a file another
+ *    project's session never opens. Reading or writing one requires a project
+ *    to be approved in this session.
+ *  - `personal` is stored in one file and is the only scope that outlives
+ *    both the session and the project.
+ */
+export const MEMORY_SCOPES = ['session', 'project', 'personal'] as const;
+export type MemoryScope = (typeof MEMORY_SCOPES)[number];
+
+/**
+ * The scopes one retrieval spans, and the order they are gathered in.
+ *
+ * All three, because a reminder is only useful if it can come from wherever
+ * the user wrote it. `project` is skipped at run time when no project is
+ * approved — a retrieval is not worth refusing because one of three sources
+ * is unavailable — and that skip is the *only* way a scope is left out. The
+ * order here affects nothing but the order records are concatenated in before
+ * ranking; the ranking itself is total and deterministic.
+ */
+export const MEMORY_RETRIEVAL_SCOPES: readonly MemoryScope[] = [
+  'personal',
+  'project',
+  'session',
+] as const;
+
+/**
+ * What kind of thing a record is.
+ *
+ * A closed vocabulary rather than a free-text tag: a category is displayed,
+ * filtered on, and used to rank retrieval, and a free-text tag would be one
+ * more unbounded user-controlled string reaching all three.
+ */
+export const MEMORY_CATEGORIES = [
+  'user-preference',
+  'assistant-setting',
+  'project-decision',
+  'project-convention',
+  'active-task',
+  'completed-task',
+  'agent-preference',
+] as const;
+export type MemoryCategory = (typeof MEMORY_CATEGORIES)[number];
+
+/**
+ * Where a record came from.
+ *
+ * Note what is **not** a member: there is no `model`, no `chat`, no
+ * `agent-run` and no `inferred`. That absence is the milestone's "do not
+ * silently save model output as memory" rule expressed as a type rather than
+ * as a check — a provider reply or an agent step has no source value it could
+ * be stored under, so no code path can persist one even by mistake.
+ *
+ * `user` means a person typed it into the Memory Centre and saved it.
+ * `import` means it came from a file that person chose in a native dialog,
+ * and it is therefore **untrusted content**, revalidated field by field on
+ * the way in.
+ */
+export const MEMORY_SOURCES = ['user', 'import'] as const;
+export type MemorySource = (typeof MEMORY_SOURCES)[number];
+
+/** Bounds on a record's own text. Short by design: a note, never a transcript. */
+export const MEMORY_CONTENT_MIN_LENGTH = 1;
+export const MEMORY_CONTENT_MAX_LENGTH = 2_000;
+
+/**
+ * Importance and confidence, as bounded integers.
+ *
+ * Both are supplied by the person writing the note and both are used only for
+ * ordering — a higher importance surfaces earlier, a lower confidence sinks.
+ * Neither ever affects whether something is permitted.
+ */
+export const MEMORY_IMPORTANCE_MIN = 1;
+export const MEMORY_IMPORTANCE_MAX = 5;
+export const MEMORY_IMPORTANCE_DEFAULT = 3;
+export const MEMORY_CONFIDENCE_MIN = 0;
+export const MEMORY_CONFIDENCE_MAX = 100;
+export const MEMORY_CONFIDENCE_DEFAULT = 100;
+
+/** How many records one scope will hold before a further add is refused. */
+export const MEMORY_MAX_RECORDS_PER_SCOPE = 200;
+
+/**
+ * The largest memory file this application will read.
+ *
+ * Checked before the read, not after, exactly as the agent profile store is:
+ * a file that grew without bound should not be pulled into memory in order to
+ * discover that it is too large. Past this size the store is treated as
+ * unreadable and resolves to an empty one.
+ */
+export const MEMORY_STORE_MAX_BYTES = 512_000;
+
+/** Bounds on a search query. Substring matching only — never a regular expression. */
+export const MEMORY_SEARCH_QUERY_MIN_LENGTH = 2;
+export const MEMORY_SEARCH_QUERY_MAX_LENGTH = 200;
+/** Maximum records one search may return before the result is marked truncated. */
+export const MEMORY_MAX_SEARCH_RESULTS = 50;
+
+/**
+ * How many records one *retrieval* may return.
+ *
+ * Deliberately far smaller than a search result, and the reason is the
+ * milestone's own rule that the whole store must never be handed to a model.
+ * A search is a person looking through their own notes; a retrieval is the
+ * shape a model would eventually be given, so it is capped at a handful.
+ */
+export const MEMORY_MAX_RETRIEVED = 8;
+/** Maximum keywords a retrieval derives from an objective. */
+export const MEMORY_MAX_RETRIEVAL_KEYWORDS = 8;
+
+/** Bounds on an import file, which is content from outside this application. */
+export const MEMORY_IMPORT_MAX_BYTES = 512_000;
+export const MEMORY_MAX_IMPORT_RECORDS = MEMORY_MAX_RECORDS_PER_SCOPE;
+
+/**
+ * Length of the hexadecimal key that addresses one project's memory file.
+ *
+ * The file name is derived from a hash of the approved project's canonical
+ * root path, never from the path itself: a path is user data — it carries a
+ * user name, a client name, sometimes a project no one else should know
+ * exists — and a directory listing of `%APPDATA%` should not disclose it.
+ * Truncating the digest keeps the name short while leaving far more bits than
+ * a collision between the handful of projects one person opens would need.
+ */
+export const MEMORY_PROJECT_KEY_LENGTH = 32;
+
+// ---------------------------------------------------------------------------
+// Workflows (Phase 2, Milestone 9)
+//
+// A workflow is a saved, named, repeatable recipe for running an agent
+// profile that already exists. It is configuration, not code and not
+// authority, and it sits at the narrow end of a chain:
+//
+//     workflow  ⊆  agent profile  ⊆  permission policy
+//
+// Every step a workflow may name is an {@link AGENT_TOOL_IDS} member — the
+// fixed Milestone 7 registry — and must *also* be allowed by the agent
+// profile the workflow selects. So a workflow can only ever narrow what was
+// already permitted; there is no field through which it could widen
+// anything, and no new tool, action type or capability is introduced here.
+//
+// Every bound below exists because the thing it bounds is unbounded in
+// principle: a step list can be long, a retry can repeat forever, a run can
+// print without stopping.
+// ---------------------------------------------------------------------------
+
+export const WORKFLOW_SCHEMA_VERSION = 1;
+
+/**
+ * How a workflow can be started.
+ *
+ * **One member, and that is the point.** A scheduled trigger, a file-change
+ * trigger, a Git trigger and an email trigger are not "disabled" anywhere —
+ * they are not expressible, because this enum has no value for them and
+ * `workflowTriggerSchema` accepts nothing else. Background autonomy in this
+ * milestone is prevented by the type rather than by a check someone could
+ * forget, and adding one later is a deliberate, reviewable edit here.
+ */
+export const WORKFLOW_TRIGGERS = ['manual'] as const;
+export type WorkflowTrigger = (typeof WORKFLOW_TRIGGERS)[number];
+
+/**
+ * When a step runs, given how the previous one ended.
+ *
+ * A closed, three-value vocabulary rather than an expression language. A
+ * workflow definition is untrusted input — it is a user-editable file — and
+ * an expression evaluator reading one would be a way to spend unbounded CPU
+ * in the process that owns every privileged operation in this application.
+ * These three cover "always", "only if the last thing worked" and "only if it
+ * did not", which is the whole of what a sequence of checks needs.
+ */
+export const WORKFLOW_STEP_CONDITIONS = [
+  'always',
+  'if-previous-succeeded',
+  'if-previous-failed',
+] as const;
+export type WorkflowStepCondition = (typeof WORKFLOW_STEP_CONDITIONS)[number];
+
+/**
+ * What happens after a step **fails**.
+ *
+ * Note the narrowness: this applies only to a step that ran and reported a
+ * failure — a lint script exiting non-zero, say, which is often exactly what
+ * the workflow was written to find out. It does **not** apply to a step that
+ * was denied by the permission engine, declined by the user, or blocked by
+ * the emergency stop. Those always stop the run, whatever this says, because
+ * continuing past a refusal would be the run arguing with an answer it had
+ * already received.
+ */
+export const WORKFLOW_FAILURE_BEHAVIORS = ['stop', 'continue'] as const;
+export type WorkflowFailureBehavior = (typeof WORKFLOW_FAILURE_BEHAVIORS)[number];
+
+/**
+ * What a workflow asks for when a run ends badly.
+ *
+ * `restore-run-changes` restores change sets **this run applied**, and
+ * nothing else — never a change the user made by hand, and never one from an
+ * earlier run. In this milestone that set is always empty, because no agent
+ * tool can write a file: see `docs/phase-2-workflows.md`. The mode exists,
+ * is validated and is decided by a tested function; what it decides today is
+ * always "there is nothing to roll back".
+ */
+export const WORKFLOW_ROLLBACK_MODES = ['none', 'restore-run-changes'] as const;
+export type WorkflowRollbackMode = (typeof WORKFLOW_ROLLBACK_MODES)[number];
+
+/**
+ * A workflow identifier: lowercase, stable, and usable as a file-safe key.
+ *
+ * The same shape as an agent profile id and a permission rule id, and for the
+ * same reason — it is recorded in the audit trail, so it must never be able
+ * to carry a control character, a path separator or a bidirectional override.
+ */
+export const WORKFLOW_ID_MIN_LENGTH = 3;
+export const WORKFLOW_ID_MAX_LENGTH = 64;
+export const WORKFLOW_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
+
+export const WORKFLOW_NAME_MIN_LENGTH = 1;
+export const WORKFLOW_NAME_MAX_LENGTH = 64;
+export const WORKFLOW_DESCRIPTION_MAX_LENGTH = 280;
+
+/** How many workflows the store will hold. */
+export const WORKFLOW_MAX_WORKFLOWS = 32;
+
+/** How many ordered steps one definition may declare. */
+export const WORKFLOW_MAX_DEFINITION_STEPS = 12;
+
+/**
+ * How many times one step may be retried after it fails.
+ *
+ * Bounded twice over, deliberately. This caps one step, and — because **every
+ * attempt counts as a step against `limits.maxSteps`** — the run's own step
+ * ceiling caps the total across all of them. An unbounded retry loop is
+ * therefore not representable: there is no combination of values here that
+ * produces one.
+ */
+export const WORKFLOW_MAX_STEP_RETRIES = 3;
+
+/**
+ * Step, duration and output ceilings for one run.
+ *
+ * Ranges rather than free integers, exactly as an agent profile's are: a
+ * workflow chooses a value *inside* these bounds, so "a run is bounded" is a
+ * property of the schema rather than a check the runner has to remember. The
+ * runner enforces the chosen value as well — two layers, because the
+ * workflow file is user-editable.
+ */
+export const WORKFLOW_MIN_STEPS = 1;
+export const WORKFLOW_MAX_STEPS = 32;
+export const WORKFLOW_MIN_DURATION_MS = 5_000;
+export const WORKFLOW_MAX_DURATION_MS = 900_000;
+export const WORKFLOW_MIN_OUTPUT_BYTES = 1_000;
+export const WORKFLOW_MAX_OUTPUT_BYTES = 400_000;
+
+/** Defaults used by a newly created workflow. */
+export const WORKFLOW_DEFAULT_MAX_STEPS = 12;
+export const WORKFLOW_DEFAULT_MAX_DURATION_MS = 300_000;
+export const WORKFLOW_DEFAULT_MAX_OUTPUT_BYTES = 100_000;
+
+/** One step's human-readable summary, kept short because it is displayed and stored. */
+export const WORKFLOW_STEP_SUMMARY_MAX_LENGTH = 200;
+
+/** How many steps one run record may carry back to the renderer. */
+export const WORKFLOW_RUN_MAX_RECORDED_STEPS = WORKFLOW_MAX_STEPS;
+
+/**
+ * The largest workflow store this application will read.
+ *
+ * `workflows/workflows.json` is loaded on every workflow operation, so a file
+ * that grew without bound — by hand, or by a bug — would become a startup
+ * cost and a memory cost. Past this size the store is treated as unreadable
+ * and an empty one is used instead, exactly as a corrupt file is.
+ */
+export const WORKFLOW_STORE_MAX_BYTES = 256_000;
+
+// ---------------------------------------------------------------------------
+// Windows automation (Phase 2, Milestone 10)
+//
+// A bounded, permission-controlled layer over a fixed handful of reversible
+// desktop actions: launching an approved application, opening an approved
+// folder, opening an approved website, focusing this application's own
+// window, and running a registered script. Every one of those is a literal
+// entry in `shared/automation/registry.ts` — reviewed source, not
+// configuration — so there is nothing here to persist and nothing a user, a
+// project or a model can add to the list at runtime.
+//
+// Every bound below exists because the thing it bounds is unbounded in
+// principle: an action could hang waiting on the OS, a launch could be
+// retried forever, and more than one action running at once would make
+// cancellation ambiguous about what it cancels.
+// ---------------------------------------------------------------------------
+
+/**
+ * How many times a launch is attempted before it is reported as failed.
+ *
+ * One initial attempt plus up to this many retries, exactly as
+ * `WORKFLOW_MAX_STEP_RETRIES` bounds a workflow step. Each attempt is itself
+ * bounded by {@link AUTOMATION_LAUNCH_TIMEOUT_MS}, so the total time one
+ * automation run can spend is always finite.
+ */
+export const AUTOMATION_MAX_ATTEMPTS = 3;
+
+/**
+ * How long one launch attempt is given to prove it did not fail immediately.
+ *
+ * An application this action starts is meant to keep running — Notepad
+ * staying open is success, not a hang — so this is a short grace window to
+ * catch an immediate crash or a "file not found", never a budget for how long
+ * the launched program may run.
+ */
+export const AUTOMATION_LAUNCH_TIMEOUT_MS = 5_000;
+
+/**
+ * How long opening a folder or a website is given before it is treated as
+ * failed.
+ *
+ * Generous for what is normally an instant handoff to the OS shell, so a
+ * slow-to-respond shell handler does not fail a request that would have
+ * succeeded a second later.
+ */
+export const AUTOMATION_SHELL_TIMEOUT_MS = 10_000;
+
+/**
+ * How many automation actions may be in flight at once.
+ *
+ * One: a second request while one is already running is refused rather than
+ * queued, exactly as {@link COMMAND_MAX_CONCURRENT_RUNS} bounds a registry
+ * command, so "cancel" is never ambiguous about what it cancels.
+ */
+export const AUTOMATION_MAX_CONCURRENT_RUNS = 1;
+
+/** Bounds on a registry entry's own display text. Fixed strings from reviewed source. */
+export const AUTOMATION_LABEL_MAX_LENGTH = 64;
+export const AUTOMATION_DESCRIPTION_MAX_LENGTH = 200;
