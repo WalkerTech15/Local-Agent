@@ -1216,6 +1216,18 @@ to be gone from the drive.
     to close it again. Both are stated plainly in `docs/phase-2-automation.md`
     rather than presented as complete.
 
+32. **The installer is unsigned, and there is no update mechanism.**
+    `Get-AuthenticodeSignature` on the built installer reports `NotSigned`,
+    so Windows SmartScreen shows an unknown-publisher warning on first run,
+    and nothing distinguishes a genuine installer from a tampered one by
+    signature. There is also no way to deliver a fix to an already-installed
+    copy other than asking the user to download and run a new installer by
+    hand — Local Agent has no auto-updater, no update feed, and makes no
+    background network call to check for one, consistent with
+    [AGENTS.md](../AGENTS.md)'s prohibition on self-updating. Both are
+    documented as release prerequisites, not implemented, in
+    `docs/phase-3-production-readiness.md`.
+
 ---
 
 ## Reporting

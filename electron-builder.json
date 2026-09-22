@@ -4,6 +4,7 @@
   "productName": "Local Agent",
   "copyright": "Local Agent",
   "asar": true,
+  "publish": null,
   "directories": {
     "output": "release"
   },
@@ -13,7 +14,8 @@
     "package.json",
     "!node_modules/react/**",
     "!node_modules/react-dom/**",
-    "!node_modules/scheduler/**"
+    "!node_modules/scheduler/**",
+    "!node_modules/zod/src/**"
   ],
   "win": {
     "target": ["nsis"]

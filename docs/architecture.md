@@ -78,7 +78,14 @@
 > fixed entry in reviewed source; a request names an id from that closed enum
 > and never a path, a URL, an argument or a command line. The permission
 > engine, executor, pipeline and audit writer have **zero diff** for the ninth
-> consecutive milestone. This document marks which parts exist today.
+> consecutive milestone. A Windows installer (`electron-builder.json`, `npm
+run package:win`) followed, packaging the same application with no source
+> file, test, or credential included and no new module. Phase 3 Milestone 1
+> is production readiness: no new module, action type or channel, two
+> packaging-configuration fixes, and documentation of what a real release
+> still needs — code signing and an update mechanism — without implementing
+> either. See `docs/phase-3-production-readiness.md`. This document marks
+> which parts exist today.
 
 ---
 

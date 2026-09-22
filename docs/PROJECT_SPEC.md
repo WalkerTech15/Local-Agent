@@ -111,7 +111,10 @@ Deferred beyond Phase 1, and deliberately absent:
 - Plugin or extension system
 - Network-facing server, remote access, multi-user support, sync
 - Telemetry or analytics of any kind
-- Packaged installer, code signing, auto-update
+- Packaged installer — **since implemented**, Phase 2 (`npm run package:win`,
+  [README.md](../README.md#packaging-a-windows-installer)). Code signing and
+  auto-update remain postponed; see
+  [phase-3-production-readiness.md](phase-3-production-readiness.md).
 - macOS and Linux support
 - Audit-log tamper-evidence such as hash chaining
 
@@ -146,6 +149,15 @@ Runtime user data never lives inside the repository. See
 The security foundation (M3–M6) is built before the onboarding interface so
 that the first real user data written to disk already passes through settings
 validation, the permission engine, the audit log and the emergency gate.
+
+This table is retained as the Phase 1 historical record; it is not updated
+per Phase 2 or Phase 3 milestone. Phase 2 (ten milestones: chat, providers,
+the read-only and then read-write coding workspace, agent profiles, memory,
+workflows, Windows automation) is complete, and a Windows installer has been
+added. Phase 3 Milestone 1 (production readiness) is in progress. See
+[README.md](../README.md)'s status note for the current, authoritative state
+and [phase-3-production-readiness.md](phase-3-production-readiness.md) for
+this milestone.
 
 ## 8. Related documents
 

@@ -3,7 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
-  "description": "Local Agent (JARVIS) - a local-first, permission-controlled Windows desktop assistant. Phase 1.",
+  "description": "Local Agent (JARVIS) - a local-first, permission-controlled Windows desktop assistant.",
+  "author": {
+    "name": "Local Agent Project"
+  },
   "type": "module",
   "main": "out/main/index.js",
   "engines": {

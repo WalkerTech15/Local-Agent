@@ -3,8 +3,8 @@
 A local-first, permission-controlled desktop assistant for Windows. The
 assistant is named **JARVIS** by default; the product is **Local Agent**.
 
-> **Status: Phase 1 complete. Phase 2, Milestone 6 (controlled coding
-> actions) in progress.**
+> **Status: Phase 1 and Phase 2 (Milestones 1–10) complete. Phase 3,
+> Milestone 1 (production readiness) in progress.**
 > Phase 1 delivered the hardened desktop shell, non-secret settings storage,
 > an audit-log foundation, the permission-policy runtime, persisted
 > emergency-stop state, first-run onboarding, an encrypted secret store, and
@@ -126,6 +126,22 @@ assistant is named **JARVIS** by default; the product is **Local Agent**.
 > the two limitations stated plainly there: `focus-window` reaches only this
 > application's own window, and cancelling a launch cannot kill a process that
 > already started.
+>
+> A Windows installer followed Phase 2: `npm run package:win` builds an NSIS
+> installer containing only the compiled application and the one runtime
+> dependency (`zod`) it actually needs — no source, test, or credential file.
+> See ["Packaging a Windows installer"](#packaging-a-windows-installer) below.
+>
+> **Phase 3, Milestone 1 is production readiness.** No new capability: the
+> permission engine, emergency stop, audit log, secret store, IPC layer and
+> Windows automation registry were reviewed and are unchanged. Two real gaps
+> in the packaging configuration were fixed — a missing publisher identity
+> and a config-level guarantee that a packaging run can never publish
+> anywhere, on top of the existing `--publish never` flag — and installer
+> packaging is now a required CI step, not just a local command. What a real
+> release still needs beyond this — a purchased code-signing certificate and
+> an auto-update mechanism — is documented, not implemented. See
+> [docs/phase-3-production-readiness.md](docs/phase-3-production-readiness.md).
 
 All rights reserved. No licence has been granted for this project.
 
@@ -341,9 +357,12 @@ output, plus `package.json`, are included; `react`, `react-dom` and their
 transitive `scheduler` dependency are excluded, since Vite already inlines
 them into the renderer bundle and the main process never requires them at
 runtime — the only `node_modules` package left in the packaged app is `zod`,
-which the main process's schema validation genuinely needs unbundled. No
-source file, test, secret, `.env`, or development-only file is included;
-electron-builder excludes `devDependencies` automatically, and nothing under
+which the main process's schema validation genuinely needs unbundled, and
+even there `zod`'s own bundled TypeScript source and test suite
+(`node_modules/zod/src/**`) are excluded, since `require('zod')` resolves to
+its compiled `index.cjs` and never reads `src/`. No source file, test,
+secret, `.env`, or development-only file is included; electron-builder
+excludes `devDependencies` automatically, and nothing under
 `src/`, `tests/` or `docs/` is ever selected.
 
 The first NSIS build downloads NSIS's own build tooling (from
