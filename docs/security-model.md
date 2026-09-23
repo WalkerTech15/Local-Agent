@@ -1226,7 +1226,12 @@ to be gone from the drive.
     background network call to check for one, consistent with
     [AGENTS.md](../AGENTS.md)'s prohibition on self-updating. Both are
     documented as release prerequisites, not implemented, in
-    `docs/phase-3-production-readiness.md`.
+    `docs/phase-3-production-readiness.md`. Phase 3 Milestone 3
+    (`docs/phase-3-code-signing.md`) adds safe, environment-variable-driven
+    configuration support for signing and a preflight check that fails
+    loudly on an incomplete signing request — but still no certificate, so
+    this limitation stands exactly as written until a real signed build
+    shows `Valid` under `Get-AuthenticodeSignature`.
 
 ---
 

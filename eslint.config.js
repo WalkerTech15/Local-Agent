@@ -212,5 +212,20 @@ export default tseslint.config(
     extends: [tseslint.configs.disableTypeChecked],
   },
 
+  {
+    // Build-time Node scripts (e.g. `scripts/write-electron-package-json.mjs`,
+    // `scripts/check-signing-config.mjs`) run under plain Node, never inside
+    // the application's own sandboxed processes, so — unlike `src/shared`
+    // above — they are allowed the Node globals that make them scripts at
+    // all. Scoped narrowly to `scripts/` rather than granted repo-wide.
+    files: ['scripts/**/*.mjs', 'scripts/**/*.cjs'],
+    languageOptions: {
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+      },
+    },
+  },
+
   prettierConfig,
 );

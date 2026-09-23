@@ -84,45 +84,22 @@ Project"` is a placeholder, not a legal identity.
 There is no publish or upload step at any point above, and none is added by
 this milestone — see **Explicitly not done here** below.
 
-## Code signing — required before a real release, not implemented here
+## Code signing — required before a real release
 
 The installer and every executable inside it are currently **unsigned**.
-`Get-AuthenticodeSignature` on the built installer reports `NotSigned`. This
-means:
+`Get-AuthenticodeSignature` on the built installer reports `NotSigned`,
+which means Windows SmartScreen shows an "unknown publisher" warning on
+first run, and nothing distinguishes a genuine installer from a tampered
+one by signature.
 
-- Windows SmartScreen will show an "unknown publisher" warning on first run
-  on any machine that downloaded the installer from the internet (the
-  Mark-of-the-Web check), which a real release should not ask users to click
-  through.
-- Nothing prevents the installer from being tampered with in transit and
-  still appearing to run normally — a signature is what would let a user (or
-  a future auto-updater, see below) detect that.
-
-What signing would require, none of which is present in this repository:
-
-- An Authenticode code-signing certificate for the publisher identity in
-  `package.json`'s `author` field, from a certificate authority — either a
-  standard OV certificate (still shown "unverified" by SmartScreen until it
-  accumulates reputation) or an EV certificate / cloud HSM-backed signing
-  service (avoids the reputation delay, at higher cost and process
-  overhead). This is a purchasing and identity-verification decision for the
-  repository owner, not something an agent can provision.
-- Wiring that certificate into `electron-builder.json`, either via the
-  `CSC_LINK` / `CSC_KEY_PASSWORD` environment variables `electron-builder`
-  already reads for a `.pfx` file, or via `win.certificateSha1` /
-  `win.certificateSubjectName` for a certificate already installed in the
-  Windows certificate store, or via a cloud signing provider's own
-  `electron-builder` plugin (e.g. Azure Trusted Signing) if the certificate
-  is HSM-backed and cannot be exported as a file at all.
-- Keeping that certificate or its credentials **out of this repository and
-  out of CI logs** — it is exactly the kind of credential
-  [AGENTS.md §4](../AGENTS.md) already forbids committing, and CI would need
-  it injected as a repository secret, which the current workflow
-  deliberately has none of (see the comment at the top of `ci.yml`).
-
-No certificate, secret, or signing step was added by this milestone. Signing
-is a purchasing and credential-provisioning decision, explicitly out of
-scope here.
+Phase 3 Milestone 3 (`docs/phase-3-code-signing.md`) adds the environment-
+variable-driven configuration support, a preflight check that fails safely
+if a signing request is incomplete, and full documentation of what
+purchasing and wiring a real certificate requires. It remains true, as of
+that milestone too, that **no certificate has been purchased, generated, or
+installed**, and no build in this repository has ever produced a signed
+installer — see that document for the current, authoritative detail
+formerly duplicated in this section.
 
 ## Auto-update — required before a real release, not implemented here
 
@@ -181,6 +158,9 @@ Matching the task scope exactly:
 
 ## Related documents
 
+- [phase-3-code-signing.md](phase-3-code-signing.md) — Milestone 3's detailed
+  code-signing configuration, environment variables, CI secret handling, and
+  `Get-AuthenticodeSignature` verification steps.
 - [README.md — "Packaging a Windows installer"](../README.md#packaging-a-windows-installer)
   — the existing build command and what the installer contains.
 - [security-model.md](security-model.md) — the full threat model and

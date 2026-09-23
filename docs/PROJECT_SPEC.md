@@ -154,10 +154,13 @@ This table is retained as the Phase 1 historical record; it is not updated
 per Phase 2 or Phase 3 milestone. Phase 2 (ten milestones: chat, providers,
 the read-only and then read-write coding workspace, agent profiles, memory,
 workflows, Windows automation) is complete, and a Windows installer has been
-added. Phase 3 Milestone 1 (production readiness) is in progress. See
-[README.md](../README.md)'s status note for the current, authoritative state
-and [phase-3-production-readiness.md](phase-3-production-readiness.md) for
-this milestone.
+added. Phase 3 Milestone 1 (production readiness) is complete, and Phase 3
+Milestone 3 (Windows code-signing preparation — status: prepared but not
+verified, no certificate) is in progress. See [README.md](../README.md)'s
+status note for the current, authoritative state,
+[phase-3-production-readiness.md](phase-3-production-readiness.md) for
+Milestone 1, and [phase-3-code-signing.md](phase-3-code-signing.md) for
+Milestone 3.
 
 ## 8. Related documents
 

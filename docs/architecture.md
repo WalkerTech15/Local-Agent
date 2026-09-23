@@ -81,11 +81,17 @@
 > consecutive milestone. A Windows installer (`electron-builder.json`, `npm
 run package:win`) followed, packaging the same application with no source
 > file, test, or credential included and no new module. Phase 3 Milestone 1
-> is production readiness: no new module, action type or channel, two
+> is production readiness: no new module, action type or channel, three
 > packaging-configuration fixes, and documentation of what a real release
 > still needs — code signing and an update mechanism — without implementing
-> either. See `docs/phase-3-production-readiness.md`. This document marks
-> which parts exist today.
+> either. Phase 3 Milestone 3 prepares Windows code signing:
+> `scripts/check-signing-config.mjs` runs ahead of `electron-builder` and
+> fails fast if a signing request is incomplete, leaving an unsigned build
+> untouched when no credentials are present; still no certificate exists, so
+> this remains **prepared but not verified**, never claimed as a working
+> signed build. See `docs/phase-3-production-readiness.md` and
+> `docs/phase-3-code-signing.md`. This document marks which parts exist
+> today.
 
 ---
 

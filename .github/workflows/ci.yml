@@ -11,10 +11,16 @@ name: CI
 # platform this project does not ship on, which would verify a configuration
 # no user ever runs.
 #
-# No secret of any kind is used by this workflow. Nothing here needs one:
-# there is no deployment step, no package publish, and no external service
-# call — every job runs entirely against the checked-out repository and the
-# npm registry.
+# No secret is used by this workflow today. The "Package Windows installer"
+# step below references two optional repository secrets, CSC_LINK and
+# CSC_KEY_PASSWORD, for a future Windows code-signing certificate — see
+# docs/phase-3-code-signing.md. Neither secret exists in this repository as
+# of this commit, so both evaluate to an empty string and
+# scripts/check-signing-config.mjs treats that exactly like signing was
+# never requested, producing the same unsigned installer this step has
+# always produced. There is still no deployment step, no package publish,
+# and no external service call — every job runs entirely against the
+# checked-out repository and the npm registry.
 
 on:
   push:
@@ -78,7 +84,13 @@ jobs:
 
       # Runs once, not once per Node version: the installer itself doesn't
       # depend on which Node built it, and electron-builder's NSIS tooling
-      # download is the slow part of this step.
+      # download is the slow part of this step. CSC_LINK/CSC_KEY_PASSWORD
+      # are unset repository secrets today (see the file header comment and
+      # docs/phase-3-code-signing.md) — this step produces an unsigned
+      # installer until the repository owner adds a real certificate.
       - name: Package Windows installer
         if: matrix.node-version == '24.x'
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
         run: npm run package:win

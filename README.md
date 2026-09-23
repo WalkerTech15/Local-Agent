@@ -4,7 +4,8 @@ A local-first, permission-controlled desktop assistant for Windows. The
 assistant is named **JARVIS** by default; the product is **Local Agent**.
 
 > **Status: Phase 1 and Phase 2 (Milestones 1–10) complete. Phase 3,
-> Milestone 1 (production readiness) in progress.**
+> Milestone 1 (production readiness) complete. Phase 3, Milestone 3
+> (Windows code-signing preparation) in progress.**
 > Phase 1 delivered the hardened desktop shell, non-secret settings storage,
 > an audit-log foundation, the permission-policy runtime, persisted
 > emergency-stop state, first-run onboarding, an encrypted secret store, and
@@ -134,14 +135,35 @@ assistant is named **JARVIS** by default; the product is **Local Agent**.
 >
 > **Phase 3, Milestone 1 is production readiness.** No new capability: the
 > permission engine, emergency stop, audit log, secret store, IPC layer and
-> Windows automation registry were reviewed and are unchanged. Two real gaps
-> in the packaging configuration were fixed — a missing publisher identity
-> and a config-level guarantee that a packaging run can never publish
-> anywhere, on top of the existing `--publish never` flag — and installer
-> packaging is now a required CI step, not just a local command. What a real
-> release still needs beyond this — a purchased code-signing certificate and
-> an auto-update mechanism — is documented, not implemented. See
+> Windows automation registry were reviewed and are unchanged. Three real
+> gaps in the packaging configuration were fixed — a missing publisher
+> identity, a config-level guarantee that a packaging run can never publish
+> anywhere on top of the existing `--publish never` flag, and dead
+> TypeScript source and test files from a dependency that had been leaking
+> into the installer unused — and installer packaging is now a required CI
+> step, not just a local command. What a real release still needs beyond
+> this — a purchased code-signing certificate and an auto-update mechanism —
+> is documented, not implemented. See
 > [docs/phase-3-production-readiness.md](docs/phase-3-production-readiness.md).
+>
+> **Phase 3, Milestone 3 prepares Windows code signing — status: prepared
+> but not verified.** No certificate was purchased or installed, and no
+> build in this repository has ever produced a signed installer. What was
+> added is entirely configuration and documentation: `npm run package:win`
+> now runs a preflight check
+> (`scripts/check-signing-config.mjs`) that leaves an unsigned build
+> untouched when no signing credentials are present — still the default for
+> local development and for CI — but fails immediately, before any build
+> work starts, if `CSC_LINK` is set without a matching `CSC_KEY_PASSWORD` or
+> a certificate file that actually exists, rather than either silently
+> shipping unsigned or failing deep inside a multi-minute build. CI now
+> passes `CSC_LINK`/`CSC_KEY_PASSWORD` through from two repository secrets
+> that do not exist yet, so adding a real certificate later needs no
+> further workflow change. See
+> [docs/phase-3-code-signing.md](docs/phase-3-code-signing.md) for
+> certificate requirements, the supported environment variables, CI secret
+> handling, and how to verify a signature with PowerShell's
+> `Get-AuthenticodeSignature`.
 
 All rights reserved. No licence has been granted for this project.
 
@@ -372,10 +394,12 @@ electron-builder's standard, expected mechanism for producing a Windows
 installer and happens once per machine.
 
 **Out of scope, deliberately:** code signing (the installer and its
-executables are unsigned — `Get-AuthenticodeSignature` reports `NotSigned`),
-auto-updates, and any publish/release step (`--publish never` is passed
-explicitly, and nothing in this repository's configuration references an
-update feed or a publish target).
+executables are unsigned — `Get-AuthenticodeSignature` reports `NotSigned`;
+[docs/phase-3-code-signing.md](docs/phase-3-code-signing.md) documents the
+supported configuration for when a real certificate exists, prepared but
+not verified), auto-updates, and any publish/release step (`--publish
+never` is passed explicitly, and nothing in this repository's configuration
+references an update feed or a publish target).
 
 ## Repository layout
 
