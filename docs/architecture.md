@@ -89,9 +89,18 @@ run package:win`) followed, packaging the same application with no source
 > fails fast if a signing request is incomplete, leaving an unsigned build
 > untouched when no credentials are present; still no certificate exists, so
 > this remains **prepared but not verified**, never claimed as a working
-> signed build. See `docs/phase-3-production-readiness.md` and
-> `docs/phase-3-code-signing.md`. This document marks which parts exist
-> today.
+> signed build. Phase 3 Milestone 4 adds `src/shared/update/` — a pure,
+> tested state machine (`states.ts`), configuration gate
+> (`config.ts`, fails closed unless opted in, packaged, and pointed at a
+> valid `https://` feed) and install guard (`guard.ts`, requiring the
+> `downloaded` state plus trusted source, valid signature and explicit user
+> approval all at once) — and `scripts/check-update-config.mjs`, which
+> refuses to let updates be enabled without a complete signing
+> configuration too. No `electron-updater` dependency, no update feed, no
+> IPC channel, and no network call exist yet; nothing here checks for,
+> downloads, or installs anything. See `docs/phase-3-production-readiness.md`,
+> `docs/phase-3-code-signing.md` and `docs/phase-3-auto-update.md`. This
+> document marks which parts exist today.
 
 ---
 

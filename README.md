@@ -4,8 +4,9 @@ A local-first, permission-controlled desktop assistant for Windows. The
 assistant is named **JARVIS** by default; the product is **Local Agent**.
 
 > **Status: Phase 1 and Phase 2 (Milestones 1–10) complete. Phase 3,
-> Milestone 1 (production readiness) complete. Phase 3, Milestone 3
-> (Windows code-signing preparation) in progress.**
+> Milestones 1 (production readiness) and 3 (Windows code-signing
+> preparation) complete. Phase 3, Milestone 4 (Windows auto-update
+> preparation) in progress.**
 > Phase 1 delivered the hardened desktop shell, non-secret settings storage,
 > an audit-log foundation, the permission-policy runtime, persisted
 > emergency-stop state, first-run onboarding, an encrypted secret store, and
@@ -164,6 +165,24 @@ assistant is named **JARVIS** by default; the product is **Local Agent**.
 > certificate requirements, the supported environment variables, CI secret
 > handling, and how to verify a signature with PowerShell's
 > `Get-AuthenticodeSignature`.
+>
+> **Phase 3, Milestone 4 prepares Windows auto-update — status: prepared,
+> not implemented, not verified.** No `electron-updater` dependency, no
+> update feed, no IPC channel, and no network call exist anywhere in this
+> repository; nothing here checks for, downloads, or installs an update.
+> What was added is a pure, tested state machine and gating logic in
+> `src/shared/update/` — seven states, ten events, one transition table
+> with no self-starting check and no transition out of `downloaded` except
+> back to `disabled`, and an install guard that requires the trusted
+> source, a valid signature, and explicit user approval all at once before
+> it will say installation is allowed. `scripts/check-update-config.mjs`
+> (run by `npm run package:win` alongside the Milestone 3 signing check)
+> refuses to let `LOCAL_AGENT_ENABLE_UPDATES=1` pass without a complete,
+> valid signing configuration too — an update mechanism must never be able
+> to enable itself for an unsigned build. See
+> [docs/phase-3-auto-update.md](docs/phase-3-auto-update.md) for the chosen
+> distribution strategy, every environment variable, and what wiring a
+> real update check would still require.
 
 All rights reserved. No licence has been granted for this project.
 

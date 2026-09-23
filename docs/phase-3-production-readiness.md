@@ -101,7 +101,7 @@ installed**, and no build in this repository has ever produced a signed
 installer — see that document for the current, authoritative detail
 formerly duplicated in this section.
 
-## Auto-update — required before a real release, not implemented here
+## Auto-update — required before a real release
 
 Local Agent currently has **no update mechanism of any kind**. A user who
 installs it gets exactly the version in that installer, forever, until they
@@ -111,37 +111,12 @@ so this is a deliberate absence, not an oversight — but it is still a real
 production gap: there is no way to get a security fix to an installed copy
 of Local Agent except asking the user to reinstall it by hand.
 
-What an update mechanism would require, none of which is present:
-
-- **A signed installer.** Every mainstream Windows auto-update mechanism
-  (Squirrel.Windows, NSIS differential updates via `electron-updater`)
-  verifies the new package's signature before applying it; shipping
-  auto-update before code signing would mean silently trusting an
-  unauthenticated binary over the network, which is a strictly worse
-  security posture than the current "no updates at all."
-- **The `electron-updater` package** (not currently a dependency of this
-  project) or equivalent, added deliberately and reviewed, not opportunistically pulled in.
-- **An update feed to publish to** — at minimum a `latest.yml` /
-  `latest-windows.yml` manifest and the installer itself hosted somewhere
-  `electron-updater` can reach (GitHub Releases is `electron-builder`'s
-  built-in target; a private server is also possible but is more
-  infrastructure to secure and maintain). This is a hosting and publishing
-  decision for the repository owner.
-- **A decision about what an update check is allowed to send.** Even a
-  minimal update check ("is version X newer than what I have") is an outbound
-  network call this application does not currently make outside of Phase 2's
-  explicit, user-initiated chat-provider requests. This project has no
-  telemetry and no background network activity today; an auto-updater must
-  not become an unannounced exception to that, and the check-in behavior
-  (on launch? on a timer? user-triggered only?) is a product decision, not
-  an implementation detail.
-- **User visibility and control**, consistent with this project's governing
-  rule (`PROJECT_SPEC.md` §2): an update should be something the user is
-  told about and can decline or defer, not something that silently replaces
-  the running application.
-
-No update dependency, update feed, or network call was added by this
-milestone.
+Phase 3 Milestone 4 (`docs/phase-3-auto-update.md`) adds the safety-gating
+state machine, configuration resolution, and full documentation of what a
+real integration, a real feed, and a real publish would still require. It
+remains true, as of that milestone too, that **no update dependency, update
+feed, or network call was added** — see that document for the current,
+authoritative detail formerly duplicated in this section.
 
 ## Explicitly not done here
 
@@ -161,6 +136,9 @@ Matching the task scope exactly:
 - [phase-3-code-signing.md](phase-3-code-signing.md) — Milestone 3's detailed
   code-signing configuration, environment variables, CI secret handling, and
   `Get-AuthenticodeSignature` verification steps.
+- [phase-3-auto-update.md](phase-3-auto-update.md) — Milestone 4's
+  safety-gating state machine, configuration resolution, and what a real
+  update integration would still require.
 - [README.md — "Packaging a Windows installer"](../README.md#packaging-a-windows-installer)
   — the existing build command and what the installer contains.
 - [security-model.md](security-model.md) — the full threat model and

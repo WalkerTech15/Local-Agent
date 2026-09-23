@@ -1231,7 +1231,14 @@ to be gone from the drive.
     configuration support for signing and a preflight check that fails
     loudly on an incomplete signing request — but still no certificate, so
     this limitation stands exactly as written until a real signed build
-    shows `Valid` under `Get-AuthenticodeSignature`.
+    shows `Valid` under `Get-AuthenticodeSignature`. Phase 3 Milestone 4
+    (`docs/phase-3-auto-update.md`) adds the state machine and
+    configuration-gating logic a future updater would sit behind —
+    `src/shared/update/`, tested, with no live wiring — plus a preflight
+    check that refuses to let updates be enabled without a complete signing
+    configuration too. There is still no `electron-updater` dependency, no
+    update feed, and no network call: this limitation remains fully
+    accurate until all three exist.
 
 ---
 

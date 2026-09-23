@@ -537,6 +537,13 @@ export {
 } from './automation.schema';
 export type { AutomationCatalog, AutomationRunResult, AutomationTool } from './automation.schema';
 
+// `update.schema.ts` is deliberately not re-exported here yet. Every other
+// schema in this barrel backs a real, wired IPC channel; `update.schema.ts`
+// does not — see docs/phase-3-auto-update.md. Re-exporting it from this
+// barrel would pull it into the preload and renderer bundles (both import
+// named values from this file) for zero present benefit. Import it directly
+// from `./update.schema` on the day a real update channel needs it.
+
 export {
   IPC_AUTOMATION_CANCEL_CHANNEL,
   IPC_AUTOMATION_LIST_CHANNEL,
