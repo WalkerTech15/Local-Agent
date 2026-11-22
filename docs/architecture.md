@@ -98,8 +98,16 @@ run package:win`) followed, packaging the same application with no source
 > refuses to let updates be enabled without a complete signing
 > configuration too. No `electron-updater` dependency, no update feed, no
 > IPC channel, and no network call exist yet; nothing here checks for,
-> downloads, or installs anything. See `docs/phase-3-production-readiness.md`,
-> `docs/phase-3-code-signing.md` and `docs/phase-3-auto-update.md`. This
+> downloads, or installs anything. Phase 3 Milestone 5 assembles the full
+> release path into one reproducible checklist
+> (`docs/phase-3-first-release.md`), adds `scripts/check-release-metadata.mjs`
+> (a third `package:win` preflight validating `package.json`'s version and
+> publisher identity, strictly only when `LOCAL_AGENT_RELEASE=1`), and adds
+> a `release-validate` CI job that runs only on a `v*` tag push — none has
+> ever happened — to confirm a tagged build would succeed without
+> publishing or uploading it anywhere. See
+> `docs/phase-3-production-readiness.md`, `docs/phase-3-code-signing.md`,
+> `docs/phase-3-auto-update.md` and `docs/phase-3-first-release.md`. This
 > document marks which parts exist today.
 
 ---

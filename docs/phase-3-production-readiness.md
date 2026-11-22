@@ -52,37 +52,14 @@ now a required CI step alongside the checks in `npm run verify`.
 
 ## Release requirements
 
-Cutting an actual release of Local Agent needs, in order:
-
-1. **Bump `package.json`'s `version`.** `electron-builder` reads it for both
-   the installed app's version and the installer's file name
-   (`Local Agent Setup <version>.exe`). This project has not yet made a
-   version-numbering decision beyond semver; that decision is the repository
-   owner's, not an agent's, and is out of scope for this milestone.
-2. **Replace the placeholder `author` in `package.json`** with the real
-   publisher identity that should appear in the installer's file properties
-   and, later, on a code-signing certificate (see below). `"Local Agent
-Project"` is a placeholder, not a legal identity.
-3. **Run the full verification suite**: `npm run verify` (typecheck, lint,
-   format check, unit tests), then `npm run test:e2e`, then
-   `npm audit --audit-level=low`. All are already required by CI; a release
-   should not be cut from a commit that has not passed them.
-4. **Build the installer**: `npm run package:win`. See
-   [README.md's "Packaging a Windows installer"](../README.md#packaging-a-windows-installer)
-   section for what the build includes and excludes.
-5. **Smoke-test the installer manually on a real Windows machine**: install
-   it, confirm the app launches, confirm uninstalling it leaves
-   `%APPDATA%\Local-Agent` in place (electron-builder's NSIS default does not
-   remove user data on uninstall — this is intentional; see
-   [data-locations.md](data-locations.md)). This cannot be automated from
-   this repository's CI, which packages the installer but does not install
-   it.
-6. **Distribute the exact file `npm run package:win` produced.** Nothing in
-   this repository re-signs, re-packages, or otherwise modifies the
-   installer after `electron-builder` writes it.
-
-There is no publish or upload step at any point above, and none is added by
-this milestone — see **Explicitly not done here** below.
+Phase 3 Milestone 5 (`docs/phase-3-first-release.md`) turns the sketch that
+used to be here into a reproducible, numbered checklist — including the
+version-validation and release-metadata checks
+`scripts/check-release-metadata.mjs` now enforces, and the dormant,
+tag-triggered CI job that validates a release build without publishing it.
+See that document for the current, authoritative detail formerly duplicated
+in this section. There is still no publish or upload step anywhere in this
+repository — see **Explicitly not done here** below.
 
 ## Code signing — required before a real release
 
@@ -139,6 +116,9 @@ Matching the task scope exactly:
 - [phase-3-auto-update.md](phase-3-auto-update.md) — Milestone 4's
   safety-gating state machine, configuration resolution, and what a real
   update integration would still require.
+- [phase-3-first-release.md](phase-3-first-release.md) — Milestone 5's
+  reproducible release checklist, install/uninstall/rollback/recovery
+  documentation, and the dormant CI release-validation job.
 - [README.md — "Packaging a Windows installer"](../README.md#packaging-a-windows-installer)
   — the existing build command and what the installer contains.
 - [security-model.md](security-model.md) — the full threat model and

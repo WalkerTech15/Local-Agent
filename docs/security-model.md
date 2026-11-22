@@ -1238,7 +1238,13 @@ to be gone from the drive.
     check that refuses to let updates be enabled without a complete signing
     configuration too. There is still no `electron-updater` dependency, no
     update feed, and no network call: this limitation remains fully
-    accurate until all three exist.
+    accurate until all three exist. Phase 3 Milestone 5
+    (`docs/phase-3-first-release.md`) adds a reproducible release checklist,
+    a `package.json` version/metadata preflight
+    (`scripts/check-release-metadata.mjs`), and a CI job that validates —
+    never publishes — a tagged release build. No release has been built
+    with real signing credentials, no tag has ever been pushed, and nothing
+    has been published or distributed; this limitation is unchanged by it.
 
 ---
 

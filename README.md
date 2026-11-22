@@ -4,9 +4,9 @@ A local-first, permission-controlled desktop assistant for Windows. The
 assistant is named **JARVIS** by default; the product is **Local Agent**.
 
 > **Status: Phase 1 and Phase 2 (Milestones 1–10) complete. Phase 3,
-> Milestones 1 (production readiness) and 3 (Windows code-signing
-> preparation) complete. Phase 3, Milestone 4 (Windows auto-update
-> preparation) in progress.**
+> Milestones 1 (production readiness), 3 (Windows code-signing
+> preparation) and 4 (Windows auto-update preparation) complete. Phase 3,
+> Milestone 5 (first public release preparation) in progress.**
 > Phase 1 delivered the hardened desktop shell, non-secret settings storage,
 > an audit-log foundation, the permission-policy runtime, persisted
 > emergency-stop state, first-run onboarding, an encrypted secret store, and
@@ -183,6 +183,26 @@ assistant is named **JARVIS** by default; the product is **Local Agent**.
 > [docs/phase-3-auto-update.md](docs/phase-3-auto-update.md) for the chosen
 > distribution strategy, every environment variable, and what wiring a
 > real update check would still require.
+>
+> **Phase 3, Milestone 5 prepares the first public release — status:
+> prepared, not published, not distributed.** No release has been built
+> with real signing credentials, no certificate exists, no tag has ever
+> been pushed, and nothing has been uploaded anywhere. This milestone
+> assembles the full build/sign/package/install/uninstall/rollback path
+> into one reproducible, numbered checklist
+> (`docs/phase-3-first-release.md`), adds a third `package:win` preflight
+> (`scripts/check-release-metadata.mjs`) that validates `package.json`'s
+> version is a plain semver string and its `author` is present always, and
+> — only when an explicit `LOCAL_AGENT_RELEASE=1` marks a real release
+> build — that the publisher identity is no longer the shipped placeholder
+> and, if a release tag is given, that it matches the version exactly. CI
+> gained a `release-validate` job that runs only on a `v*` tag push (none
+> has ever happened) to confirm a tagged commit would produce a valid
+> release build — full verification, the metadata check, then a real
+> packaging run — without uploading, publishing, or distributing anything
+> it produces. See [docs/phase-3-first-release.md](docs/phase-3-first-release.md)
+> for the checklist, install/uninstall/rollback/recovery documentation, and
+> exactly what this milestone does and does not do.
 
 All rights reserved. No licence has been granted for this project.
 

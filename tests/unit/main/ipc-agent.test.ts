@@ -599,7 +599,7 @@ describe('agent:run and the emergency stop', () => {
     expect(response.run?.stopReason).toBe('emergency-stop');
     expect(response.run?.status).toBe('denied');
     expect(response.run?.steps).toEqual([]);
-    void invoke;
+    expect(typeof invoke).toBe('function');
   });
 });
 
